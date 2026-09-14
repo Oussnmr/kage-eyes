@@ -9,12 +9,19 @@
 #include "touch_port.h"
 #include "eyes.h"
 #include "battery_port.h"
+#include "ui.h"
+#include "wifi_port.h"
 #include "driver/i2c_master.h"
 
 #define FRAME_W 448
 #define FRAME_H 368
 static const char *TAG = "kage-eyes";
-static void on_tap(void *context) { (void)context; eyes_next_expression(); }
+static void on_tap(void *context) {
+    (void)context;
+    if (ui_settings_visible()) ui_tap();
+    else eyes_next_expression();
+}
+static void on_hold(void *context) { (void)context; ui_hold(); }
 
 void app_main(void) {
     ESP_LOGI(TAG, "Kage Eyes v1 boot");
@@ -25,14 +32,17 @@ void app_main(void) {
     battery_port_trim_rails();
     touch_port_init();                 /* a missing touch controller must not stop the face */
     touch_port_set_tap_callback(on_tap, NULL);
+    touch_port_set_hold_callback(on_hold, NULL);
     uint16_t *frame = heap_caps_calloc(FRAME_W * FRAME_H, sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!frame) frame = heap_caps_calloc(FRAME_W * FRAME_H, sizeof(uint16_t), MALLOC_CAP_8BIT);
     ESP_ERROR_CHECK(frame ? ESP_OK : ESP_ERR_NO_MEM);
     eyes_init();
+    wifi_port_init();
     for (;;) {
         touch_port_poll();
         eyes_update(esp_timer_get_time());
         eyes_render(frame, FRAME_W, FRAME_H);
+        ui_render(frame, FRAME_W, FRAME_H);
         display_port_flush(frame);
         vTaskDelay(pdMS_TO_TICKS(16)); /* yields to DMA/touch; no animation delay */
     }
