@@ -37,7 +37,7 @@ static void open_display() {
     lv_obj_add_flag(settings, LV_OBJ_FLAG_HIDDEN); page = lv_obj_create(lv_screen_active()); style_page(page); label(page, "Affichage", 34, &lv_font_montserrat_24, CYAN);
     lv_obj_t *value = label(page, "Luminosité", 104, &lv_font_montserrat_20, 0xffffff);
     lv_obj_t *slider = lv_slider_create(page); lv_obj_set_size(slider, 280, 18); lv_obj_align(slider, LV_ALIGN_TOP_MID, 0, 152); lv_slider_set_range(slider, 10, 100); lv_slider_set_value(slider, 80, LV_ANIM_OFF);
-    lv_obj_add_event_cb(slider, [](lv_event_t *event) { bsp_display_brightness_set(lv_slider_get_value(lv_event_get_target(event))); }, LV_EVENT_VALUE_CHANGED, nullptr);
+    lv_obj_add_event_cb(slider, [](lv_event_t *event) { auto *target = static_cast<lv_obj_t *>(lv_event_get_target(event)); bsp_display_brightness_set(lv_slider_get_value(target)); }, LV_EVENT_VALUE_CHANGED, nullptr);
     (void)value; button(page, "Retour", 326, back_to_settings);
 }
 static void set_idle(){robot_eyes_set_state(RobotEyeState::Idle);show_home();} static void set_happy(){robot_eyes_set_state(RobotEyeState::Happy);show_home();}
