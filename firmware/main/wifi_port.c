@@ -119,11 +119,14 @@ void wifi_port_init(void) {
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, event_handler, NULL, NULL));
     char ssid[33] = {0}, password[65] = {0};
     nvs_handle_t nvs;
-    ESP_ERROR_CHECK(nvs_open(WIFI_NAMESPACE, NVS_READONLY, &nvs));
-    size_t size = sizeof(ssid);
-    esp_err_t saved = nvs_get_str(nvs, "ssid", ssid, &size);
-    size = sizeof(password); nvs_get_str(nvs, "pass", password, &size);
-    nvs_close(nvs);
+    esp_err_t saved = nvs_open(WIFI_NAMESPACE, NVS_READONLY, &nvs);
+    if (saved == ESP_OK) {
+        size_t size = sizeof(ssid);
+        saved = nvs_get_str(nvs, "ssid", ssid, &size);
+        size = sizeof(password);
+        nvs_get_str(nvs, "pass", password, &size);
+        nvs_close(nvs);
+    }
     wifi_config_t station = {0};
     strncpy((char *)station.sta.ssid, ssid, sizeof(station.sta.ssid) - 1);
     strncpy((char *)station.sta.password, password, sizeof(station.sta.password) - 1);
