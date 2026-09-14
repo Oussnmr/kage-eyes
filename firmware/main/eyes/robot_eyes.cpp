@@ -69,7 +69,9 @@ static void render(lv_timer_t *) {
     const Params &active = P[static_cast<int>(current)];
     next_blink -= dt; if (blink > 0) blink = fmaxf(0, blink - dt / .13f); else if (next_blink <= 0) { blink = 1; next_blink = lerp(active.blink_min, active.blink_max, randomf()); }
     next_gaze -= dt; if (next_gaze <= 0) { next_gaze = .7f + randomf() * 2.2f; target_x = (randomf()*2-1)*active.gaze; target_y = (randomf()*2-1)*active.gaze*.55f; }
-    float follow = fminf(1, dt * 9), goal_x = isnan(active.gx) ? target_x : active.gx, goal_y = isnan(active.gy) ? target_y : active.gy;
+    float follow = fminf(1, dt * 9);
+    float goal_x = std::isnan(active.gx) ? target_x : active.gx;
+    float goal_y = std::isnan(active.gy) ? target_y : active.gy;
     gaze_x = lerp(gaze_x, goal_x, follow); gaze_y = lerp(gaze_y, goal_y, follow);
     memset(pixels, 0, W * H * sizeof(uint16_t));
     const Params &from = P[static_cast<int>(previous)]; Params p = active;

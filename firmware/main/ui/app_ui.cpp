@@ -42,7 +42,7 @@ static void open_display() {
 }
 static void set_idle(){robot_eyes_set_state(RobotEyeState::Idle);show_home();} static void set_happy(){robot_eyes_set_state(RobotEyeState::Happy);show_home();}
 static void set_sad(){robot_eyes_set_state(RobotEyeState::Sad);show_home();} static void set_angry(){robot_eyes_set_state(RobotEyeState::Angry);show_home();}
-static void set_sleepy(){robot_eyes_set_state(RobotEyeState::Sleepy);show_home();} static void set_surprised(){robot_eyes_set_state(RobotEyeState::Surprised);show_home();}
+static void set_sleepy(){robot_eyes_set_state(RobotEyeState::Sleepy);show_home();}
 static void open_eyes() {
     lv_obj_add_flag(settings, LV_OBJ_FLAG_HIDDEN); page = lv_obj_create(lv_screen_active()); style_page(page); label(page, "Expressions", 22, &lv_font_montserrat_24, CYAN);
     button(page, "Normal", 70, set_idle); button(page, "Heureux", 130, set_happy); button(page, "Triste", 190, set_sad); button(page, "Fâché", 250, set_angry); button(page, "Endormi", 310, set_sleepy); button(page, "Retour", 370, back_to_settings);

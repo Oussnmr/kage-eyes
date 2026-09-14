@@ -40,7 +40,10 @@ static void send_strings(uint8_t command, const char *first, const char *second,
         data[pos++] = static_cast<uint8_t>(len); memcpy(data + pos, text, len); pos += len;
     }
     data[1] = static_cast<uint8_t>(pos - 2); uint8_t sum = 0;
-    for (size_t i = 0; i < pos; ++i) sum += data[i]; data[pos++] = sum;
+    for (size_t i = 0; i < pos; ++i) {
+        sum += data[i];
+    }
+    data[pos++] = sum;
     send_packet(TYPE_RPC_RESPONSE, data, pos);
 }
 static void apply_wifi(const uint8_t *data, size_t length) {
