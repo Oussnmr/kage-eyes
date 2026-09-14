@@ -115,8 +115,8 @@ void wifi_port_init(void) {
     esp_netif_create_default_wifi_ap();
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&init));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, event_handler, NULL, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, event_handler, NULL));
     char ssid[33] = {0}, password[65] = {0};
     nvs_handle_t nvs;
     esp_err_t saved = nvs_open(WIFI_NAMESPACE, NVS_READONLY, &nvs);
