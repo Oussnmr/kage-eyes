@@ -8,7 +8,7 @@
 #include <stdbool.h>
 
 bool display_port_init(void);
-/* push a full TANK_W x TANK_H RGB565 frame; may return before DMA completes */
+/* Push a full 448 x 368 landscape RGB565 frame; may return before DMA completes. */
 void display_port_flush(const uint16_t *fb);
 /* power the panel down for device sleep; display_port_wake (or a boot's
  * display_port_init) re-sequences it */

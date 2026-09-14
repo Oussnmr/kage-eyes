@@ -5,15 +5,13 @@
 # deploy it. Pages serves HTTPS with open CORS, so a page on another site
 # can point its <esp-web-install-button> at this manifest and always offer
 # the firmware of the latest push.
-name: installer
+name: Build and publish Kage Eyes
 
 on:
   push:
     branches: [main]
     paths:
       - "firmware/**"
-      - "common/**"
-      - "model/out/**"
       - "installer/**"
       - "tools/make_installer.py"
       - ".github/workflows/installer.yml"
@@ -35,13 +33,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0          # git describe wants the tags
-      - name: Build the firmware (ESP-IDF v5.4.1, esp32s3)
+      - name: Build Kage Eyes (ESP-IDF v5.4.1, esp32s3)
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.4.1
           target: esp32s3
           path: firmware
-      - name: Assemble the installer
+      - name: Assemble the Kage Eyes installer
         run: |
           python3 tools/make_installer.py --build-dir firmware/build --out installer/dist
           touch installer/dist/.nojekyll

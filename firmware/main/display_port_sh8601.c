@@ -4,7 +4,6 @@
  * Works for V1 (SH8601) and V2 (CO5300) - same init sequence, V2 adds an x gap. */
 #include "display_port.h"
 #include "board_pins.h"
-#include "tank.h"
 #include "driver/spi_master.h"
 #include "driver/i2c_master.h"
 #include "esp_lcd_panel_io.h"
@@ -15,6 +14,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include <string.h>
+
+#define FRAME_W 448
+#define FRAME_H 368
 
 static const char *TAG = "sh8601";
 #define LCD_HOST SPI2_HOST
@@ -150,10 +152,10 @@ void display_port_flush(const uint16_t *fb) {
     for (int py0 = 0; py0 < PANEL_H; py0 += STRIPE_ROWS) {
         xSemaphoreTake(s_stripe_free, portMAX_DELAY);
         uint16_t *stripe = s_stripe[cur];
-        int x1 = TANK_W - 1 - py0;                    /* source columns x1-(STRIPE_ROWS-1) .. x1 */
+        int x1 = FRAME_W - 1 - py0;                   /* source columns x1-(STRIPE_ROWS-1) .. x1 */
         if (!s_inverted) for (int px = 0; px < PANEL_W; px += 2) {  /* pair adjacent panel columns: one 32-bit store */
-            const uint16_t *s0 = fb + px * TANK_W + x1 - (STRIPE_ROWS - 1);
-            const uint16_t *s1 = s0 + TANK_W;
+            const uint16_t *s0 = fb + px * FRAME_W + x1 - (STRIPE_ROWS - 1);
+            const uint16_t *s1 = s0 + FRAME_W;
             uint32_t *dst = (uint32_t *)(stripe + px);
             for (int r = 0; r < STRIPE_ROWS; r++) {
                 uint16_t a = s0[STRIPE_ROWS - 1 - r], b = s1[STRIPE_ROWS - 1 - r];   /* x = x1 - r */
@@ -164,8 +166,8 @@ void display_port_flush(const uint16_t *fb) {
         /* 180-degree flip: panel (px,py) = fb[TANK_H-1-px][py] (TANK_W == PANEL_H).
          * Row segments are read forward instead of backward — same cache pattern. */
         else for (int px = 0; px < PANEL_W; px += 2) {
-            const uint16_t *s0 = fb + (TANK_H - 1 - px) * TANK_W + py0;
-            const uint16_t *s1 = s0 - TANK_W;         /* panel column px+1 = the fb row above */
+            const uint16_t *s0 = fb + (FRAME_H - 1 - px) * FRAME_W + py0;
+            const uint16_t *s1 = s0 - FRAME_W;        /* panel column px+1 = the fb row above */
             uint32_t *dst = (uint32_t *)(stripe + px);
             for (int r = 0; r < STRIPE_ROWS; r++) {
                 uint16_t a = s0[r], b = s1[r];

@@ -2,19 +2,18 @@
 """make_installer.py - assemble the browser installer (ESP Web Tools).
 
 Gathers the firmware build's bootloader / partition table / app, the
-shipped model_q4.bin, the installer page and the vendored ESP Web Tools
+installer page and the vendored ESP Web Tools
 bundle into ONE static folder that any HTTPS host can serve as-is:
 
     installer/dist/
         index.html          the page (version stamped in)
         manifest.json       what to flash where (ESP Web Tools format)
-        firmware/*.bin      bootloader, partition table, app, model
+        firmware/*.bin      bootloader, partition table, app
         vendor/esp-web-tools/*.js   the flasher (Apache-2.0, vendored so the
                                     page has no third-party runtime deps)
 
-Offsets come from the build's flasher_args.json (bootloader / partition
-table / app) and from firmware/partitions.csv (the model partition), so a
-layout change can't silently ship a stale offset.
+Offsets come from the build's flasher_args.json, so a layout change can't
+silently ship a stale offset.
 
     tools/make_installer.py                      # default build dir
     tools/make_installer.py --build-dir path     # another idf.py -B dir
@@ -26,16 +25,6 @@ import argparse, datetime, json, os, shutil, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_BUILD = os.path.expanduser("~/.cache/pocket-tank/fw-build")
-
-
-def model_offset():
-    """the 'model' row of firmware/partitions.csv -> int offset"""
-    with open(os.path.join(ROOT, "firmware", "partitions.csv")) as f:
-        for line in f:
-            cols = [c.strip() for c in line.split(",")]
-            if len(cols) >= 4 and cols[0] == "model":
-                return int(cols[3], 0)
-    sys.exit("partitions.csv: no 'model' partition")
 
 
 def git_version():
@@ -51,7 +40,6 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-dir", default=DEFAULT_BUILD if os.path.isdir(DEFAULT_BUILD)
                     else os.path.join(ROOT, "firmware", "build"))
-    ap.add_argument("--model", default=os.path.join(ROOT, "model", "out", "model_q4.bin"))
     ap.add_argument("--out", default=os.path.join(ROOT, "installer", "dist"))
     ap.add_argument("--version", default=None)
     ap.add_argument("--manifest-url", default="manifest.json",
@@ -66,10 +54,9 @@ def main():
     fa = json.load(open(fa_path))
     parts = []   # (offset, source path, published name)
     for key, pub in (("bootloader", "bootloader.bin"), ("partition-table", "partition-table.bin"),
-                     ("app", "pocket_tank.bin")):
+                     ("app", "kage_eyes.bin")):
         ent = fa[key]
         parts.append((int(ent["offset"], 0), os.path.join(a.build_dir, ent["file"]), pub))
-    parts.append((model_offset(), a.model, "model_q4.bin"))
     parts.sort()
     for off, src, pub in parts:
         if not os.path.isfile(src):
@@ -88,7 +75,7 @@ def main():
     shutil.copytree(os.path.join(ROOT, "installer", "vendor"), os.path.join(out, "vendor"))
 
     manifest = {
-        "name": "Pocket Tank",
+        "name": "Kage Eyes",
         "version": version,
         "built": date,                       # read by the page (ESP Web Tools ignores extra keys)
         "new_install_prompt_erase": True,   # the dialog offers "erase": a factory-fresh tank
