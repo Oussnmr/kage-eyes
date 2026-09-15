@@ -1,7 +1,7 @@
 # Kage Eyes
 
-Kage Eyes is a focused firmware for the Waveshare ESP32-S3 Touch AMOLED 1.8.
-It uses Waveshare's ESP-IDF board support for the AMOLED, touch controller and
+Kage Eyes is a focused eyes-only firmware for the Waveshare ESP32-S3 Touch
+AMOLED 1.8. It uses Waveshare's ESP-IDF board support for the AMOLED and
 QMI8658 motion sensor, while keeping installation as simple as a web page.
 
 ## What it does
@@ -10,9 +10,9 @@ QMI8658 motion sensor, while keeping installation as simple as a web page.
 - a 448 × 368 landscape interface;
 - automatic left/right landscape rotation when the device is tilted;
 - filtered orientation changes to avoid rapid flipping near the threshold;
-- normal, happy, sad, angry, sleepy, surprised, thinking and alert states;
-- touch controls for expressions, Wi-Fi status and display brightness;
-- smooth, non-blocking blinks and interpolated expression transitions.
+- smooth startup, random gaze, breathing and natural blinks;
+- native LVGL shapes and dirty-region redraws instead of a full-screen canvas;
+- no menu, Wi-Fi UI or touch controls in this performance-focused version.
 
 ## Build
 
@@ -36,8 +36,7 @@ the Waveshare USB serial device, and choose erase when replacing Pocket Tank.
 
 ## Structure
 
-`firmware/main/eyes/robot_eyes.cpp` contains the expression renderer,
-`firmware/main/services/orientation_service.cpp` handles the QMI8658 and
-`firmware/main/ui/app_ui.cpp` contains the landscape touch interface.
+`firmware/main/eyes/robot_eyes.cpp` contains the lightweight eye renderer and
+`firmware/main/services/orientation_service.cpp` handles the QMI8658.
 
 Pocket Tank is MIT licensed; Kage Eyes retains the required upstream license.
