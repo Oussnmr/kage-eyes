@@ -120,8 +120,6 @@ static void set_geometry(lv_obj_t *eye, int x, int y, int width, int height) {
     if (lv_obj_get_x(eye) != x || lv_obj_get_y(eye) != y) lv_obj_set_pos(eye, x, y);
     if (lv_obj_get_width(eye) != width || lv_obj_get_height(eye) != height) {
         lv_obj_set_size(eye, width, height);
-        lv_obj_set_style_transform_pivot_x(eye, width / 2, 0);
-        lv_obj_set_style_transform_pivot_y(eye, height / 2, 0);
     }
 }
 
@@ -233,14 +231,9 @@ static void animate(lv_timer_t *) {
     int right_width = EYE_W;
     int left_height = static_cast<int>(4.0f + (EYE_H - 4.0f) * open * (1.0f - closure * 0.96f));
     int right_height = left_height;
-    int left_rotation = 0;
-    int right_rotation = 0;
-
     if (s_expression == 1) {
         left_height = static_cast<int>(left_height * 0.76f);
         right_height = static_cast<int>(right_height * 1.06f);
-        left_rotation = -35;
-        right_rotation = -35;
     } else if (s_expression == 2) {
         left_height = static_cast<int>(left_height * 0.68f);
         right_height = left_height;
@@ -262,8 +255,6 @@ static void animate(lv_timer_t *) {
         gaze_y = 4;
         left_height = 78;
         right_height = 78;
-        left_rotation = 115;
-        right_rotation = -115;
         bob = 0.0f;
         set_face_color(RED);
     } else if (s_time < s_charge_until) {
@@ -283,9 +274,6 @@ static void animate(lv_timer_t *) {
                  left_width, left_height);
     set_geometry(s_right_eye, right_center_x - right_width / 2, center_y - right_height / 2,
                  right_width, right_height);
-    lv_obj_set_style_transform_rotation(s_left_eye, left_rotation, 0);
-    lv_obj_set_style_transform_rotation(s_right_eye, right_rotation, 0);
-
     int mouth_w = MOUTH_W + static_cast<int>(bob * 0.5f);
     int mouth_y = MOUTH_Y + static_cast<int>(bob);
     int mouth_x = SCREEN_W / 2 - mouth_w / 2;
@@ -312,8 +300,6 @@ static lv_obj_t *create_eye(lv_obj_t *parent) {
     lv_obj_set_style_bg_opa(eye, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(eye, lv_color_hex(CYAN), 0);
     lv_obj_set_style_radius(eye, EYE_RADIUS, 0);
-    lv_obj_set_style_transform_pivot_x(eye, EYE_W / 2, 0);
-    lv_obj_set_style_transform_pivot_y(eye, EYE_H / 2, 0);
     lv_obj_clear_flag(eye, LV_OBJ_FLAG_SCROLLABLE);
     return eye;
 }

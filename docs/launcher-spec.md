@@ -8,8 +8,8 @@
   Storage around it.
 - Open an app with one tap. Swipe up anywhere in an app to return home. Swipe
   left or right on Home to move the magnetic selection.
-- Keep Home icon-only: no brand, app names, instructions or font glyph icons.
-  Give each bubble its own solid colour and draw every mark with LVGL shapes.
+- Keep Home icon-only: no brand, app names or instructions. Give each bubble
+  its own solid colour and use the original built-in LVGL app icons.
 - Keep Robot to two eyes and one mouth on true black. Preserve random gaze,
   natural blinks, sleep/wake, tap blink, shake/dizzy and left/right rotation.
 - Add curious/happy idle poses, rising sleep marks, a five-tap angry state and
@@ -25,6 +25,8 @@
 - Keep sensor/audio workers away from the LVGL task and exchange only small
   atomic values.
 - Use solid fills; no gradients, blur shaders or large animated shadows.
+- Never transform the large eye objects; animate only their bounds. Rotating a
+  132 px LVGL object can allocate a costly intermediate layer on this target.
 
 ## Inspiration, adapted rather than embedded
 

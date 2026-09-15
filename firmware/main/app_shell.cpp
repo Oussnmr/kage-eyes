@@ -15,6 +15,10 @@
 #include "eyes/robot_eyes.h"
 #include "services/orientation_service.h"
 
+#ifndef LV_SYMBOL_EYE_OPEN
+#define LV_SYMBOL_EYE_OPEN "o o"
+#endif
+
 namespace {
 constexpr int SCREEN_W = 448;
 constexpr int SCREEN_H = 368;
@@ -42,6 +46,7 @@ enum AppId {
 };
 
 struct BubbleSpec {
+    const char *symbol;
     float x;
     float y;
     float diameter;
@@ -51,13 +56,13 @@ struct BubbleSpec {
 /* A compact hexagonal cluster: regular geometry makes the magnetic deflection
    legible while leaving generous touch targets. */
 constexpr BubbleSpec BUBBLES[BUBBLE_COUNT] = {
-    {224, 174, 108, 0x2583FF},
-    {224, 55, 76, 0x9B5DE5},
-    {330, 112, 76, 0xFF7A45},
-    {330, 236, 76, 0x20C997},
-    {224, 303, 76, 0xF4B942},
-    {118, 236, 76, 0x36C5F0},
-    {118, 112, 76, 0xEF5DA8},
+    {LV_SYMBOL_EYE_OPEN, 224, 174, 108, 0x2583FF},
+    {LV_SYMBOL_AUDIO, 224, 55, 76, 0x9B5DE5},
+    {LV_SYMBOL_REFRESH, 330, 112, 76, 0xFF7A45},
+    {LV_SYMBOL_IMAGE, 330, 236, 76, 0x20C997},
+    {LV_SYMBOL_SETTINGS, 224, 303, 76, 0xF4B942},
+    {LV_SYMBOL_WIFI, 118, 236, 76, 0x36C5F0},
+    {LV_SYMBOL_SD_CARD, 118, 112, 76, 0xEF5DA8},
 };
 
 struct BubbleRuntime {
@@ -167,79 +172,6 @@ static void set_bubble_appearance(int index) {
     lv_obj_set_style_bg_color(body, lv_color_hex(BUBBLES[index].color), 0);
     lv_obj_set_style_border_color(body, lv_color_white(), 0);
     lv_obj_set_style_border_width(body, selected ? 3 : 0, 0);
-}
-
-static lv_obj_t *icon_shape(lv_obj_t *parent, int x, int y, int width, int height,
-                            int radius = LV_RADIUS_CIRCLE, bool outline = false) {
-    lv_obj_t *shape = lv_obj_create(parent);
-    lv_obj_remove_style_all(shape);
-    lv_obj_set_pos(shape, x, y);
-    lv_obj_set_size(shape, width, height);
-    lv_obj_set_style_radius(shape, radius, 0);
-    if (outline) {
-        lv_obj_set_style_bg_opa(shape, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_color(shape, lv_color_white(), 0);
-        lv_obj_set_style_border_width(shape, 3, 0);
-    } else {
-        lv_obj_set_style_bg_color(shape, lv_color_white(), 0);
-        lv_obj_set_style_bg_opa(shape, LV_OPA_COVER, 0);
-    }
-    lv_obj_clear_flag(shape, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(shape, LV_OBJ_FLAG_CLICKABLE);
-    return shape;
-}
-
-static lv_obj_t *create_bubble_icon(lv_obj_t *parent, AppId app) {
-    lv_obj_t *layer = lv_obj_create(parent);
-    lv_obj_remove_style_all(layer);
-    lv_obj_set_size(layer, 48, 48);
-    lv_obj_align(layer, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_clear_flag(layer, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(layer, LV_OBJ_FLAG_CLICKABLE);
-
-    switch (app) {
-        case APP_ROBOT:
-            icon_shape(layer, 5, 17, 15, 12, 5);
-            icon_shape(layer, 28, 17, 15, 12, 5);
-            break;
-        case APP_MIC:
-            icon_shape(layer, 17, 5, 14, 25, 7, true);
-            icon_shape(layer, 22, 29, 4, 9);
-            icon_shape(layer, 14, 37, 20, 4);
-            break;
-        case APP_MOTION:
-            icon_shape(layer, 19, 19, 10, 10);
-            icon_shape(layer, 20, 2, 8, 8);
-            icon_shape(layer, 20, 38, 8, 8);
-            icon_shape(layer, 2, 20, 8, 8);
-            icon_shape(layer, 38, 20, 8, 8);
-            break;
-        case APP_DISPLAY:
-            icon_shape(layer, 5, 8, 38, 29, 6, true);
-            icon_shape(layer, 18, 39, 12, 4);
-            break;
-        case APP_SYSTEM:
-            icon_shape(layer, 7, 9, 34, 4);
-            icon_shape(layer, 7, 22, 34, 4);
-            icon_shape(layer, 7, 35, 34, 4);
-            icon_shape(layer, 14, 5, 8, 12, 4);
-            icon_shape(layer, 29, 18, 8, 12, 4);
-            icon_shape(layer, 18, 31, 8, 12, 4);
-            break;
-        case APP_WIFI:
-            icon_shape(layer, 7, 9, 34, 5);
-            icon_shape(layer, 13, 20, 22, 5);
-            icon_shape(layer, 19, 31, 10, 5);
-            icon_shape(layer, 21, 40, 6, 6);
-            break;
-        case APP_STORAGE:
-            icon_shape(layer, 10, 5, 28, 38, 5, true);
-            icon_shape(layer, 15, 9, 4, 10, 1);
-            icon_shape(layer, 22, 9, 4, 10, 1);
-            icon_shape(layer, 29, 9, 4, 10, 1);
-            break;
-    }
-    return layer;
 }
 
 static void select_bubble(int index) {
@@ -371,7 +303,8 @@ static void create_home_screen() {
         lv_obj_add_flag(runtime.body, LV_OBJ_FLAG_GESTURE_BUBBLE);
         lv_obj_add_event_cb(runtime.body, bubble_pressed, LV_EVENT_SHORT_CLICKED,
                             reinterpret_cast<void *>(static_cast<intptr_t>(i)));
-        runtime.icon = create_bubble_icon(runtime.body, static_cast<AppId>(i));
+        runtime.icon = make_label(runtime.body, spec.symbol, &lv_font_montserrat_24, 0xFFFFFF);
+        lv_obj_clear_flag(runtime.icon, LV_OBJ_FLAG_CLICKABLE);
         set_bubble_appearance(i);
     }
     lv_timer_create(home_animation, 16, nullptr);
