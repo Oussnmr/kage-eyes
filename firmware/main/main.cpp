@@ -5,6 +5,7 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 #include "app_ui.h"
+#include "orientation_service.h"
 #include "wifi_service.h"
 
 extern "C" void app_main(void) {
@@ -15,7 +16,14 @@ extern "C" void app_main(void) {
     if (!display) { ESP_LOGE("kage", "AMOLED/LVGL startup failed"); return; }
     ESP_ERROR_CHECK(bsp_display_brightness_set(80));
     wifi_service_begin();
-    if (bsp_display_lock(1000)) { app_ui_begin(); bsp_display_unlock(); }
+    if (bsp_display_lock(1000)) {
+        /* Landscape by default. The IMU service later switches only between
+           the two usable landscape orientations (left and right). */
+        bsp_display_rotate(display, LV_DISPLAY_ROTATION_90);
+        app_ui_begin();
+        bsp_display_unlock();
+    }
     else ESP_LOGE("kage", "LVGL lock unavailable");
+    orientation_service_begin(display);
     while (true) vTaskDelay(pdMS_TO_TICKS(1000));
 }

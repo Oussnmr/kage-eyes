@@ -1,22 +1,22 @@
 # Kage Eyes
 
-Kage Eyes is a small, first firmware for the Waveshare ESP32-S3 Touch AMOLED
-1.8 (V1 and V2). It keeps Pocket Tank's tested power sequencing, display
-driver, board-revision detection, touch driver, ESP-IDF configuration and web
-flashing infrastructure. It contains no aquarium, LLM, model partition,
-network, audio or motor code.
+Kage Eyes is a focused firmware for the Waveshare ESP32-S3 Touch AMOLED 1.8.
+It uses Waveshare's ESP-IDF board support for the AMOLED, touch controller and
+QMI8658 motion sensor, while keeping installation as simple as a web page.
 
 ## What it does
 
 - two cyan, softly glowing eyes on a true-black AMOLED background;
-- normal, happy, angry, surprised, sleepy, look-left and look-right states;
-- a screen tap advances to the next state;
-- a random, non-blocking blink while normal;
-- 220 ms geometry transitions, updated at about 60 frames per second.
+- a 448 × 368 landscape interface;
+- automatic left/right landscape rotation when the device is tilted;
+- filtered orientation changes to avoid rapid flipping near the threshold;
+- normal, happy, sad, angry, sleepy, surprised, thinking and alert states;
+- touch controls for expressions, Wi-Fi status and display brightness;
+- smooth, non-blocking blinks and interpolated expression transitions.
 
 ## Build
 
-Install ESP-IDF 5.4.1, export its environment, then run:
+Install ESP-IDF 5.5.5, export its environment, then run:
 
 ```sh
 cd firmware
@@ -36,8 +36,8 @@ the Waveshare USB serial device, and choose erase when replacing Pocket Tank.
 
 ## Structure
 
-`firmware/main/eyes/eyes.c` contains the complete expression state machine and
-renderer. `main.c` owns the non-blocking display loop. Hardware remains in the
-small display and touch ports retained from Pocket Tank.
+`firmware/main/eyes/robot_eyes.cpp` contains the expression renderer,
+`firmware/main/services/orientation_service.cpp` handles the QMI8658 and
+`firmware/main/ui/app_ui.cpp` contains the landscape touch interface.
 
 Pocket Tank is MIT licensed; Kage Eyes retains the required upstream license.

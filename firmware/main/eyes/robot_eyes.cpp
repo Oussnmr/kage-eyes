@@ -11,8 +11,8 @@
 #include "esp_timer.h"
 
 namespace {
-constexpr int W = 368, H = 448;
-constexpr float PI = 3.14159265358979323846f, EYE_CX_OFF = 86, EYE_W = 120, EYE_H = 140, EYE_R = 34, GLOW = 22, BREATHE = 3;
+constexpr int W = 448, H = 368;
+constexpr float PI = 3.14159265358979323846f, EYE_CX_OFF = 112, EYE_W = 132, EYE_H = 132, EYE_R = 32, GLOW = 18, BREATHE = 3;
 constexpr float AUTO = NAN;
 struct Params { float open,w,top,bot,tilt,gaze,gx,gy,blink_min,blink_max,asym; bool flicker; };
 static const Params P[] = {
@@ -79,7 +79,7 @@ static void render(lv_timer_t *) {
     float blink_factor = 1 - sinf(PI * fminf(1, blink)) * .94f, cy = H*.5f + sinf(time_s*1.1f)*BREATHE + gaze_y*10;
     uint8_t r=0x4f,g=0xe3,b=0xff; if(active.flicker && mix>.5f){r=0xff;g=0x4a;b=0x52;} float brightness=(p.flicker && sinf(time_s*22)>.4f)?.55f:1;
     for(int i=0;i<2;++i){int dir=i?1:-1; float open=p.open*blink_factor; if(p.asym<1 && dir==1)open*=lerp(1,p.asym,mix); draw_eye(W*.5f+dir*EYE_CX_OFF+gaze_x*12,cy,p,open,dir,r,g,b,brightness);}
-    if(current==RobotEyeState::Thinking && mix>.4f) for(int i=0;i<3;++i) draw_dot(154+i*30,360,6,r,g,b,.25f+.75f*fmaxf(0,sinf(time_s*3-i*.7f)));
+    if(current==RobotEyeState::Thinking && mix>.4f) for(int i=0;i<3;++i) draw_dot(194+i*30,306,6,r,g,b,.25f+.75f*fmaxf(0,sinf(time_s*3-i*.7f)));
     lv_obj_invalidate(canvas);
 }
 }

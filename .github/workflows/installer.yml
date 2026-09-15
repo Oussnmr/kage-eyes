@@ -9,7 +9,7 @@ name: Build and publish Kage Eyes
 
 on:
   push:
-    branches: [main, codex/lvgl-phase1]
+    branches: [main, codex/lvgl-phase1, codex/landscape-auto-rotate]
     paths:
       - "firmware/**"
       - "installer/**"
