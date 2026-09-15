@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <atomic>
 
 #include "bsp/esp-bsp.h"
 #include "driver/i2c_master.h"
@@ -30,6 +31,10 @@ constexpr uint8_t CTRL1_VALUE = 0x60;
 static lv_display_t *s_display;
 static qmi8658_dev_t s_imu = {};
 static lv_display_rotation_t s_rotation = LV_DISPLAY_ROTATION_90;
+static std::atomic<float> s_accel_x{0.0f};
+static std::atomic<float> s_accel_y{0.0f};
+static std::atomic<float> s_accel_z{0.0f};
+static std::atomic<bool> s_have_sample{false};
 
 static esp_err_t detect_address(i2c_master_bus_handle_t bus, uint8_t *address) {
     const uint8_t candidates[] = {QMI8658_ADDRESS_HIGH, QMI8658_ADDRESS_LOW};
@@ -68,6 +73,10 @@ static void orientation_task(void *) {
         if (qmi8658_is_data_ready(&s_imu, &ready) == ESP_OK && ready) {
             qmi8658_data_t data = {};
             if (qmi8658_read_sensor_data(&s_imu, &data) == ESP_OK) {
+                s_accel_x.store(data.accelX, std::memory_order_relaxed);
+                s_accel_y.store(data.accelY, std::memory_order_relaxed);
+                s_accel_z.store(data.accelZ, std::memory_order_relaxed);
+                s_have_sample.store(true, std::memory_order_release);
                 const float jerk = std::fabs(data.accelX - previous_x) +
                                    std::fabs(data.accelY - previous_y) +
                                    std::fabs(data.accelZ - previous_z);
@@ -129,4 +138,16 @@ bool orientation_service_begin(lv_display_t *display) {
         return false;
     }
     return xTaskCreate(orientation_task, "orientation", 4096, nullptr, 3, nullptr) == pdPASS;
+}
+
+bool orientation_service_get_sample(float *x, float *y, float *z) {
+    if (!s_have_sample.load(std::memory_order_acquire)) return false;
+    if (x) *x = s_accel_x.load(std::memory_order_relaxed);
+    if (y) *y = s_accel_y.load(std::memory_order_relaxed);
+    if (z) *z = s_accel_z.load(std::memory_order_relaxed);
+    return true;
+}
+
+bool orientation_service_is_inverted(void) {
+    return s_rotation == LV_DISPLAY_ROTATION_270;
 }

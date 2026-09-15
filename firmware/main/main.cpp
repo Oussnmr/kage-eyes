@@ -3,8 +3,8 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "app_shell.h"
 #include "orientation_service.h"
-#include "robot_eyes.h"
 
 extern "C" void app_main(void) {
     lv_display_t *display = bsp_display_start();
@@ -12,7 +12,7 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(bsp_display_brightness_set(80));
     if (bsp_display_lock(1000)) {
         bsp_display_rotate(display, LV_DISPLAY_ROTATION_90);
-        robot_eyes_begin(lv_screen_active());
+        app_shell_begin(display);
         bsp_display_unlock();
     }
     else ESP_LOGE("kage", "LVGL lock unavailable");
