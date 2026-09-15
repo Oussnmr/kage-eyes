@@ -11,6 +11,8 @@ QMI8658 motion sensor, while keeping installation as simple as a web page.
 - automatic left/right landscape rotation when the device is tilted;
 - filtered orientation changes to avoid rapid flipping near the threshold;
 - smooth startup, random gaze, breathing and natural blinks;
+- automatic sleep after inactivity, automatic wake-up and tap-to-wake;
+- a short dizzy reaction after a filtered physical shake;
 - native LVGL shapes and dirty-region redraws instead of a full-screen canvas;
 - no menu, Wi-Fi UI or touch controls in this performance-focused version.
 

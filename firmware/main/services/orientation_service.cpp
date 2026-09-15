@@ -7,17 +7,22 @@
 #include "driver/i2c_master.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "qmi8658.h"
+#include "robot_eyes.h"
 
 namespace {
 constexpr char TAG[] = "kage-orientation";
-constexpr int SAMPLE_PERIOD_MS = 100;
+constexpr int SAMPLE_PERIOD_MS = 50;
 constexpr int PROBE_TIMEOUT_MS = 100;
 constexpr float ENTER_THRESHOLD = 6.0f;  // m/s², about 0.6 g
 constexpr float RELEASE_THRESHOLD = 4.0f;
 constexpr int REQUIRED_SAMPLES = 4;
+constexpr float SHAKE_JERK_THRESHOLD = 12.0f;
+constexpr float SHAKE_GRAVITY_ERROR = 4.5f;
+constexpr int64_t SHAKE_COOLDOWN_US = 2000000;
 constexpr uint8_t RESET_REGISTER = 0x60;
 constexpr uint8_t RESET_COMMAND = 0xB0;
 constexpr uint8_t CTRL1_VALUE = 0x60;
@@ -55,11 +60,39 @@ static esp_err_t configure_imu(i2c_master_bus_handle_t bus) {
 static void orientation_task(void *) {
     lv_display_rotation_t pending = s_rotation;
     int confirmations = 0;
+    bool have_previous = false;
+    float previous_x = 0.0f, previous_y = 0.0f, previous_z = 0.0f;
+    int64_t last_shake_us = 0;
     while (true) {
         bool ready = false;
         if (qmi8658_is_data_ready(&s_imu, &ready) == ESP_OK && ready) {
             qmi8658_data_t data = {};
             if (qmi8658_read_sensor_data(&s_imu, &data) == ESP_OK) {
+                const float jerk = std::fabs(data.accelX - previous_x) +
+                                   std::fabs(data.accelY - previous_y) +
+                                   std::fabs(data.accelZ - previous_z);
+                const float magnitude = std::sqrt(data.accelX * data.accelX +
+                                                  data.accelY * data.accelY +
+                                                  data.accelZ * data.accelZ);
+                const int64_t now = esp_timer_get_time();
+                const bool shaken = have_previous && jerk > SHAKE_JERK_THRESHOLD &&
+                                    std::fabs(magnitude - 9.807f) > SHAKE_GRAVITY_ERROR &&
+                                    now - last_shake_us > SHAKE_COOLDOWN_US;
+                previous_x = data.accelX;
+                previous_y = data.accelY;
+                previous_z = data.accelZ;
+                have_previous = true;
+
+                if (shaken) {
+                    last_shake_us = now;
+                    pending = s_rotation;
+                    confirmations = 0;
+                    robot_eyes_on_shake();
+                    ESP_LOGI(TAG, "Shake detected");
+                    vTaskDelay(pdMS_TO_TICKS(SAMPLE_PERIOD_MS));
+                    continue;
+                }
+
                 lv_display_rotation_t wanted = s_rotation;
                 if (data.accelY < -ENTER_THRESHOLD) wanted = LV_DISPLAY_ROTATION_90;
                 else if (data.accelY > ENTER_THRESHOLD) wanted = LV_DISPLAY_ROTATION_270;
