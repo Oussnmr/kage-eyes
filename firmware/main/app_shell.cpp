@@ -174,6 +174,27 @@ static void set_bubble_appearance(int index) {
     lv_obj_set_style_border_width(body, selected ? 3 : 0, 0);
 }
 
+static lv_obj_t *create_robot_home_icon(lv_obj_t *parent) {
+    lv_obj_t *layer = lv_obj_create(parent);
+    lv_obj_remove_style_all(layer);
+    lv_obj_set_size(layer, 50, 42);
+    lv_obj_clear_flag(layer, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(layer, LV_OBJ_FLAG_SCROLLABLE);
+    for (int i = 0; i < 2; ++i) {
+        const int x = i == 0 ? 4 : 28;
+        lv_obj_t *eye = lv_obj_create(layer);
+        lv_obj_remove_style_all(eye);
+        lv_obj_set_pos(eye, x, 5);
+        lv_obj_set_size(eye, 18, 32);
+        lv_obj_set_style_bg_color(eye, lv_color_white(), 0);
+        lv_obj_set_style_bg_opa(eye, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(eye, 8, 0);
+        lv_obj_clear_flag(eye, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(eye, LV_OBJ_FLAG_SCROLLABLE);
+    }
+    return layer;
+}
+
 static void select_bubble(int index) {
     if (index < 0) index = BUBBLE_COUNT - 1;
     if (index >= BUBBLE_COUNT) index = 0;
@@ -303,7 +324,9 @@ static void create_home_screen() {
         lv_obj_add_flag(runtime.body, LV_OBJ_FLAG_GESTURE_BUBBLE);
         lv_obj_add_event_cb(runtime.body, bubble_pressed, LV_EVENT_SHORT_CLICKED,
                             reinterpret_cast<void *>(static_cast<intptr_t>(i)));
-        runtime.icon = make_label(runtime.body, spec.symbol, &lv_font_montserrat_24, 0xFFFFFF);
+        runtime.icon = i == APP_ROBOT
+            ? create_robot_home_icon(runtime.body)
+            : make_label(runtime.body, spec.symbol, &lv_font_montserrat_24, 0xFFFFFF);
         lv_obj_clear_flag(runtime.icon, LV_OBJ_FLAG_CLICKABLE);
         set_bubble_appearance(i);
     }

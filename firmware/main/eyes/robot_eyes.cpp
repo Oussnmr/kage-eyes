@@ -1,5 +1,6 @@
 #include "robot_eyes.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -24,6 +25,7 @@ constexpr float SLEEP_TRANSITION_S = 0.9f;
 constexpr float WAKE_TRANSITION_S = 0.55f;
 constexpr float DIZZY_DURATION_S = 2.8f;
 constexpr float CHARGE_DURATION_S = 2.7f;
+constexpr int ANGRY_STRIPES = 9;
 constexpr uint32_t CYAN = 0x4FE3FF;
 constexpr uint32_t GREEN = 0x42F58D;
 constexpr uint32_t RED = 0xFF4057;
@@ -32,9 +34,15 @@ static lv_obj_t *s_left_eye;
 static lv_obj_t *s_right_eye;
 static lv_obj_t *s_mouth;
 static lv_obj_t *s_sleep_z[3];
+static lv_obj_t *s_angry_left;
+static lv_obj_t *s_angry_right;
+static lv_obj_t *s_angry_left_stripes[ANGRY_STRIPES];
+static lv_obj_t *s_angry_right_stripes[ANGRY_STRIPES];
+static lv_obj_t *s_charge_bolt;
 static lv_timer_t *s_timer;
 static bool s_active;
 static bool s_angry;
+static bool s_angry_visible;
 static int s_tap_count;
 static int64_t s_last_tap_us;
 static int64_t s_last_frame_us;
@@ -111,6 +119,7 @@ static void touch_event(lv_event_t *) {
         s_tap_count = 0;
         s_blinks_left = 0;
         s_blink_time = -1.0f;
+        s_expression = 0;
         s_dizzy_until = s_time;
         s_charge_until = s_time;
     }
@@ -121,6 +130,48 @@ static void set_geometry(lv_obj_t *eye, int x, int y, int width, int height) {
     if (lv_obj_get_width(eye) != width || lv_obj_get_height(eye) != height) {
         lv_obj_set_size(eye, width, height);
     }
+}
+
+static void show_angry_eyes(bool show) {
+    if (show == s_angry_visible) return;
+    s_angry_visible = show;
+    if (show) {
+        lv_obj_add_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_angry_left, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_angry_right, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_clear_flag(s_left_eye, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_right_eye, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_angry_left, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_angry_right, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void set_angry_geometry(lv_obj_t *container, lv_obj_t **stripes, bool mirror,
+                               int center_x, int center_y, int height) {
+    height = height < 4 ? 4 : height;
+    const int y = center_y - height / 2;
+    set_geometry(container, center_x - EYE_W / 2, y, EYE_W, height);
+    for (int i = 0; i < ANGRY_STRIPES; ++i) {
+        const int top = i * height / ANGRY_STRIPES;
+        const int bottom = (i + 1) * height / ANGRY_STRIPES;
+        const int stripe_h = std::max(1, bottom - top + 1);
+        const int width = std::max(4, (i + 1) * EYE_W / ANGRY_STRIPES);
+        const int x = mirror ? EYE_W - width : 0;
+        set_geometry(stripes[i], x, top, width, stripe_h);
+    }
+}
+
+static void update_charge_bolt() {
+    if (s_time >= s_charge_until || s_angry) {
+        lv_obj_set_style_opa(s_charge_bolt, LV_OPA_TRANSP, 0);
+        return;
+    }
+    const float age = CHARGE_DURATION_S - (s_charge_until - s_time);
+    const float fade = age < 0.18f ? age / 0.18f : std::max(0.0f, 1.0f - (age - 0.18f) / 0.72f);
+    lv_obj_set_pos(s_charge_bolt, 210, 35 - static_cast<int>(age * 8.0f));
+    lv_obj_set_style_opa(s_charge_bolt, static_cast<lv_opa_t>(fade * 255.0f), 0);
 }
 
 static void update_sleep_marks(float center_y) {
@@ -171,19 +222,19 @@ static void animate(lv_timer_t *) {
     }
     if (s_sleep_started >= 0.0f && s_time - s_sleep_started >= SLEEP_DURATION_S) wake_up(false);
 
-    if (!s_angry && s_sleep_started < 0.0f && s_time >= s_dizzy_until) {
+    if (s_sleep_started < 0.0f && s_time >= s_dizzy_until) {
         s_next_gaze -= dt;
         if (s_next_gaze <= 0.0f) {
             s_next_gaze = 0.8f + random_unit() * 2.0f;
             s_target_x = (random_unit() * 2.0f - 1.0f) * 17.0f;
             s_target_y = (random_unit() * 2.0f - 1.0f) * 10.0f;
         }
-        if (s_time >= s_next_expression && s_time >= s_expression_until) {
+        if (!s_angry && s_time >= s_next_expression && s_time >= s_expression_until) {
             s_expression = random_unit() < 0.55f ? 1 : 2;
             s_expression_until = s_time + 1.0f + random_unit() * 1.1f;
             s_next_expression = s_expression_until + 4.0f + random_unit() * 4.0f;
         }
-        if (s_time >= s_expression_until) s_expression = 0;
+        if (!s_angry && s_time >= s_expression_until) s_expression = 0;
     } else {
         s_expression = 0;
     }
@@ -193,9 +244,9 @@ static void animate(lv_timer_t *) {
     s_gaze_y = approach(s_gaze_y, s_target_y, follow);
 
     float closure = 0.0f;
-    if (!s_angry && s_blinks_left > 0 && s_blink_time < 0.0f) {
+    if (s_blinks_left > 0 && s_blink_time < 0.0f) {
         s_blink_time += dt;
-    } else if (!s_angry && s_blink_time >= 0.0f) {
+    } else if (s_blink_time >= 0.0f) {
         s_blink_time += dt;
         constexpr float CLOSE_S = 0.07f;
         constexpr float OPEN_S = 0.16f;
@@ -210,7 +261,7 @@ static void animate(lv_timer_t *) {
                 ? smoothstep(s_blink_time / CLOSE_S)
                 : 1.0f - smoothstep((s_blink_time - CLOSE_S) / OPEN_S);
         }
-    } else if (!s_angry && s_blinks_left == 0) {
+    } else if (s_blinks_left == 0) {
         s_next_blink -= dt;
         if (s_next_blink <= 0.0f) {
             s_blink_time = 0.0f;
@@ -249,13 +300,11 @@ static void animate(lv_timer_t *) {
         right_height = static_cast<int>(EYE_H * (0.72f - 0.18f * sinf(phase * 1.31f)));
     }
 
-    float bob = sinf(s_time * 1.12f) * 4.0f + sinf(s_time * 0.47f) * 1.5f;
+    /* LVGL coordinates are integer pixels. The former 5 px/s peak speed spent
+       several frames on the same row, so the gentle bob looked stepped. This
+       reaches about 25 px/s without increasing redraw frequency. */
+    float bob = sinf(s_time * 2.20f) * 11.0f + sinf(s_time * 0.65f) * 2.0f;
     if (s_angry) {
-        gaze_x = 0;
-        gaze_y = 4;
-        left_height = 78;
-        right_height = 78;
-        bob = 0.0f;
         set_face_color(RED);
     } else if (s_time < s_charge_until) {
         const float remaining = s_charge_until - s_time;
@@ -270,10 +319,17 @@ static void animate(lv_timer_t *) {
     const int center_y = SCREEN_H / 2 + static_cast<int>(bob) + gaze_y;
     const int left_center_x = SCREEN_W / 2 - EYE_OFFSET_X + gaze_x;
     const int right_center_x = SCREEN_W / 2 + EYE_OFFSET_X + gaze_x;
+    show_angry_eyes(s_angry);
     set_geometry(s_left_eye, left_center_x - left_width / 2, center_y - left_height / 2,
                  left_width, left_height);
     set_geometry(s_right_eye, right_center_x - right_width / 2, center_y - right_height / 2,
                  right_width, right_height);
+    if (s_angry) {
+        set_angry_geometry(s_angry_left, s_angry_left_stripes, false,
+                           left_center_x, center_y, left_height);
+        set_angry_geometry(s_angry_right, s_angry_right_stripes, true,
+                           right_center_x, center_y, right_height);
+    }
     int mouth_w = MOUTH_W + static_cast<int>(bob * 0.5f);
     int mouth_y = MOUTH_Y + static_cast<int>(bob);
     int mouth_x = SCREEN_W / 2 - mouth_w / 2;
@@ -292,6 +348,7 @@ static void animate(lv_timer_t *) {
     set_geometry(s_mouth, mouth_x, mouth_y, mouth_w, MOUTH_H);
     lv_obj_set_style_transform_rotation(s_mouth, mouth_rotation, 0);
     update_sleep_marks(static_cast<float>(center_y));
+    update_charge_bolt();
 }
 
 static lv_obj_t *create_eye(lv_obj_t *parent) {
@@ -315,6 +372,25 @@ static lv_obj_t *create_mouth(lv_obj_t *parent) {
     lv_obj_clear_flag(mouth, LV_OBJ_FLAG_SCROLLABLE);
     return mouth;
 }
+
+static lv_obj_t *create_angry_eye(lv_obj_t *parent, lv_obj_t **stripes) {
+    lv_obj_t *container = lv_obj_create(parent);
+    lv_obj_remove_style_all(container);
+    lv_obj_set_size(container, EYE_W, EYE_H);
+    lv_obj_clear_flag(container, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(container, LV_OBJ_FLAG_HIDDEN);
+    for (int i = 0; i < ANGRY_STRIPES; ++i) {
+        stripes[i] = lv_obj_create(container);
+        lv_obj_remove_style_all(stripes[i]);
+        lv_obj_set_style_bg_color(stripes[i], lv_color_hex(RED), 0);
+        lv_obj_set_style_bg_opa(stripes[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(stripes[i], 3, 0);
+        lv_obj_clear_flag(stripes[i], LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(stripes[i], LV_OBJ_FLAG_SCROLLABLE);
+    }
+    return container;
+}
 }  // namespace
 
 void robot_eyes_begin(lv_obj_t *parent) {
@@ -327,11 +403,20 @@ void robot_eyes_begin(lv_obj_t *parent) {
     s_left_eye = create_eye(parent);
     s_right_eye = create_eye(parent);
     s_mouth = create_mouth(parent);
+    s_angry_left = create_angry_eye(parent, s_angry_left_stripes);
+    s_angry_right = create_angry_eye(parent, s_angry_right_stripes);
     lv_obj_clear_flag(s_left_eye, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(s_right_eye, LV_OBJ_FLAG_CLICKABLE);
     set_geometry(s_left_eye, SCREEN_W / 2 - EYE_OFFSET_X - EYE_W / 2, SCREEN_H / 2 - 2, EYE_W, 4);
     set_geometry(s_right_eye, SCREEN_W / 2 + EYE_OFFSET_X - EYE_W / 2, SCREEN_H / 2 - 2, EYE_W, 4);
     set_geometry(s_mouth, SCREEN_W / 2 - MOUTH_W / 2, MOUTH_Y, MOUTH_W, MOUTH_H);
+
+    s_charge_bolt = lv_label_create(parent);
+    lv_label_set_text(s_charge_bolt, LV_SYMBOL_CHARGE);
+    lv_obj_set_style_text_font(s_charge_bolt, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(s_charge_bolt, lv_color_hex(0xFFE45C), 0);
+    lv_obj_set_style_opa(s_charge_bolt, LV_OPA_TRANSP, 0);
+    lv_obj_clear_flag(s_charge_bolt, LV_OBJ_FLAG_CLICKABLE);
 
     for (int i = 0; i < 3; ++i) {
         s_sleep_z[i] = lv_label_create(parent);
