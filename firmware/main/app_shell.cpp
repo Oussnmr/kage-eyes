@@ -6,6 +6,7 @@
 #include <cstdio>
 
 #include "audio/mic_meter.h"
+#include "battery_monitor.h"
 #include "bsp/esp-bsp.h"
 #include "esp_heap_caps.h"
 #include "esp_idf_version.h"
@@ -13,10 +14,6 @@
 #include "esp_timer.h"
 #include "eyes/robot_eyes.h"
 #include "services/orientation_service.h"
-
-#ifndef LV_SYMBOL_EYE_OPEN
-#define LV_SYMBOL_EYE_OPEN "o o"
-#endif
 
 namespace {
 constexpr int SCREEN_W = 448;
@@ -28,8 +25,10 @@ constexpr uint32_t COLOR_BORDER = 0x2A3A46;
 constexpr uint32_t COLOR_TEXT = 0xEAFBFF;
 constexpr uint32_t COLOR_MUTED = 0x78909C;
 constexpr uint32_t COLOR_CYAN = 0x4FE3FF;
+constexpr uint32_t COLOR_ORB = 0xA78BFA;
 constexpr uint32_t COLOR_RED = 0xFF5964;
 constexpr int BUBBLE_COUNT = 7;
+constexpr int MIC_DOT_COUNT = 42;
 constexpr float PI = 3.14159265358979323846f;
 
 enum AppId {
@@ -43,29 +42,27 @@ enum AppId {
 };
 
 struct BubbleSpec {
-    const char *name;
-    const char *symbol;
     float x;
     float y;
     float diameter;
+    uint32_t color;
 };
 
 /* A compact hexagonal cluster: regular geometry makes the magnetic deflection
    legible while leaving generous touch targets. */
 constexpr BubbleSpec BUBBLES[BUBBLE_COUNT] = {
-    {"ROBOT", LV_SYMBOL_EYE_OPEN, 224, 174, 108},
-    {"MIC", LV_SYMBOL_AUDIO, 224, 55, 76},
-    {"MOTION", LV_SYMBOL_REFRESH, 330, 112, 76},
-    {"DISPLAY", LV_SYMBOL_IMAGE, 330, 236, 76},
-    {"SYSTEM", LV_SYMBOL_SETTINGS, 224, 303, 76},
-    {"WI-FI", LV_SYMBOL_WIFI, 118, 236, 76},
-    {"STORAGE", LV_SYMBOL_SD_CARD, 118, 112, 76},
+    {224, 174, 108, 0x2583FF},
+    {224, 55, 76, 0x9B5DE5},
+    {330, 112, 76, 0xFF7A45},
+    {330, 236, 76, 0x20C997},
+    {224, 303, 76, 0xF4B942},
+    {118, 236, 76, 0x36C5F0},
+    {118, 112, 76, 0xEF5DA8},
 };
 
 struct BubbleRuntime {
     lv_obj_t *body;
     lv_obj_t *icon;
-    lv_obj_t *label;
     float x;
     float y;
     float scale;
@@ -90,17 +87,27 @@ static int s_pending_open = -1;
 static int64_t s_open_at_us;
 static int64_t s_home_last_us;
 
-static lv_obj_t *s_mic_dots[24];
+struct MicDotSeed {
+    float angle;
+    float radius;
+    float phase;
+    float drift;
+};
+
+static lv_obj_t *s_mic_dots[MIC_DOT_COUNT];
+static MicDotSeed s_mic_seed[MIC_DOT_COUNT];
 static lv_obj_t *s_mic_status;
-static lv_obj_t *s_mic_level;
 static float s_mic_phase;
 
 static lv_obj_t *s_motion_values;
 static lv_obj_t *s_motion_ball;
+static lv_obj_t *s_motion_calibration_status;
 static lv_obj_t *s_system_values;
 static lv_obj_t *s_storage_status;
 static lv_obj_t *s_brightness_value;
 static bool s_sd_mounted;
+static bool s_have_charge_state;
+static bool s_last_charging;
 
 static float clampf(float value, float low, float high) {
     return std::max(low, std::min(high, value));
@@ -140,18 +147,6 @@ static lv_obj_t *make_card(lv_obj_t *parent, int x, int y, int width, int height
     return card;
 }
 
-static void add_home_grabber(lv_obj_t *screen, const char *hint = "SWIPE UP FOR APPS") {
-    lv_obj_t *label = make_label(screen, hint, &lv_font_montserrat_14, COLOR_MUTED);
-    lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -14);
-    lv_obj_t *bar = lv_obj_create(screen);
-    lv_obj_remove_style_all(bar);
-    lv_obj_set_size(bar, 54, 4);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(COLOR_MUTED), 0);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_60, 0);
-    lv_obj_set_style_radius(bar, LV_RADIUS_CIRCLE, 0);
-    lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, -5);
-}
-
 static lv_obj_t *create_app_screen(const char *title, const char *subtitle) {
     lv_obj_t *screen = lv_obj_create(nullptr);
     clear_default_screen(screen);
@@ -163,20 +158,88 @@ static lv_obj_t *create_app_screen(const char *title, const char *subtitle) {
         lv_obj_set_width(sub, 392);
         lv_obj_set_pos(sub, 28, 54);
     }
-    add_home_grabber(screen);
     return screen;
 }
 
 static void set_bubble_appearance(int index) {
     const bool selected = index == s_selected;
     lv_obj_t *body = s_bubbles[index].body;
-    const uint32_t fill = selected ? COLOR_CYAN : COLOR_SURFACE;
-    const uint32_t ink = selected ? COLOR_BG : COLOR_CYAN;
-    lv_obj_set_style_bg_color(body, lv_color_hex(fill), 0);
-    lv_obj_set_style_border_color(body, lv_color_hex(selected ? COLOR_CYAN : COLOR_BORDER), 0);
-    lv_obj_set_style_text_color(s_bubbles[index].icon, lv_color_hex(ink), 0);
-    lv_obj_set_style_text_color(s_bubbles[index].label,
-                                lv_color_hex(selected ? COLOR_BG : COLOR_TEXT), 0);
+    lv_obj_set_style_bg_color(body, lv_color_hex(BUBBLES[index].color), 0);
+    lv_obj_set_style_border_color(body, lv_color_white(), 0);
+    lv_obj_set_style_border_width(body, selected ? 3 : 0, 0);
+}
+
+static lv_obj_t *icon_shape(lv_obj_t *parent, int x, int y, int width, int height,
+                            int radius = LV_RADIUS_CIRCLE, bool outline = false) {
+    lv_obj_t *shape = lv_obj_create(parent);
+    lv_obj_remove_style_all(shape);
+    lv_obj_set_pos(shape, x, y);
+    lv_obj_set_size(shape, width, height);
+    lv_obj_set_style_radius(shape, radius, 0);
+    if (outline) {
+        lv_obj_set_style_bg_opa(shape, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_color(shape, lv_color_white(), 0);
+        lv_obj_set_style_border_width(shape, 3, 0);
+    } else {
+        lv_obj_set_style_bg_color(shape, lv_color_white(), 0);
+        lv_obj_set_style_bg_opa(shape, LV_OPA_COVER, 0);
+    }
+    lv_obj_clear_flag(shape, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(shape, LV_OBJ_FLAG_CLICKABLE);
+    return shape;
+}
+
+static lv_obj_t *create_bubble_icon(lv_obj_t *parent, AppId app) {
+    lv_obj_t *layer = lv_obj_create(parent);
+    lv_obj_remove_style_all(layer);
+    lv_obj_set_size(layer, 48, 48);
+    lv_obj_align(layer, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_clear_flag(layer, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(layer, LV_OBJ_FLAG_CLICKABLE);
+
+    switch (app) {
+        case APP_ROBOT:
+            icon_shape(layer, 5, 17, 15, 12, 5);
+            icon_shape(layer, 28, 17, 15, 12, 5);
+            break;
+        case APP_MIC:
+            icon_shape(layer, 17, 5, 14, 25, 7, true);
+            icon_shape(layer, 22, 29, 4, 9);
+            icon_shape(layer, 14, 37, 20, 4);
+            break;
+        case APP_MOTION:
+            icon_shape(layer, 19, 19, 10, 10);
+            icon_shape(layer, 20, 2, 8, 8);
+            icon_shape(layer, 20, 38, 8, 8);
+            icon_shape(layer, 2, 20, 8, 8);
+            icon_shape(layer, 38, 20, 8, 8);
+            break;
+        case APP_DISPLAY:
+            icon_shape(layer, 5, 8, 38, 29, 6, true);
+            icon_shape(layer, 18, 39, 12, 4);
+            break;
+        case APP_SYSTEM:
+            icon_shape(layer, 7, 9, 34, 4);
+            icon_shape(layer, 7, 22, 34, 4);
+            icon_shape(layer, 7, 35, 34, 4);
+            icon_shape(layer, 14, 5, 8, 12, 4);
+            icon_shape(layer, 29, 18, 8, 12, 4);
+            icon_shape(layer, 18, 31, 8, 12, 4);
+            break;
+        case APP_WIFI:
+            icon_shape(layer, 7, 9, 34, 5);
+            icon_shape(layer, 13, 20, 22, 5);
+            icon_shape(layer, 19, 31, 10, 5);
+            icon_shape(layer, 21, 40, 6, 6);
+            break;
+        case APP_STORAGE:
+            icon_shape(layer, 10, 5, 28, 38, 5, true);
+            icon_shape(layer, 15, 9, 4, 10, 1);
+            icon_shape(layer, 22, 9, 4, 10, 1);
+            icon_shape(layer, 29, 9, 4, 10, 1);
+            break;
+    }
+    return layer;
 }
 
 static void select_bubble(int index) {
@@ -278,8 +341,7 @@ static void home_animation(lv_timer_t *) {
         lv_obj_set_size(bubble.body, diameter, diameter);
         lv_obj_set_pos(bubble.body, static_cast<int>(bubble.x - diameter / 2.0f),
                        static_cast<int>(bubble.y - diameter / 2.0f));
-        lv_obj_align(bubble.icon, LV_ALIGN_CENTER, 0, -9);
-        lv_obj_align(bubble.label, LV_ALIGN_CENTER, 0, 18);
+        lv_obj_align(bubble.icon, LV_ALIGN_CENTER, 0, 0);
     }
 
     if (s_pending_open >= 0 && now >= s_open_at_us) {
@@ -292,10 +354,6 @@ static void create_home_screen() {
     clear_default_screen(s_home);
     lv_obj_add_event_cb(s_home, gesture_event, LV_EVENT_GESTURE, nullptr);
 
-    lv_obj_t *brand = make_label(s_home, "KAGE", &lv_font_montserrat_14, COLOR_MUTED);
-    lv_obj_set_style_text_letter_space(brand, 5, 0);
-    lv_obj_align(brand, LV_ALIGN_TOP_MID, 0, 5);
-
     for (int i = 0; i < BUBBLE_COUNT; ++i) {
         const BubbleSpec &spec = BUBBLES[i];
         BubbleRuntime &runtime = s_bubbles[i];
@@ -307,21 +365,15 @@ static void create_home_screen() {
         runtime.body = lv_obj_create(s_home);
         lv_obj_remove_style_all(runtime.body);
         lv_obj_set_style_bg_opa(runtime.body, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(runtime.body, 1, 0);
         lv_obj_set_style_radius(runtime.body, LV_RADIUS_CIRCLE, 0);
         lv_obj_clear_flag(runtime.body, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(runtime.body, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_flag(runtime.body, LV_OBJ_FLAG_GESTURE_BUBBLE);
         lv_obj_add_event_cb(runtime.body, bubble_pressed, LV_EVENT_SHORT_CLICKED,
                             reinterpret_cast<void *>(static_cast<intptr_t>(i)));
-        runtime.icon = make_label(runtime.body, spec.symbol, &lv_font_montserrat_24, COLOR_CYAN);
-        runtime.label = make_label(runtime.body, spec.name, &lv_font_montserrat_14, COLOR_TEXT);
+        runtime.icon = create_bubble_icon(runtime.body, static_cast<AppId>(i));
         set_bubble_appearance(i);
     }
-
-    lv_obj_t *hint = make_label(s_home, "SWIPE TO BROWSE  •  TAP TO OPEN",
-                                &lv_font_montserrat_14, COLOR_MUTED);
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -4);
     lv_timer_create(home_animation, 16, nullptr);
 }
 
@@ -330,55 +382,65 @@ static void create_robot_screen() {
     clear_default_screen(s_robot);
     lv_obj_add_event_cb(s_robot, gesture_event, LV_EVENT_GESTURE, nullptr);
     robot_eyes_begin(s_robot);
-    add_home_grabber(s_robot, "");
     robot_eyes_set_active(false);
 }
 
 static void microphone_animation(lv_timer_t *) {
     if (s_current != APP_MIC || lv_screen_active() != s_mic) return;
     const float level = mic_meter_level();
-    s_mic_phase += 0.055f + level * 0.07f;
-    for (int i = 0; i < 24; ++i) {
-        const bool outer = i >= 12;
-        const int j = i % 12;
-        const float angle = (2.0f * PI * j / 12.0f) + (outer ? 0.12f : 0.0f);
-        const float wave = 0.5f + 0.5f * std::sin(s_mic_phase * 2.2f + j * 0.88f + (outer ? 1.1f : 0.0f));
-        const float base_radius = outer ? 76.0f : 48.0f;
-        const float radius = base_radius + level * (outer ? 10.0f : 7.0f) * wave;
-        const int size = static_cast<int>(7.0f + level * (outer ? 8.0f : 6.0f) * wave);
+    s_mic_phase += 0.045f + level * 0.09f;
+    const float breathe = 0.5f + 0.5f * std::sin(s_mic_phase * 0.72f);
+    for (int i = 0; i < MIC_DOT_COUNT; ++i) {
+        const MicDotSeed &seed = s_mic_seed[i];
+        const float angle = seed.angle + 0.10f * std::sin(s_mic_phase * seed.drift + seed.phase);
+        const float skin = 1.0f + 0.10f * std::sin(angle * 3.0f + s_mic_phase * 0.82f) +
+                           0.055f * std::sin(angle * 5.0f - s_mic_phase * 0.53f);
+        const float voice = level * (10.0f + 24.0f * seed.radius) *
+                            (0.55f + 0.45f * std::sin(seed.phase + s_mic_phase * 2.3f));
+        const float radius = seed.radius * (72.0f + breathe * 6.0f) * skin + voice;
+        const float grain = 0.5f + 0.5f * std::sin(seed.phase + s_mic_phase * 1.7f);
+        const int size = static_cast<int>(4.0f + seed.radius * 3.0f + level * 5.0f * grain);
         const int x = 224 + static_cast<int>(std::cos(angle) * radius) - size / 2;
-        const int y = 178 + static_cast<int>(std::sin(angle) * radius) - size / 2;
+        const int y = 174 + static_cast<int>(std::sin(angle) * radius * 0.94f) - size / 2;
         lv_obj_set_pos(s_mic_dots[i], x, y);
         lv_obj_set_size(s_mic_dots[i], size, size);
-        lv_obj_set_style_opa(s_mic_dots[i], static_cast<lv_opa_t>(120 + level * 135), 0);
+        const int opacity = static_cast<int>(105.0f + seed.radius * 90.0f + level * 60.0f * grain);
+        lv_obj_set_style_opa(s_mic_dots[i], static_cast<lv_opa_t>(std::min(255, opacity)), 0);
     }
 
     const MicMeterState state = mic_meter_state();
-    const char *status = "MICROPHONE OFF";
+    const char *status = "OFF";
     uint32_t color = COLOR_MUTED;
-    if (state == MicMeterState::Starting) status = "STARTING...";
+    if (state == MicMeterState::Starting) status = "STARTING";
     else if (state == MicMeterState::Listening) { status = "LISTENING"; color = COLOR_CYAN; }
-    else if (state == MicMeterState::Error) { status = "MICROPHONE ERROR"; color = COLOR_RED; }
-    lv_label_set_text(s_mic_status, status);
+    else if (state == MicMeterState::Error) { status = "MIC ERROR"; color = COLOR_RED; }
+    lv_label_set_text_fmt(s_mic_status, "%s  %d%%", status, static_cast<int>(level * 100.0f));
     lv_obj_set_style_text_color(s_mic_status, lv_color_hex(color), 0);
-    lv_label_set_text_fmt(s_mic_level, "%d%%", static_cast<int>(level * 100.0f));
 }
 
 static void create_microphone_screen() {
-    s_mic = create_app_screen("Microphone", "Speak near the board — the dotted orb follows your voice.");
+    s_mic = create_app_screen("Microphone", nullptr);
     lv_obj_add_event_cb(s_mic, gesture_event, LV_EVENT_GESTURE, nullptr);
-    for (int i = 0; i < 24; ++i) {
+    uint32_t random = 0x4B414745u;
+    for (int i = 0; i < MIC_DOT_COUNT; ++i) {
+        random = random * 1664525u + 1013904223u;
+        const float a = static_cast<float>(random & 0xFFFFu) / 65535.0f;
+        random = random * 1664525u + 1013904223u;
+        const float r = static_cast<float>(random & 0xFFFFu) / 65535.0f;
+        random = random * 1664525u + 1013904223u;
+        const float p = static_cast<float>(random & 0xFFFFu) / 65535.0f;
+        s_mic_seed[i] = {a * 2.0f * PI, std::sqrt(r) * 0.96f,
+                         p * 2.0f * PI, 0.55f + p * 0.65f};
         s_mic_dots[i] = lv_obj_create(s_mic);
         lv_obj_remove_style_all(s_mic_dots[i]);
-        lv_obj_set_size(s_mic_dots[i], 7, 7);
-        lv_obj_set_style_bg_color(s_mic_dots[i], lv_color_hex(COLOR_CYAN), 0);
+        lv_obj_set_size(s_mic_dots[i], 5, 5);
+        lv_obj_set_style_bg_color(s_mic_dots[i], lv_color_hex(COLOR_ORB), 0);
         lv_obj_set_style_bg_opa(s_mic_dots[i], LV_OPA_COVER, 0);
         lv_obj_set_style_radius(s_mic_dots[i], LV_RADIUS_CIRCLE, 0);
+        lv_obj_clear_flag(s_mic_dots[i], LV_OBJ_FLAG_CLICKABLE);
     }
-    s_mic_status = make_label(s_mic, "MICROPHONE OFF", &lv_font_montserrat_14, COLOR_MUTED);
-    lv_obj_align(s_mic_status, LV_ALIGN_CENTER, 0, -5);
-    s_mic_level = make_label(s_mic, "0%", &lv_font_montserrat_20, COLOR_TEXT);
-    lv_obj_align(s_mic_level, LV_ALIGN_CENTER, 0, 22);
+    s_mic_status = make_label(s_mic, "OFF  0%", &lv_font_montserrat_14, COLOR_MUTED);
+    lv_obj_align(s_mic_status, LV_ALIGN_BOTTOM_MID, 0, -20);
     lv_timer_create(microphone_animation, 33, nullptr);
 }
 
@@ -389,14 +451,24 @@ static void motion_animation(lv_timer_t *) {
         lv_label_set_text(s_motion_values, "Waiting for QMI8658...");
         return;
     }
-    lv_label_set_text_fmt(s_motion_values, "X  %+.2f\nY  %+.2f\nZ  %+.2f m/s²", x, y, z);
+    lv_label_set_text_fmt(s_motion_values, "X  %+.2f\nY  %+.2f\nZ  %+.2f m/s2", x, y, z);
     const int bx = 224 + static_cast<int>(clampf(x / 9.807f, -1.0f, 1.0f) * 48.0f) - 10;
     const int by = 196 + static_cast<int>(clampf(z / 9.807f, -1.0f, 1.0f) * 48.0f) - 10;
     lv_obj_set_pos(s_motion_ball, bx, by);
 }
 
+static void calibrate_motion(lv_event_t *) {
+    if (orientation_service_calibrate()) {
+        lv_label_set_text(s_motion_calibration_status, "CALIBRATED");
+        lv_obj_set_style_text_color(s_motion_calibration_status, lv_color_hex(0x20C997), 0);
+    } else {
+        lv_label_set_text(s_motion_calibration_status, "SENSOR NOT READY");
+        lv_obj_set_style_text_color(s_motion_calibration_status, lv_color_hex(COLOR_RED), 0);
+    }
+}
+
 static void create_motion_screen() {
-    s_motion = create_app_screen("Motion", "Tilt rotates every app. Shake the board to make Robot dizzy.");
+    s_motion = create_app_screen("Motion", "Place the board flat, then calibrate.");
     lv_obj_add_event_cb(s_motion, gesture_event, LV_EVENT_GESTURE, nullptr);
     lv_obj_t *field = lv_obj_create(s_motion);
     lv_obj_remove_style_all(field);
@@ -416,6 +488,15 @@ static void create_motion_screen() {
     s_motion_values = make_label(s_motion, "Waiting for QMI8658...", &lv_font_montserrat_16, COLOR_TEXT);
     lv_obj_set_style_text_align(s_motion_values, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_pos(s_motion_values, 310, 145);
+    lv_obj_t *calibrate = lv_button_create(s_motion);
+    lv_obj_set_size(calibrate, 170, 48);
+    lv_obj_align(calibrate, LV_ALIGN_BOTTOM_MID, 0, -28);
+    lv_obj_set_style_bg_color(calibrate, lv_color_hex(0xFF7A45), 0);
+    lv_obj_set_style_radius(calibrate, LV_RADIUS_CIRCLE, 0);
+    lv_obj_add_flag(calibrate, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(calibrate, calibrate_motion, LV_EVENT_SHORT_CLICKED, nullptr);
+    s_motion_calibration_status = make_label(calibrate, "CALIBRATE", &lv_font_montserrat_14, 0xFFFFFF);
+    lv_obj_center(s_motion_calibration_status);
     lv_timer_create(motion_animation, 80, nullptr);
 }
 
@@ -449,17 +530,36 @@ static void system_animation(lv_timer_t *) {
     const uint32_t heap_kb = esp_get_free_heap_size() / 1024;
     const uint32_t psram_kb = heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024;
     const uint64_t uptime = esp_timer_get_time() / 1000000ULL;
+    float battery = 0.0f;
+    bool charging = false;
+    char battery_text[40];
+    if (battery_monitor_read(&battery, &charging)) {
+        std::snprintf(battery_text, sizeof(battery_text), "%d%%  %s",
+                      static_cast<int>(battery * 100.0f + 0.5f), charging ? "CHARGING" : "BATTERY");
+    } else {
+        std::snprintf(battery_text, sizeof(battery_text), "NOT DETECTED");
+    }
     lv_label_set_text_fmt(s_system_values,
-                          "ESP32-S3  •  240 MHz\nFree memory     %lu KB\nFree PSRAM      %lu KB\nUptime          %llu s\nESP-IDF         %s",
-                          static_cast<unsigned long>(heap_kb),
+                          "ESP32-S3  240 MHz\nBattery         %s\nFree memory     %lu KB\nFree PSRAM      %lu KB\nUptime          %llu s\nESP-IDF         %s",
+                          battery_text, static_cast<unsigned long>(heap_kb),
                           static_cast<unsigned long>(psram_kb),
                           static_cast<unsigned long long>(uptime), esp_get_idf_version());
+}
+
+static void battery_animation(lv_timer_t *) {
+    float level = 0.0f;
+    bool charging = false;
+    if (!battery_monitor_read(&level, &charging)) return;
+    (void)level;
+    if (s_have_charge_state && charging && !s_last_charging) robot_eyes_on_charge_started();
+    s_last_charging = charging;
+    s_have_charge_state = true;
 }
 
 static void create_system_screen() {
     s_system = create_app_screen("System", "Live board information");
     lv_obj_add_event_cb(s_system, gesture_event, LV_EVENT_GESTURE, nullptr);
-    lv_obj_t *card = make_card(s_system, 28, 96, 392, 202);
+    lv_obj_t *card = make_card(s_system, 28, 86, 392, 234);
     s_system_values = make_label(card, "Starting...", &lv_font_montserrat_16, COLOR_TEXT);
     lv_obj_set_style_text_align(s_system_values, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_pos(s_system_values, 24, 22);
@@ -471,10 +571,8 @@ static void create_wifi_screen() {
     s_wifi = create_app_screen("Wi-Fi", "Connection for the future desktop assistant");
     lv_obj_add_event_cb(s_wifi, gesture_event, LV_EVENT_GESTURE, nullptr);
     lv_obj_t *card = make_card(s_wifi, 28, 102, 392, 166);
-    lv_obj_t *icon = make_label(card, LV_SYMBOL_WIFI, &lv_font_montserrat_24, COLOR_CYAN);
-    lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 20);
     lv_obj_t *status = make_label(card, "NOT CONFIGURED", &lv_font_montserrat_20, COLOR_TEXT);
-    lv_obj_align(status, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_align(status, LV_ALIGN_TOP_MID, 0, 28);
     lv_obj_t *note = make_label(card,
         "The hardware is ready. Pairing will be enabled\nwith the PC agent bridge.",
         &lv_font_montserrat_14, COLOR_MUTED);
@@ -504,10 +602,8 @@ static void create_storage_screen() {
     lv_obj_t *button = make_card(s_storage, 96, 112, 256, 128);
     lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(button, check_storage, LV_EVENT_SHORT_CLICKED, nullptr);
-    lv_obj_t *icon = make_label(button, LV_SYMBOL_SD_CARD, &lv_font_montserrat_24, COLOR_CYAN);
-    lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 18);
     s_storage_status = make_label(button, "TAP TO CHECK", &lv_font_montserrat_16, COLOR_TEXT);
-    lv_obj_align(s_storage_status, LV_ALIGN_BOTTOM_MID, 0, -24);
+    lv_obj_center(s_storage_status);
 }
 }  // namespace
 
@@ -524,6 +620,8 @@ void app_shell_begin(lv_display_t *display) {
     create_wifi_screen();
     create_storage_screen();
     mic_meter_begin();
+    battery_monitor_begin(bsp_i2c_get_handle());
+    lv_timer_create(battery_animation, 500, nullptr);
     set_app_activity(static_cast<AppId>(-1));
     s_home_last_us = esp_timer_get_time();
     lv_screen_load(s_home);

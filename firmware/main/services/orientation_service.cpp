@@ -34,6 +34,9 @@ static lv_display_rotation_t s_rotation = LV_DISPLAY_ROTATION_90;
 static std::atomic<float> s_accel_x{0.0f};
 static std::atomic<float> s_accel_y{0.0f};
 static std::atomic<float> s_accel_z{0.0f};
+static std::atomic<float> s_offset_x{0.0f};
+static std::atomic<float> s_offset_y{0.0f};
+static std::atomic<float> s_offset_z{0.0f};
 static std::atomic<bool> s_have_sample{false};
 
 static esp_err_t detect_address(i2c_master_bus_handle_t bus, uint8_t *address) {
@@ -142,12 +145,24 @@ bool orientation_service_begin(lv_display_t *display) {
 
 bool orientation_service_get_sample(float *x, float *y, float *z) {
     if (!s_have_sample.load(std::memory_order_acquire)) return false;
-    if (x) *x = s_accel_x.load(std::memory_order_relaxed);
-    if (y) *y = s_accel_y.load(std::memory_order_relaxed);
-    if (z) *z = s_accel_z.load(std::memory_order_relaxed);
+    if (x) *x = s_accel_x.load(std::memory_order_relaxed) - s_offset_x.load(std::memory_order_relaxed);
+    if (y) *y = s_accel_y.load(std::memory_order_relaxed) - s_offset_y.load(std::memory_order_relaxed);
+    if (z) *z = s_accel_z.load(std::memory_order_relaxed) - s_offset_z.load(std::memory_order_relaxed);
     return true;
 }
 
 bool orientation_service_is_inverted(void) {
     return s_rotation == LV_DISPLAY_ROTATION_270;
+}
+
+bool orientation_service_calibrate(void) {
+    if (!s_have_sample.load(std::memory_order_acquire)) return false;
+    const float x = s_accel_x.load(std::memory_order_relaxed);
+    const float y = s_accel_y.load(std::memory_order_relaxed);
+    const float z = s_accel_z.load(std::memory_order_relaxed);
+    s_offset_x.store(x, std::memory_order_relaxed);
+    s_offset_y.store(y, std::memory_order_relaxed);
+    s_offset_z.store(z - (z < 0.0f ? -9.807f : 9.807f), std::memory_order_relaxed);
+    ESP_LOGI(TAG, "Motion calibrated at %.2f %.2f %.2f", x, y, z);
+    return true;
 }

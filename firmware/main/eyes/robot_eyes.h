@@ -9,3 +9,6 @@ void robot_eyes_set_active(bool active);
 
 /* Thread-safe notification from the IMU task. */
 void robot_eyes_on_shake();
+
+/* Thread-safe notification from the read-only battery monitor. */
+void robot_eyes_on_charge_started();

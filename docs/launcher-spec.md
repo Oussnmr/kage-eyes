@@ -8,10 +8,14 @@
   Storage around it.
 - Open an app with one tap. Swipe up anywhere in an app to return home. Swipe
   left or right on Home to move the magnetic selection.
-- Keep Robot to two eyes and one mouth, all solid cyan on true black.
-- Preserve random gaze, asymmetric natural blink timing, sleep/wake, tap blink,
-  filtered shake/dizzy and automatic left/right landscape rotation.
-- Make the microphone test react to real ES8311 audio amplitude.
+- Keep Home icon-only: no brand, app names, instructions or font glyph icons.
+  Give each bubble its own solid colour and draw every mark with LVGL shapes.
+- Keep Robot to two eyes and one mouth on true black. Preserve random gaze,
+  natural blinks, sleep/wake, tap blink, shake/dizzy and left/right rotation.
+- Add curious/happy idle poses, rising sleep marks, a five-tap angry state and
+  a green charge reaction. Tap or shake leaves the angry state.
+- Make a filled, organic grain orb react to real ES8311 audio amplitude.
+- Expose read-only AXP2101 battery data and resting-pose motion calibration.
 
 ## Performance contract
 
@@ -27,7 +31,8 @@
 - Bencho Magnetic Select: regular cluster, selected bubble swelling, neighbours
   pushed radially, damped frame-rate-independent spring.
 - SmoothUI AI Orb Face: expression-driven AI states and natural blink cadence.
-- thinking-orbs: small dotted listening indicator driven by audio state.
+- thinking-orbs and the supplied Waitstate grain example: a living filled
+  particle volume driven by audio, rather than fixed concentric rings.
 - Amicro and Inspora: restrained micro-transitions and clear interaction focus.
 
 The referenced Web components are not shipped on the microcontroller. Their

@@ -6,18 +6,22 @@ keeping installation as simple as a web page.
 
 ## What it does
 
-- magnetic bubble launcher with large touch targets;
+- icon-only magnetic bubble launcher with seven distinct colours;
 - Robot, Microphone, Motion, Display, System, Wi-Fi and Storage apps;
 - two solid-cyan eyes and a small mouth on a true-black AMOLED background;
 - a 448 × 368 landscape interface;
 - automatic left/right landscape rotation when the device is tilted;
 - filtered orientation changes to avoid rapid flipping near the threshold;
-- smooth startup, random gaze, breathing and natural blinks;
-- automatic sleep after inactivity, automatic wake-up and tap-to-wake;
+- smooth startup, stronger random gaze, breathing and natural blinks;
+- curious and happy idle poses;
+- longer automatic sleep, rising Z marks, automatic wake-up and tap-to-wake;
+- five quick taps trigger a red angry face; tap or shake restores normal;
+- a green pulse when charging starts;
 - a short dizzy reaction after a filtered physical shake;
 - one tap blinks; a filtered shake triggers the dizzy reaction;
 - swipe up from any app to return home and swipe sideways to browse bubbles;
-- a live dotted microphone orb driven by the ES8311 input level;
+- a live organic grain orb driven by the ES8311 microphone level;
+- resting-pose motion calibration and read-only AXP2101 battery percentage;
 - native LVGL shapes and dirty-region redraws instead of a full-screen canvas.
 
 ## Build
@@ -44,6 +48,7 @@ the Waveshare USB serial device, and choose erase when replacing Pocket Tank.
 
 `firmware/main/app_shell.cpp` contains the launcher and hardware apps,
 `firmware/main/eyes/robot_eyes.cpp` contains the face, and
-`firmware/main/audio/mic_meter.cpp` drives the live microphone meter.
+`firmware/main/audio/mic_meter.cpp` drives the live microphone meter. The
+battery monitor only reads the PMIC; it does not alter charging parameters.
 
 Pocket Tank is MIT licensed; Kage Eyes retains the required upstream license.
