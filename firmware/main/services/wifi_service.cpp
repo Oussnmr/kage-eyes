@@ -101,9 +101,9 @@ static void apply_wifi(const uint8_t *data, size_t length) {
 
     wifi_config_t config = {};
     memcpy(config.sta.ssid, data + 3, ssid_len);
-    config.sta.ssid[ssid_len] = 0;
+    if (ssid_len < sizeof(config.sta.ssid)) config.sta.ssid[ssid_len] = 0;
     memcpy(config.sta.password, data + 4 + ssid_len, pass_len);
-    config.sta.password[pass_len] = 0;
+    if (pass_len < sizeof(config.sta.password)) config.sta.password[pass_len] = 0;
 
     if (esp_wifi_set_config(WIFI_IF_STA, &config) != ESP_OK) {
         send_error(0xFF);
@@ -111,8 +111,8 @@ static void apply_wifi(const uint8_t *data, size_t length) {
     }
 
     portENTER_CRITICAL(&info_lock);
-    memcpy(ssid, config.sta.ssid, sizeof(config.sta.ssid));
-    ssid[sizeof(config.sta.ssid)] = 0;
+    std::memset(ssid, 0, sizeof(ssid));
+    std::memcpy(ssid, data + 3, ssid_len);
     configured = true;
     connected = false;
     provisioning_request = true;
