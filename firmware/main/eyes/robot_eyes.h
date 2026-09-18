@@ -12,3 +12,10 @@ void robot_eyes_on_shake();
 
 /* Thread-safe notification from the read-only battery monitor. */
 void robot_eyes_on_charge_started();
+
+/* Thread-safe commands received from the M920q backend. */
+void robot_eyes_remote_idle();
+void robot_eyes_remote_blink();
+void robot_eyes_remote_sleep();
+void robot_eyes_remote_angry();
+void robot_eyes_remote_dizzy();
