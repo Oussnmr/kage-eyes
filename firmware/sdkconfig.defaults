@@ -33,3 +33,6 @@ CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_24=y
+# Two persistent internal DMA buffers (draw + software rotation): 47,104 bytes.
+# The QSPI panel uses partial rendering, not RGB full-frame/tearing modes.
+CONFIG_BSP_DISPLAY_LVGL_BUF_HEIGHT=32
