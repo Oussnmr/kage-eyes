@@ -7,6 +7,7 @@
 
 #include "driver/usb_serial_jtag.h"
 #include "esp_event.h"
+#include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
@@ -31,6 +32,7 @@ static bool connected;
 static bool configured;
 static bool provisioning_request;
 static int32_t last_disconnect_reason;
+static bool backend_test_started;
 static char ssid[33] = {};
 static uint8_t input[320];
 static size_t input_len;
@@ -191,6 +193,62 @@ static void serial_task(void *) {
     }
 }
 
+struct BackendResponse {
+    char body[192];
+    size_t length;
+};
+
+static esp_err_t backend_http_event(esp_http_client_event_t *event) {
+    auto *response = static_cast<BackendResponse *>(event->user_data);
+    if (!response || event->event_id != HTTP_EVENT_ON_DATA || event->data_len <= 0) {
+        return ESP_OK;
+    }
+
+    const size_t available = sizeof(response->body) - 1 - response->length;
+    const size_t copy_len =
+        static_cast<size_t>(event->data_len) < available
+            ? static_cast<size_t>(event->data_len)
+            : available;
+
+    if (copy_len > 0) {
+        memcpy(response->body + response->length, event->data, copy_len);
+        response->length += copy_len;
+        response->body[response->length] = 0;
+    }
+    return ESP_OK;
+}
+
+static void backend_test_task(void *) {
+    BackendResponse response = {};
+    esp_http_client_config_t config = {};
+    config.url = "http://192.168.129.157:8000/status";
+    config.timeout_ms = 5000;
+    config.event_handler = backend_http_event;
+    config.user_data = &response;
+
+    ESP_LOGI("kage-backend", "Testing M920q at %s", config.url);
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        ESP_LOGE("kage-backend", "Failed to create HTTP client");
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    const esp_err_t result = esp_http_client_perform(client);
+    if (result == ESP_OK) {
+        const int status = esp_http_client_get_status_code(client);
+        ESP_LOGI("kage-backend", "M920q response: HTTP %d body=%s",
+                 status, response.length ? response.body : "<empty>");
+    } else {
+        ESP_LOGE("kage-backend", "M920q connection failed: %s",
+                 esp_err_to_name(result));
+    }
+
+    esp_http_client_cleanup(client);
+    vTaskDelete(nullptr);
+}
+
 static void wifi_event(void *, esp_event_base_t base, int32_t id, void *event_data) {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START && configured) {
         esp_wifi_connect();
@@ -210,6 +268,10 @@ static void wifi_event(void *, esp_event_base_t base, int32_t id, void *event_da
         connected = true;
         last_disconnect_reason = 0;
         ESP_LOGI("kage-wifi", "Connected to %s and obtained an IP address", ssid);
+        if (!backend_test_started) {
+            backend_test_started = true;
+            xTaskCreate(backend_test_task, "m920q_test", 4096, nullptr, 4, nullptr);
+        }
         send_error(0x00);
         send_state(STATE_PROVISIONED);
         if (provisioning_request) {
