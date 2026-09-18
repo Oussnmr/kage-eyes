@@ -15,6 +15,13 @@ static char s_entries[ENTRY_COUNT][ENTRY_SIZE] = {};
 static int s_next;
 static int s_count;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static void copy_entry(char *destination, const char *source) {
+    size_t length = std::strlen(source);
+    if (length >= ENTRY_SIZE) length = ENTRY_SIZE - 1;
+    std::memcpy(destination, source, length);
+    destination[length] = 0;
+}
 }
 
 void event_log_add(const char *format, ...) {
@@ -30,8 +37,7 @@ void event_log_add(const char *format, ...) {
     std::snprintf(line, sizeof(line), "[%lus] %s", seconds, message);
 
     portENTER_CRITICAL(&s_lock);
-    std::strncpy(s_entries[s_next], line, ENTRY_SIZE - 1);
-    s_entries[s_next][ENTRY_SIZE - 1] = 0;
+    copy_entry(s_entries[s_next], line);
     s_next = (s_next + 1) % ENTRY_COUNT;
     if (s_count < ENTRY_COUNT) ++s_count;
     portEXIT_CRITICAL(&s_lock);
@@ -49,7 +55,7 @@ void event_log_snapshot(char *buffer, size_t size) {
     count = s_count;
     start = (s_next - s_count + ENTRY_COUNT) % ENTRY_COUNT;
     for (int i = 0; i < count; ++i) {
-        std::strncpy(entries[i], s_entries[(start + i) % ENTRY_COUNT], ENTRY_SIZE - 1);
+        copy_entry(entries[i], s_entries[(start + i) % ENTRY_COUNT]);
     }
     portEXIT_CRITICAL(&s_lock);
 
