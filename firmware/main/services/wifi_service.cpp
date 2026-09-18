@@ -3,6 +3,7 @@
  * ESP32's normal Wi-Fi station configuration. */
 #include "wifi_service.h"
 
+#include <cstdlib>
 #include <cstring>
 
 #include "driver/usb_serial_jtag.h"
@@ -13,6 +14,7 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "robot_eyes.h"
 
 namespace {
 constexpr uint8_t TYPE_STATE = 0x01;
@@ -32,7 +34,7 @@ static bool connected;
 static bool configured;
 static bool provisioning_request;
 static int32_t last_disconnect_reason;
-static bool backend_test_started;
+static bool backend_bridge_started;
 static char ssid[33] = {};
 static uint8_t input[320];
 static size_t input_len;
@@ -218,35 +220,81 @@ static esp_err_t backend_http_event(esp_http_client_event_t *event) {
     return ESP_OK;
 }
 
-static void backend_test_task(void *) {
-    BackendResponse response = {};
-    esp_http_client_config_t config = {};
-    config.url = "http://192.168.129.157:8000/status";
-    config.timeout_ms = 5000;
-    config.event_handler = backend_http_event;
-    config.user_data = &response;
+static bool parse_command(const char *json, char *command, size_t command_size,
+                          uint32_t *sequence) {
+    if (!json || !command || command_size < 2 || !sequence) return false;
 
-    ESP_LOGI("kage-backend", "Testing M920q at %s", config.url);
+    const char *command_key = strstr(json, "\"command\":\"");
+    const char *sequence_key = strstr(json, "\"sequence\":");
+    if (!command_key || !sequence_key) return false;
 
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) {
-        ESP_LOGE("kage-backend", "Failed to create HTTP client");
-        vTaskDelete(nullptr);
-        return;
+    command_key += strlen("\"command\":\"");
+    const char *command_end = strchr(command_key, '\"');
+    if (!command_end) return false;
+
+    size_t length = static_cast<size_t>(command_end - command_key);
+    if (length >= command_size) length = command_size - 1;
+    memcpy(command, command_key, length);
+    command[length] = 0;
+
+    sequence_key += strlen("\"sequence\":");
+    char *number_end = nullptr;
+    const unsigned long parsed = strtoul(sequence_key, &number_end, 10);
+    if (number_end == sequence_key) return false;
+
+    *sequence = static_cast<uint32_t>(parsed);
+    return true;
+}
+
+static void dispatch_remote_command(const char *command) {
+    if (strcmp(command, "idle") == 0) robot_eyes_remote_idle();
+    else if (strcmp(command, "blink") == 0) robot_eyes_remote_blink();
+    else if (strcmp(command, "sleep") == 0) robot_eyes_remote_sleep();
+    else if (strcmp(command, "angry") == 0) robot_eyes_remote_angry();
+    else if (strcmp(command, "dizzy") == 0) robot_eyes_remote_dizzy();
+    else ESP_LOGW("kage-backend", "Unknown command: %s", command);
+}
+
+static void backend_bridge_task(void *) {
+    uint32_t last_sequence = UINT32_MAX;
+
+    for (;;) {
+        if (!connected) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+
+        BackendResponse response = {};
+        esp_http_client_config_t config = {};
+        config.url = "http://192.168.129.157:8000/command/latest";
+        config.timeout_ms = 1800;
+        config.event_handler = backend_http_event;
+        config.user_data = &response;
+
+        esp_http_client_handle_t client = esp_http_client_init(&config);
+        if (!client) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+
+        const esp_err_t result = esp_http_client_perform(client);
+        const int status = result == ESP_OK ? esp_http_client_get_status_code(client) : 0;
+        esp_http_client_cleanup(client);
+
+        if (result == ESP_OK && status == 200) {
+            char command[16] = {};
+            uint32_t sequence = 0;
+            if (parse_command(response.body, command, sizeof(command), &sequence) &&
+                sequence != last_sequence) {
+                last_sequence = sequence;
+                ESP_LOGI("kage-backend", "Command #%lu: %s",
+                         static_cast<unsigned long>(sequence), command);
+                dispatch_remote_command(command);
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
-
-    const esp_err_t result = esp_http_client_perform(client);
-    if (result == ESP_OK) {
-        const int status = esp_http_client_get_status_code(client);
-        ESP_LOGI("kage-backend", "M920q response: HTTP %d body=%s",
-                 status, response.length ? response.body : "<empty>");
-    } else {
-        ESP_LOGE("kage-backend", "M920q connection failed: %s",
-                 esp_err_to_name(result));
-    }
-
-    esp_http_client_cleanup(client);
-    vTaskDelete(nullptr);
 }
 
 static void wifi_event(void *, esp_event_base_t base, int32_t id, void *event_data) {
@@ -268,9 +316,9 @@ static void wifi_event(void *, esp_event_base_t base, int32_t id, void *event_da
         connected = true;
         last_disconnect_reason = 0;
         ESP_LOGI("kage-wifi", "Connected to %s and obtained an IP address", ssid);
-        if (!backend_test_started) {
-            backend_test_started = true;
-            xTaskCreate(backend_test_task, "m920q_test", 4096, nullptr, 4, nullptr);
+        if (!backend_bridge_started) {
+            backend_bridge_started = true;
+            xTaskCreate(backend_bridge_task, "m920q_bridge", 5120, nullptr, 4, nullptr);
         }
         send_error(0x00);
         send_state(STATE_PROVISIONED);
