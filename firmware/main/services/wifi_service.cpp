@@ -42,6 +42,18 @@ static uint8_t input[320];
 static size_t input_len;
 static portMUX_TYPE info_lock = portMUX_INITIALIZER_UNLOCKED;
 
+static void copy_text(char *destination, size_t size, const char *source) {
+    if (!destination || size == 0) return;
+    if (!source) {
+        destination[0] = 0;
+        return;
+    }
+    size_t length = std::strlen(source);
+    if (length >= size) length = size - 1;
+    std::memcpy(destination, source, length);
+    destination[length] = 0;
+}
+
 static void send_packet(uint8_t type, const uint8_t *data, size_t length) {
     if (length > 255) return;
     uint8_t packet[270] = {'I','M','P','R','O','V',1,type,static_cast<uint8_t>(length)};
@@ -245,9 +257,9 @@ static void wifi_event(void *, esp_event_base_t base, int32_t id, void *event_da
         portENTER_CRITICAL(&info_lock);
         connected = true;
         last_disconnect_reason = 0;
-        std::strncpy(ip_address, new_ip, sizeof(ip_address) - 1);
-        std::strncpy(gateway, new_gateway, sizeof(gateway) - 1);
-        std::strncpy(subnet_mask, new_mask, sizeof(subnet_mask) - 1);
+        copy_text(ip_address, sizeof(ip_address), new_ip);
+        copy_text(gateway, sizeof(gateway), new_gateway);
+        copy_text(subnet_mask, sizeof(subnet_mask), new_mask);
         portEXIT_CRITICAL(&info_lock);
 
         ESP_LOGI("kage-wifi", "Connected to %s with IP %s", ssid, new_ip);
@@ -333,10 +345,10 @@ void wifi_service_get_info(WifiServiceInfo *info) {
     info->configured = configured;
     info->connected = connected;
     info->last_disconnect_reason = last_disconnect_reason;
-    std::strncpy(info->ssid, ssid, sizeof(info->ssid) - 1);
-    std::strncpy(info->ip, ip_address, sizeof(info->ip) - 1);
-    std::strncpy(info->gateway, gateway, sizeof(info->gateway) - 1);
-    std::strncpy(info->mask, subnet_mask, sizeof(info->mask) - 1);
+    copy_text(info->ssid, sizeof(info->ssid), ssid);
+    copy_text(info->ip, sizeof(info->ip), ip_address);
+    copy_text(info->gateway, sizeof(info->gateway), gateway);
+    copy_text(info->mask, sizeof(info->mask), subnet_mask);
     portEXIT_CRITICAL(&info_lock);
 
     if (!info->connected) return;
