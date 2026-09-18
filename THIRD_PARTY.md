@@ -10,3 +10,7 @@ studying these MIT-licensed/open design resources:
 No React, Motion, GSAP, browser canvas or source images from those projects are
 embedded in the firmware.
 
+The local `firmware/components/esp32_s3_touch_amoled_1_8` component contains
+Waveshare BSP 2.0.3 under Apache-2.0. Its LICENSE is retained; KAGE_PATCH.md
+records the exact upstream revision and the local QSPI/DMA corrections.
+
