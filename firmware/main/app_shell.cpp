@@ -610,7 +610,7 @@ static void create_wifi_screen() {
     s_wifi_logs = create_app_screen("Network logs", "Recent Wi-Fi, backend and command events");
     lv_obj_add_event_cb(s_wifi_logs, gesture_event, LV_EVENT_GESTURE, nullptr);
     lv_obj_t *log_card = make_card(s_wifi_logs, 20, 82, 408, 238);
-    s_wifi_logs_values = make_label(log_card, "No events yet.", &lv_font_montserrat_12, COLOR_TEXT);
+    s_wifi_logs_values = make_label(log_card, "No events yet.", &lv_font_montserrat_14, COLOR_TEXT);
     lv_obj_set_style_text_align(s_wifi_logs_values, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_style_text_line_space(s_wifi_logs_values, 3, 0);
     lv_obj_set_pos(s_wifi_logs_values, 16, 12);
@@ -623,7 +623,7 @@ static void create_wifi_screen() {
     lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
     lv_obj_add_flag(back, LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_add_event_cb(back, show_wifi_overview, LV_EVENT_SHORT_CLICKED, nullptr);
-    lv_obj_t *back_text = make_label(back, "Wi-Fi", &lv_font_montserrat_12, COLOR_CYAN);
+    lv_obj_t *back_text = make_label(back, "Wi-Fi", &lv_font_montserrat_14, COLOR_CYAN);
     lv_obj_center(back_text);
 
     lv_timer_create(wifi_animation, 500, nullptr);
