@@ -64,18 +64,8 @@ static float s_next_expression = 4.0f;
 static float s_expression_until;
 static int s_expression;
 static uint32_t s_face_color;
-enum RemoteCommand {
-    REMOTE_NONE = 0,
-    REMOTE_IDLE,
-    REMOTE_BLINK,
-    REMOTE_SLEEP,
-    REMOTE_ANGRY,
-    REMOTE_DIZZY,
-};
-
 static std::atomic<bool> s_shake_pending{false};
 static std::atomic<bool> s_charge_pending{false};
-static std::atomic<int> s_remote_command{REMOTE_NONE};
 
 static float random_unit() {
     return static_cast<float>(esp_random()) / static_cast<float>(UINT32_MAX);
@@ -209,41 +199,6 @@ static void animate(lv_timer_t *) {
     s_last_frame_us = now;
     if (dt > 0.08f) dt = 0.08f;
     s_time += dt;
-
-    const int remote = s_remote_command.exchange(REMOTE_NONE);
-    if (remote != REMOTE_NONE) {
-        if (remote == REMOTE_IDLE) {
-            s_angry = false;
-            s_dizzy_until = s_time;
-            s_charge_until = s_time;
-            wake_up(false);
-        } else if (remote == REMOTE_BLINK) {
-            s_angry = false;
-            wake_up(false);
-            s_blink_time = 0.0f;
-            s_blinks_left = 1;
-        } else if (remote == REMOTE_SLEEP) {
-            s_angry = false;
-            s_dizzy_until = s_time;
-            s_charge_until = s_time;
-            s_sleep_started = s_time;
-            s_target_x = 0.0f;
-            s_target_y = 0.0f;
-        } else if (remote == REMOTE_ANGRY) {
-            s_angry = true;
-            s_tap_count = 0;
-            s_blinks_left = 0;
-            s_blink_time = -1.0f;
-            s_expression = 0;
-            s_sleep_started = -1.0f;
-            s_dizzy_until = s_time;
-            s_charge_until = s_time;
-        } else if (remote == REMOTE_DIZZY) {
-            s_angry = false;
-            wake_up(false);
-            s_dizzy_until = s_time + DIZZY_DURATION_S;
-        }
-    }
 
     if (s_shake_pending.exchange(false)) {
         if (s_angry) {
@@ -496,25 +451,4 @@ void robot_eyes_on_shake() {
 
 void robot_eyes_on_charge_started() {
     s_charge_pending.store(true);
-}
-
-
-void robot_eyes_remote_idle() {
-    s_remote_command.store(REMOTE_IDLE);
-}
-
-void robot_eyes_remote_blink() {
-    s_remote_command.store(REMOTE_BLINK);
-}
-
-void robot_eyes_remote_sleep() {
-    s_remote_command.store(REMOTE_SLEEP);
-}
-
-void robot_eyes_remote_angry() {
-    s_remote_command.store(REMOTE_ANGRY);
-}
-
-void robot_eyes_remote_dizzy() {
-    s_remote_command.store(REMOTE_DIZZY);
 }

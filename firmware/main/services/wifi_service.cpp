@@ -3,16 +3,14 @@
  * ESP32's normal Wi-Fi station configuration. */
 #include "wifi_service.h"
 
-#include <cstdio>
 #include <cstring>
 
 #include "driver/usb_serial_jtag.h"
 #include "esp_event.h"
+#include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_netif.h"
-#include "esp_netif_ip_addr.h"
 #include "esp_wifi.h"
-#include "event_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -34,25 +32,10 @@ static bool connected;
 static bool configured;
 static bool provisioning_request;
 static int32_t last_disconnect_reason;
+static bool backend_test_started;
 static char ssid[33] = {};
-static char ip_address[16] = {};
-static char gateway[16] = {};
-static char subnet_mask[16] = {};
 static uint8_t input[320];
 static size_t input_len;
-static portMUX_TYPE info_lock = portMUX_INITIALIZER_UNLOCKED;
-
-static void copy_text(char *destination, size_t size, const char *source) {
-    if (!destination || size == 0) return;
-    if (!source) {
-        destination[0] = 0;
-        return;
-    }
-    size_t length = std::strlen(source);
-    if (length >= size) length = size - 1;
-    std::memcpy(destination, source, length);
-    destination[length] = 0;
-}
 
 static void send_packet(uint8_t type, const uint8_t *data, size_t length) {
     if (length > 255) return;
@@ -113,29 +96,21 @@ static void apply_wifi(const uint8_t *data, size_t length) {
 
     wifi_config_t config = {};
     memcpy(config.sta.ssid, data + 3, ssid_len);
-    if (ssid_len < sizeof(config.sta.ssid)) config.sta.ssid[ssid_len] = 0;
+    config.sta.ssid[ssid_len] = 0;
     memcpy(config.sta.password, data + 4 + ssid_len, pass_len);
-    if (pass_len < sizeof(config.sta.password)) config.sta.password[pass_len] = 0;
+    config.sta.password[pass_len] = 0;
 
     if (esp_wifi_set_config(WIFI_IF_STA, &config) != ESP_OK) {
         send_error(0xFF);
         return;
     }
 
-    portENTER_CRITICAL(&info_lock);
-    std::memset(ssid, 0, sizeof(ssid));
-    std::memcpy(ssid, data + 3, ssid_len);
+    memcpy(ssid, config.sta.ssid, sizeof(ssid));
     configured = true;
     connected = false;
     provisioning_request = true;
     last_disconnect_reason = 0;
-    ip_address[0] = 0;
-    gateway[0] = 0;
-    subnet_mask[0] = 0;
-    portEXIT_CRITICAL(&info_lock);
-
     ESP_LOGI("kage-wifi", "Provisioning requested for SSID: %s", ssid);
-    event_log_add("Wi-Fi provisioning: %s", ssid);
 
     send_state(STATE_PROVISIONING);
     esp_wifi_disconnect();
@@ -218,53 +193,85 @@ static void serial_task(void *) {
     }
 }
 
+struct BackendResponse {
+    char body[192];
+    size_t length;
+};
+
+static esp_err_t backend_http_event(esp_http_client_event_t *event) {
+    auto *response = static_cast<BackendResponse *>(event->user_data);
+    if (!response || event->event_id != HTTP_EVENT_ON_DATA || event->data_len <= 0) {
+        return ESP_OK;
+    }
+
+    const size_t available = sizeof(response->body) - 1 - response->length;
+    const size_t copy_len =
+        static_cast<size_t>(event->data_len) < available
+            ? static_cast<size_t>(event->data_len)
+            : available;
+
+    if (copy_len > 0) {
+        memcpy(response->body + response->length, event->data, copy_len);
+        response->length += copy_len;
+        response->body[response->length] = 0;
+    }
+    return ESP_OK;
+}
+
+static void backend_test_task(void *) {
+    BackendResponse response = {};
+    esp_http_client_config_t config = {};
+    config.url = "http://192.168.129.157:8000/status";
+    config.timeout_ms = 5000;
+    config.event_handler = backend_http_event;
+    config.user_data = &response;
+
+    ESP_LOGI("kage-backend", "Testing M920q at %s", config.url);
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        ESP_LOGE("kage-backend", "Failed to create HTTP client");
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    const esp_err_t result = esp_http_client_perform(client);
+    if (result == ESP_OK) {
+        const int status = esp_http_client_get_status_code(client);
+        ESP_LOGI("kage-backend", "M920q response: HTTP %d body=%s",
+                 status, response.length ? response.body : "<empty>");
+    } else {
+        ESP_LOGE("kage-backend", "M920q connection failed: %s",
+                 esp_err_to_name(result));
+    }
+
+    esp_http_client_cleanup(client);
+    vTaskDelete(nullptr);
+}
+
 static void wifi_event(void *, esp_event_base_t base, int32_t id, void *event_data) {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START && configured) {
         esp_wifi_connect();
     }
 
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        const auto *event = static_cast<const wifi_event_sta_disconnected_t *>(event_data);
-        const int32_t reason = event ? static_cast<int32_t>(event->reason) : -1;
-
-        portENTER_CRITICAL(&info_lock);
         connected = false;
-        last_disconnect_reason = reason;
-        ip_address[0] = 0;
-        gateway[0] = 0;
-        subnet_mask[0] = 0;
-        portEXIT_CRITICAL(&info_lock);
-
+        const auto *event = static_cast<const wifi_event_sta_disconnected_t *>(event_data);
+        last_disconnect_reason = event ? static_cast<int32_t>(event->reason) : -1;
         ESP_LOGW("kage-wifi", "Disconnected from %s (reason=%ld)",
                  configured ? ssid : "<not configured>",
-                 static_cast<long>(reason));
-        event_log_add("Wi-Fi disconnected (reason %ld)", static_cast<long>(reason));
+                 static_cast<long>(last_disconnect_reason));
         if (configured) esp_wifi_connect();
     }
 
     if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
-        const auto *event = static_cast<const ip_event_got_ip_t *>(event_data);
-
-        char new_ip[16] = {};
-        char new_gateway[16] = {};
-        char new_mask[16] = {};
-        if (event) {
-            esp_ip4addr_ntoa(&event->ip_info.ip, new_ip, sizeof(new_ip));
-            esp_ip4addr_ntoa(&event->ip_info.gw, new_gateway, sizeof(new_gateway));
-            esp_ip4addr_ntoa(&event->ip_info.netmask, new_mask, sizeof(new_mask));
-        }
-
-        portENTER_CRITICAL(&info_lock);
         connected = true;
         last_disconnect_reason = 0;
-        copy_text(ip_address, sizeof(ip_address), new_ip);
-        copy_text(gateway, sizeof(gateway), new_gateway);
-        copy_text(subnet_mask, sizeof(subnet_mask), new_mask);
-        portEXIT_CRITICAL(&info_lock);
-
-        ESP_LOGI("kage-wifi", "Connected to %s with IP %s", ssid, new_ip);
-        event_log_add("Wi-Fi online: %s", new_ip[0] ? new_ip : "IP pending");
-
+        ESP_LOGI("kage-wifi", "Connected to %s and obtained an IP address", ssid);
+        if (!backend_test_started) {
+            backend_test_started = true;
+            xTaskCreate(backend_test_task, "m920q_test", 4096, nullptr, 4, nullptr);
+        }
         send_error(0x00);
         send_state(STATE_PROVISIONED);
         if (provisioning_request) {
@@ -293,10 +300,8 @@ void wifi_service_begin(void) {
         memcpy(ssid, stored.sta.ssid, sizeof(stored.sta.ssid));
         ssid[sizeof(stored.sta.ssid)] = 0;
         ESP_LOGI("kage-wifi", "Stored Wi-Fi configuration found for SSID: %s", ssid);
-        event_log_add("Stored Wi-Fi: %s", ssid);
     } else {
         ESP_LOGI("kage-wifi", "No stored Wi-Fi configuration");
-        event_log_add("Wi-Fi not configured");
     }
 
     ESP_ERROR_CHECK(esp_wifi_start());
@@ -314,19 +319,11 @@ bool wifi_service_is_configured(void) {
 void wifi_service_forget(void) {
     esp_wifi_disconnect();
     esp_wifi_restore();
-
-    portENTER_CRITICAL(&info_lock);
     configured = false;
     connected = false;
     provisioning_request = false;
     last_disconnect_reason = 0;
     ssid[0] = 0;
-    ip_address[0] = 0;
-    gateway[0] = 0;
-    subnet_mask[0] = 0;
-    portEXIT_CRITICAL(&info_lock);
-
-    event_log_add("Wi-Fi configuration cleared");
 }
 
 const char *wifi_service_name(void) {
@@ -335,31 +332,4 @@ const char *wifi_service_name(void) {
 
 int32_t wifi_service_last_disconnect_reason(void) {
     return last_disconnect_reason;
-}
-
-void wifi_service_get_info(WifiServiceInfo *info) {
-    if (!info) return;
-    std::memset(info, 0, sizeof(*info));
-
-    portENTER_CRITICAL(&info_lock);
-    info->configured = configured;
-    info->connected = connected;
-    info->last_disconnect_reason = last_disconnect_reason;
-    copy_text(info->ssid, sizeof(info->ssid), ssid);
-    copy_text(info->ip, sizeof(info->ip), ip_address);
-    copy_text(info->gateway, sizeof(info->gateway), gateway);
-    copy_text(info->mask, sizeof(info->mask), subnet_mask);
-    portEXIT_CRITICAL(&info_lock);
-
-    if (!info->connected) return;
-
-    wifi_ap_record_t ap = {};
-    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
-        info->rssi = ap.rssi;
-        info->channel = ap.primary;
-        std::snprintf(info->bssid, sizeof(info->bssid),
-                      "%02x:%02x:%02x:%02x:%02x:%02x",
-                      ap.bssid[0], ap.bssid[1], ap.bssid[2],
-                      ap.bssid[3], ap.bssid[4], ap.bssid[5]);
-    }
 }

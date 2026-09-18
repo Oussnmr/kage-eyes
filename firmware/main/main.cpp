@@ -8,7 +8,6 @@
 #include "app_shell.h"
 #include "orientation_service.h"
 #include "wifi_service.h"
-#include "kage_bridge.h"
 
 extern "C" void app_main(void) {
     esp_err_t nvs = nvs_flash_init();
@@ -41,7 +40,6 @@ extern "C" void app_main(void) {
     }
 
     orientation_service_begin(display);
-    kage_bridge_begin();
 
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(1000));
