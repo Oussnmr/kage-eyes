@@ -226,14 +226,18 @@ static void open_app(AppId app) {
     s_pending_open = -1;
     s_current = app;
     set_app_activity(app);
-    lv_screen_load_anim(screen_for(app), LV_SCR_LOAD_ANIM_FADE_IN, 180, 0, false);
+    lv_obj_t *screen = screen_for(app);
+    lv_screen_load(screen);
+    lv_obj_invalidate(screen);
 }
 
 static void show_home() {
     s_pending_open = -1;
     set_app_activity(static_cast<AppId>(-1));
     select_bubble(static_cast<int>(s_current));
-    lv_screen_load_anim(s_home, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 220, 0, false);
+    s_home_last_us = esp_timer_get_time();
+    lv_screen_load(s_home);
+    lv_obj_invalidate(s_home);
 }
 
 static void gesture_event(lv_event_t *) {
@@ -273,6 +277,7 @@ static void bubble_targets(int index, float *target_x, float *target_y, float *t
 }
 
 static void home_animation(lv_timer_t *) {
+    if (lv_screen_active() != s_home) return;
     const int64_t now = esp_timer_get_time();
     float frame = s_home_last_us ? static_cast<float>(now - s_home_last_us) / 16667.0f : 1.0f;
     s_home_last_us = now;
