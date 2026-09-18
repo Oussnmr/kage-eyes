@@ -14,6 +14,9 @@
 #include "esp_timer.h"
 #include "eyes/robot_eyes.h"
 #include "services/orientation_service.h"
+#include "services/event_log.h"
+#include "services/kage_bridge.h"
+#include "services/wifi_service.h"
 
 #ifndef LV_SYMBOL_EYE_OPEN
 #define LV_SYMBOL_EYE_OPEN "o o"
@@ -108,6 +111,9 @@ static lv_obj_t *s_motion_values;
 static lv_obj_t *s_motion_ball;
 static lv_obj_t *s_motion_calibration_status;
 static lv_obj_t *s_system_values;
+static lv_obj_t *s_wifi_values;
+static lv_obj_t *s_wifi_logs;
+static lv_obj_t *s_wifi_logs_values;
 static lv_obj_t *s_storage_status;
 static lv_obj_t *s_brightness_value;
 static bool s_sd_mounted;
@@ -523,16 +529,104 @@ static void create_system_screen() {
     lv_timer_create(system_animation, 1000, nullptr);
 }
 
+static void show_wifi_overview(lv_event_t *) {
+    lv_screen_load_anim(s_wifi, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 180, 0, false);
+}
+
+static void show_wifi_logs(lv_event_t *) {
+    lv_screen_load_anim(s_wifi_logs, LV_SCR_LOAD_ANIM_MOVE_LEFT, 180, 0, false);
+}
+
+static void wifi_animation(lv_timer_t *) {
+    lv_obj_t *active = lv_screen_active();
+    if (active != s_wifi && active != s_wifi_logs) return;
+
+    if (active == s_wifi) {
+        WifiServiceInfo wifi = {};
+        KageBridgeInfo bridge = {};
+        wifi_service_get_info(&wifi);
+        kage_bridge_get_info(&bridge);
+
+        if (!wifi.configured) {
+            lv_label_set_text(s_wifi_values,
+                              "NOT CONFIGURED\n\nUse USB / Improv to add Wi-Fi.");
+            lv_obj_set_style_text_color(s_wifi_values, lv_color_hex(COLOR_MUTED), 0);
+        } else if (!wifi.connected) {
+            lv_label_set_text_fmt(
+                s_wifi_values,
+                "CONNECTING\nSSID     %s\nLast error reason  %ld\n\nM920q    OFFLINE",
+                wifi.ssid, static_cast<long>(wifi.last_disconnect_reason));
+            lv_obj_set_style_text_color(s_wifi_values, lv_color_hex(COLOR_TEXT), 0);
+        } else {
+            lv_label_set_text_fmt(
+                s_wifi_values,
+                "ONLINE   %d dBm   CH %d\n"
+                "SSID     %s\n"
+                "IP       %s\n"
+                "Gateway  %s\n"
+                "BSSID    %s\n"
+                "M920q    %s%s\n"
+                "Command  %s  #%lu",
+                wifi.rssi, wifi.channel, wifi.ssid,
+                wifi.ip[0] ? wifi.ip : "-",
+                wifi.gateway[0] ? wifi.gateway : "-",
+                wifi.bssid[0] ? wifi.bssid : "-",
+                bridge.reachable ? "ONLINE" : "OFFLINE",
+                bridge.reachable ? "  HTTP 200" : "",
+                bridge.command[0] ? bridge.command : "-",
+                static_cast<unsigned long>(bridge.sequence));
+            lv_obj_set_style_text_color(s_wifi_values, lv_color_hex(COLOR_TEXT), 0);
+        }
+    }
+
+    if (active == s_wifi_logs) {
+        static char log_text[1152];
+        event_log_snapshot(log_text, sizeof(log_text));
+        lv_label_set_text(s_wifi_logs_values, log_text[0] ? log_text : "No events yet.");
+    }
+}
+
 static void create_wifi_screen() {
-    s_wifi = create_app_screen("Wi-Fi", "Connection for the future desktop assistant");
+    s_wifi = create_app_screen("Wi-Fi", "Network and M920q assistant bridge");
     lv_obj_add_event_cb(s_wifi, gesture_event, LV_EVENT_GESTURE, nullptr);
-    lv_obj_t *card = make_card(s_wifi, 28, 102, 392, 166);
-    lv_obj_t *status = make_label(card, "NOT CONFIGURED", &lv_font_montserrat_20, COLOR_TEXT);
-    lv_obj_align(status, LV_ALIGN_TOP_MID, 0, 28);
-    lv_obj_t *note = make_label(card,
-        "The hardware is ready. Pairing will be enabled\nwith the PC agent bridge.",
-        &lv_font_montserrat_14, COLOR_MUTED);
-    lv_obj_align(note, LV_ALIGN_BOTTOM_MID, 0, -18);
+
+    lv_obj_t *card = make_card(s_wifi, 28, 82, 392, 220);
+    s_wifi_values = make_label(card, "Starting...", &lv_font_montserrat_14, COLOR_TEXT);
+    lv_obj_set_style_text_align(s_wifi_values, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_text_line_space(s_wifi_values, 5, 0);
+    lv_obj_set_pos(s_wifi_values, 20, 16);
+    lv_obj_set_width(s_wifi_values, 350);
+
+    lv_obj_t *logs = lv_button_create(s_wifi);
+    lv_obj_set_size(logs, 116, 42);
+    lv_obj_align(logs, LV_ALIGN_BOTTOM_RIGHT, -28, -16);
+    lv_obj_set_style_bg_color(logs, lv_color_hex(COLOR_SURFACE_2), 0);
+    lv_obj_set_style_radius(logs, LV_RADIUS_CIRCLE, 0);
+    lv_obj_add_flag(logs, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(logs, show_wifi_logs, LV_EVENT_SHORT_CLICKED, nullptr);
+    lv_obj_t *logs_text = make_label(logs, "LOGS", &lv_font_montserrat_14, COLOR_CYAN);
+    lv_obj_center(logs_text);
+
+    s_wifi_logs = create_app_screen("Network logs", "Recent Wi-Fi, backend and command events");
+    lv_obj_add_event_cb(s_wifi_logs, gesture_event, LV_EVENT_GESTURE, nullptr);
+    lv_obj_t *log_card = make_card(s_wifi_logs, 20, 82, 408, 238);
+    s_wifi_logs_values = make_label(log_card, "No events yet.", &lv_font_montserrat_12, COLOR_TEXT);
+    lv_obj_set_style_text_align(s_wifi_logs_values, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_text_line_space(s_wifi_logs_values, 3, 0);
+    lv_obj_set_pos(s_wifi_logs_values, 16, 12);
+    lv_obj_set_width(s_wifi_logs_values, 374);
+
+    lv_obj_t *back = lv_button_create(s_wifi_logs);
+    lv_obj_set_size(back, 86, 36);
+    lv_obj_align(back, LV_ALIGN_TOP_RIGHT, -22, 18);
+    lv_obj_set_style_bg_color(back, lv_color_hex(COLOR_SURFACE_2), 0);
+    lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
+    lv_obj_add_flag(back, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(back, show_wifi_overview, LV_EVENT_SHORT_CLICKED, nullptr);
+    lv_obj_t *back_text = make_label(back, "Wi-Fi", &lv_font_montserrat_12, COLOR_CYAN);
+    lv_obj_center(back_text);
+
+    lv_timer_create(wifi_animation, 500, nullptr);
 }
 
 static void check_storage(lv_event_t *) {
