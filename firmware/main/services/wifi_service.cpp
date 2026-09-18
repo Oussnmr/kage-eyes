@@ -30,6 +30,7 @@ constexpr uint8_t STATE_PROVISIONED = 0x04;
 static bool connected;
 static bool configured;
 static bool provisioning_request;
+static int32_t last_disconnect_reason;
 static char ssid[33] = {};
 static uint8_t input[320];
 static size_t input_len;
@@ -106,6 +107,8 @@ static void apply_wifi(const uint8_t *data, size_t length) {
     configured = true;
     connected = false;
     provisioning_request = true;
+    last_disconnect_reason = 0;
+    ESP_LOGI("kage-wifi", "Provisioning requested for SSID: %s", ssid);
 
     send_state(STATE_PROVISIONING);
     esp_wifi_disconnect();
@@ -188,18 +191,25 @@ static void serial_task(void *) {
     }
 }
 
-static void wifi_event(void *, esp_event_base_t base, int32_t id, void *) {
+static void wifi_event(void *, esp_event_base_t base, int32_t id, void *event_data) {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START && configured) {
         esp_wifi_connect();
     }
 
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         connected = false;
+        const auto *event = static_cast<const wifi_event_sta_disconnected_t *>(event_data);
+        last_disconnect_reason = event ? static_cast<int32_t>(event->reason) : -1;
+        ESP_LOGW("kage-wifi", "Disconnected from %s (reason=%ld)",
+                 configured ? ssid : "<not configured>",
+                 static_cast<long>(last_disconnect_reason));
         if (configured) esp_wifi_connect();
     }
 
     if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         connected = true;
+        last_disconnect_reason = 0;
+        ESP_LOGI("kage-wifi", "Connected to %s and obtained an IP address", ssid);
         send_error(0x00);
         send_state(STATE_PROVISIONED);
         if (provisioning_request) {
@@ -224,7 +234,13 @@ void wifi_service_begin(void) {
     wifi_config_t stored = {};
     ESP_ERROR_CHECK(esp_wifi_get_config(WIFI_IF_STA, &stored));
     configured = stored.sta.ssid[0] != 0;
-    if (configured) memcpy(ssid, stored.sta.ssid, sizeof(ssid));
+    if (configured) {
+        memcpy(ssid, stored.sta.ssid, sizeof(stored.sta.ssid));
+        ssid[sizeof(stored.sta.ssid)] = 0;
+        ESP_LOGI("kage-wifi", "Stored Wi-Fi configuration found for SSID: %s", ssid);
+    } else {
+        ESP_LOGI("kage-wifi", "No stored Wi-Fi configuration");
+    }
 
     ESP_ERROR_CHECK(esp_wifi_start());
     xTaskCreate(serial_task, "improv_serial", 4096, nullptr, 4, nullptr);
@@ -244,9 +260,14 @@ void wifi_service_forget(void) {
     configured = false;
     connected = false;
     provisioning_request = false;
+    last_disconnect_reason = 0;
     ssid[0] = 0;
 }
 
 const char *wifi_service_name(void) {
     return configured ? ssid : "Non configuré";
+}
+
+int32_t wifi_service_last_disconnect_reason(void) {
+    return last_disconnect_reason;
 }
