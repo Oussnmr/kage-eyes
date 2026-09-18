@@ -21,6 +21,18 @@ static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_last_sequence = UINT32_MAX;
 static bool s_started;
 
+static void copy_text(char *destination, size_t size, const char *source) {
+    if (!destination || size == 0) return;
+    if (!source) {
+        destination[0] = 0;
+        return;
+    }
+    size_t length = std::strlen(source);
+    if (length >= size) length = size - 1;
+    std::memcpy(destination, source, length);
+    destination[length] = 0;
+}
+
 struct HttpResponse {
     char body[192];
     size_t length;
@@ -49,10 +61,8 @@ static void update_info(bool reachable, int status, uint32_t sequence,
     s_info.reachable = reachable;
     s_info.http_status = status;
     s_info.sequence = sequence;
-    std::strncpy(s_info.command, command ? command : "", sizeof(s_info.command) - 1);
-    s_info.command[sizeof(s_info.command) - 1] = 0;
-    std::strncpy(s_info.error, error ? error : "", sizeof(s_info.error) - 1);
-    s_info.error[sizeof(s_info.error) - 1] = 0;
+    copy_text(s_info.command, sizeof(s_info.command), command ? command : "");
+    copy_text(s_info.error, sizeof(s_info.error), error ? error : "");
     portEXIT_CRITICAL(&s_lock);
 }
 
