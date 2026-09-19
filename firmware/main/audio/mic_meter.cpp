@@ -59,6 +59,12 @@ struct AudioResponse {
     size_t length;
 };
 
+struct SpeechStream {
+    esp_codec_dev_handle_t speaker;
+    int error;
+    size_t bytes;
+};
+
 static esp_err_t audio_response_event(esp_http_client_event_t *event) {
     auto *response = static_cast<AudioResponse *>(event->user_data);
     if (!response || event->event_id != HTTP_EVENT_ON_DATA || event->data_len <= 0) {
@@ -73,6 +79,22 @@ static esp_err_t audio_response_event(esp_http_client_event_t *event) {
         response->length += copy_len;
         response->body[response->length] = 0;
     }
+    return ESP_OK;
+}
+
+static esp_err_t speech_response_event(esp_http_client_event_t *event) {
+    auto *stream = static_cast<SpeechStream *>(event->user_data);
+    if (!stream || event->event_id != HTTP_EVENT_ON_DATA || event->data_len <= 0) {
+        return ESP_OK;
+    }
+    const int result = esp_codec_dev_write(
+        stream->speaker, event->data, event->data_len);
+    if (result != ESP_CODEC_DEV_OK) {
+        stream->error = result;
+        ESP_LOGW(TAG, "Speaker PCM write failed: %d", result);
+        return ESP_FAIL;
+    }
+    stream->bytes += static_cast<size_t>(event->data_len);
     return ESP_OK;
 }
 
@@ -159,6 +181,8 @@ static bool append_recording(const int16_t *samples, size_t count, size_t *used)
     return copy_count == count;
 }
 
+static bool post_speech_url(const char *url, const char *text, bool remote);
+
 static bool post_audio_url(const char *url, const int16_t *samples, size_t count,
                            bool remote) {
     const size_t bytes = count * sizeof(int16_t);
@@ -214,6 +238,8 @@ static bool post_audio_url(const char *url, const int16_t *samples, size_t count
     cJSON *root = cJSON_Parse(response.body);
     cJSON *command_item = root ? cJSON_GetObjectItem(root, "command") : nullptr;
     cJSON *sequence_item = root ? cJSON_GetObjectItem(root, "sequence") : nullptr;
+    cJSON *reply_item = root ? cJSON_GetObjectItem(root, "reply") : nullptr;
+    cJSON *speak_item = root ? cJSON_GetObjectItem(root, "speak") : nullptr;
     if (cJSON_IsString(command_item) && cJSON_IsNumber(sequence_item)) {
         kage_bridge_apply_command(
             command_item->valuestring,
@@ -221,9 +247,98 @@ static bool post_audio_url(const char *url, const int16_t *samples, size_t count
     } else {
         ESP_LOGW(TAG, "Audio backend response missing command");
     }
+    const bool should_speak = cJSON_IsTrue(speak_item) &&
+                              cJSON_IsString(reply_item) &&
+                              reply_item->valuestring[0] != 0;
+    if (should_speak) {
+        ESP_LOGI(TAG, "Streaming reply audio to Waveshare speaker");
+    }
+    char reply_text[160] = {};
+    if (should_speak) {
+        std::strncpy(reply_text, reply_item->valuestring, sizeof(reply_text) - 1);
+    }
     if (root) cJSON_Delete(root);
 
+    if (reply_text[0]) {
+        char speech_url[160] = {};
+        const char *suffix = "/speech";
+        const size_t url_length = std::strlen(url);
+        if (url_length + std::strlen(suffix) + 1 < sizeof(speech_url)) {
+            std::memcpy(speech_url, url, url_length);
+            std::memcpy(speech_url + url_length, suffix, std::strlen(suffix) + 1);
+            if (!post_speech_url(speech_url, reply_text, remote)) {
+                ESP_LOGW(TAG, "Reply audio playback failed");
+            }
+        }
+    }
+
     return true;
+}
+
+static bool post_speech_url(const char *url, const char *text, bool remote) {
+    if (!url || !text || !text[0]) return false;
+
+    esp_codec_dev_handle_t speaker = bsp_audio_codec_speaker_init();
+    if (!speaker) {
+        event_log_add("Speaker init failed");
+        return false;
+    }
+    esp_codec_dev_sample_info_t format = {};
+    format.sample_rate = SAMPLE_RATE;
+    format.channel = 1;
+    format.bits_per_sample = 16;
+    if (esp_codec_dev_open(speaker, &format) != ESP_CODEC_DEV_OK) {
+        esp_codec_dev_delete(speaker);
+        event_log_add("Speaker open failed");
+        return false;
+    }
+    esp_codec_dev_set_out_vol(speaker, 80.0f);
+
+    cJSON *request = cJSON_CreateObject();
+    cJSON_AddStringToObject(request, "text", text);
+    cJSON_AddStringToObject(request, "voice", "ff_siwis");
+    char *body = cJSON_PrintUnformatted(request);
+    cJSON_Delete(request);
+    if (!body) {
+        esp_codec_dev_close(speaker);
+        esp_codec_dev_delete(speaker);
+        return false;
+    }
+
+    SpeechStream stream = {speaker, 0, 0};
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.timeout_ms = POST_TIMEOUT_MS;
+    config.event_handler = speech_response_event;
+    config.user_data = &stream;
+    if (remote) config.crt_bundle_attach = esp_crt_bundle_attach;
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        cJSON_free(body);
+        esp_codec_dev_close(speaker);
+        esp_codec_dev_delete(speaker);
+        return false;
+    }
+    esp_http_client_set_method(client, HTTP_METHOD_POST);
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    const char *api_key = wifi_service_api_key();
+    if (api_key && api_key[0]) {
+        esp_http_client_set_header(client, "X-Kage-Key", api_key);
+    }
+    esp_http_client_set_post_field(client, body,
+                                   static_cast<int>(std::strlen(body)));
+    const esp_err_t result = esp_http_client_perform(client);
+    const int status = result == ESP_OK ? esp_http_client_get_status_code(client) : 0;
+    esp_http_client_cleanup(client);
+    cJSON_free(body);
+    esp_codec_dev_close(speaker);
+    esp_codec_dev_delete(speaker);
+
+    const bool ok = result == ESP_OK && status == 200 && stream.error == 0 &&
+                    stream.bytes > 0;
+    event_log_add(ok ? "Speaker PCM played: %u KB" : "Speaker PCM failed",
+                  static_cast<unsigned>((stream.bytes + 1023) / 1024));
+    return ok;
 }
 
 static void close_microphone() {
