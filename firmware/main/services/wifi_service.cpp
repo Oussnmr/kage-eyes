@@ -116,6 +116,10 @@ static esp_err_t status_get(httpd_req_t *request) {
 static void start_status_server() {
     if (status_server) return;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.stack_size = 3072;
+    config.max_open_sockets = 1;
+    config.max_uri_handlers = 1;
+    config.backlog_conn = 1;
     if (httpd_start(&status_server, &config) != ESP_OK) {
         status_server = nullptr;
         ESP_LOGW("kage-wifi", "Status server failed to start");

@@ -190,6 +190,8 @@ static bool post_audio_url(const char *url, const int16_t *samples, size_t count
     esp_http_client_config_t config = {};
     config.url = url;
     config.timeout_ms = POST_TIMEOUT_MS;
+    config.buffer_size = 2048;
+    config.buffer_size_tx = 1024;
     AudioResponse response = {};
     config.event_handler = audio_response_event;
     config.user_data = &response;
