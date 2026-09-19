@@ -18,12 +18,15 @@
 
 #include "driver/usb_serial_jtag.h"
 #include "esp_event.h"
+#include "esp_app_desc.h"
+#include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
 #include "esp_netif_ip_addr.h"
 #include "esp_wifi.h"
 #include "event_log.h"
+#include "audio/mic_meter.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs.h"
@@ -66,6 +69,7 @@ static char key_line[96] = {};
 static size_t key_line_len = 0;
 static bool key_line_active = false;
 static bool sntp_started = false;
+static httpd_handle_t status_server = nullptr;
 
 static bool connected;
 static bool configured;
@@ -78,6 +82,58 @@ static char subnet_mask[16] = {};
 static uint8_t input[320];
 static size_t input_len;
 static portMUX_TYPE info_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static const char *mic_state_name(MicMeterState state) {
+    switch (state) {
+        case MicMeterState::Off: return "off";
+        case MicMeterState::Starting: return "starting";
+        case MicMeterState::Listening: return "listening";
+        case MicMeterState::Processing: return "processing";
+        case MicMeterState::Error: return "error";
+    }
+    return "unknown";
+}
+
+static esp_err_t status_get(httpd_req_t *request) {
+    const esp_app_desc_t *app = esp_app_get_description();
+    bool online = false;
+    char address[sizeof(ip_address)] = {};
+    portENTER_CRITICAL(&info_lock);
+    online = connected;
+    std::snprintf(address, sizeof(address), "%s", ip_address);
+    portEXIT_CRITICAL(&info_lock);
+    char response[256] = {};
+    std::snprintf(response, sizeof(response),
+                  "{\"device\":\"Kage Eyes\",\"firmware\":\"%s\",\"wifi_connected\":%s,\"ip\":\"%s\",\"microphone\":\"%s\"}",
+                  app && app->version[0] ? app->version : "unknown",
+                  online ? "true" : "false", address,
+                  mic_state_name(mic_meter_state()));
+    httpd_resp_set_type(request, "application/json");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(request, response);
+}
+
+static void start_status_server() {
+    if (status_server) return;
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    if (httpd_start(&status_server, &config) != ESP_OK) {
+        status_server = nullptr;
+        ESP_LOGW("kage-wifi", "Status server failed to start");
+        return;
+    }
+    httpd_uri_t status = {
+        .uri = "/status",
+        .method = HTTP_GET,
+        .handler = status_get,
+    };
+    if (httpd_register_uri_handler(status_server, &status) != ESP_OK) {
+        httpd_stop(status_server);
+        status_server = nullptr;
+        ESP_LOGW("kage-wifi", "Status endpoint registration failed");
+        return;
+    }
+    ESP_LOGI("kage-wifi", "Status endpoint ready at /status");
+}
 
 static void copy_text(char *destination, size_t size, const char *source) {
     if (!destination || size == 0) return;
@@ -602,6 +658,7 @@ static void wifi_event(void *, esp_event_base_t base, int32_t id, void *event_da
 
         reconnect_failures = 0;
         start_sntp_if_needed();
+        start_status_server();
 
         ESP_LOGI("kage-wifi", "Connected to %s with IP %s", ssid, new_ip);
         event_log_add("Wi-Fi online: %s", new_ip[0] ? new_ip : "IP pending");
