@@ -31,6 +31,9 @@ void ota_task(void *) {
     http.crt_bundle_attach = esp_crt_bundle_attach;
     http.timeout_ms = 30000;
     http.keep_alive_enable = true;
+    http.buffer_size = 8192;
+    http.buffer_size_tx = 2048;
+    http.skip_cert_common_name_check = false;
     esp_https_ota_config_t ota = {};
     ota.http_config = &http;
     const esp_err_t result = esp_https_ota(&ota);
@@ -40,8 +43,8 @@ void ota_task(void *) {
         esp_restart();
     }
 
-    ESP_LOGE(TAG, "OTA failed: %s", esp_err_to_name(result));
-    event_log_add("OTA failed: %s", esp_err_to_name(result));
+    ESP_LOGE(TAG, "OTA failed: %s (0x%x)", esp_err_to_name(result), result);
+    event_log_add("OTA failed: %s 0x%x", esp_err_to_name(result), result);
     s_status = "FAILED - CHECK LOGS";
     s_running.store(false);
     vTaskDelete(nullptr);
