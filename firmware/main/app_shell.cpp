@@ -16,8 +16,8 @@
 #include "services/orientation_service.h"
 #include "services/event_log.h"
 #include "services/kage_bridge.h"
+#include "services/ota_service.h"
 #include "services/wifi_service.h"
-#include "wifi_port.h"
 
 #ifndef LV_SYMBOL_EYE_OPEN
 #define LV_SYMBOL_EYE_OPEN "o o"
@@ -112,6 +112,7 @@ static lv_obj_t *s_motion_values;
 static lv_obj_t *s_motion_ball;
 static lv_obj_t *s_motion_calibration_status;
 static lv_obj_t *s_system_values;
+static lv_obj_t *s_ota_status;
 static lv_obj_t *s_wifi_values;
 static lv_obj_t *s_wifi_logs;
 static lv_obj_t *s_wifi_logs_values;
@@ -507,6 +508,7 @@ static void system_animation(lv_timer_t *) {
                           battery_text, static_cast<unsigned long>(heap_kb),
                           static_cast<unsigned long>(psram_kb),
                           static_cast<unsigned long long>(uptime), esp_get_idf_version());
+    if (s_ota_status) lv_label_set_text(s_ota_status, ota_service_status());
 }
 
 static void battery_animation(lv_timer_t *) {
@@ -537,10 +539,13 @@ static void create_system_screen() {
     lv_obj_set_style_border_width(update, 1, 0);
     lv_obj_set_style_radius(update, LV_RADIUS_CIRCLE, 0);
     lv_obj_add_flag(update, LV_OBJ_FLAG_GESTURE_BUBBLE);
-    lv_obj_add_event_cb(update, [](lv_event_t *) { wifi_port_start_update(); },
+    lv_obj_add_event_cb(update, [](lv_event_t *) { ota_service_start(); },
                         LV_EVENT_SHORT_CLICKED, nullptr);
     lv_obj_t *update_text = make_label(update, "UPDATE FIRMWARE", &lv_font_montserrat_14, COLOR_CYAN);
     lv_obj_center(update_text);
+
+    s_ota_status = make_label(s_system, ota_service_status(), &lv_font_montserrat_14, COLOR_MUTED);
+    lv_obj_align(s_ota_status, LV_ALIGN_BOTTOM_MID, 0, -50);
 }
 
 static void show_wifi_overview(lv_event_t *) {
