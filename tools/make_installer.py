@@ -71,6 +71,9 @@ def main():
     total = 0
     for off, src, pub in parts:
         shutil.copyfile(src, os.path.join(out, "firmware", pub))
+        if pub == "kage_eyes.bin":
+            # Keep the stable OTA endpoint used by deployed Kage Eyes units.
+            shutil.copyfile(src, os.path.join(out, "firmware", "app.bin"))
         total += os.path.getsize(src)
     shutil.copytree(os.path.join(ROOT, "installer", "vendor"), os.path.join(out, "vendor"))
 

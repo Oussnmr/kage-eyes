@@ -13,7 +13,7 @@
 #include "esp_http_server.h"
 
 #define WIFI_NAMESPACE "kage_wifi"
-#define OTA_URL "https://oussnmr.github.io/kage-eyes/firmware/kage_eyes.bin"
+#define OTA_URL "https://oussnmr.github.io/kage-eyes/firmware/app.bin"
 static const char *TAG = "kage_wifi";
 static bool s_connected, s_portal, s_started;
 static httpd_handle_t s_server;
