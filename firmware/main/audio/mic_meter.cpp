@@ -6,6 +6,7 @@
 #include <cstring>
 
 #include "bsp/esp-bsp.h"
+#include "cJSON.h"
 #include "esp_codec_dev.h"
 #include "esp_crt_bundle.h"
 #include "esp_err.h"
@@ -51,6 +52,28 @@ static int16_t *s_recording;
 static int16_t *s_pre_roll;
 static size_t s_pre_roll_write;
 static size_t s_pre_roll_filled;
+
+struct AudioResponse {
+    char body[192];
+    size_t length;
+};
+
+static esp_err_t audio_response_event(esp_http_client_event_t *event) {
+    auto *response = static_cast<AudioResponse *>(event->user_data);
+    if (!response || event->event_id != HTTP_EVENT_ON_DATA || event->data_len <= 0) {
+        return ESP_OK;
+    }
+
+    const size_t available = sizeof(response->body) - 1 - response->length;
+    const size_t incoming = static_cast<size_t>(event->data_len);
+    const size_t copy_len = incoming < available ? incoming : available;
+    if (copy_len) {
+        std::memcpy(response->body + response->length, event->data, copy_len);
+        response->length += copy_len;
+        response->body[response->length] = 0;
+    }
+    return ESP_OK;
+}
 
 static void *allocate_audio_buffer(size_t bytes) {
     void *buffer = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -142,6 +165,9 @@ static bool post_audio_url(const char *url, const int16_t *samples, size_t count
     esp_http_client_config_t config = {};
     config.url = url;
     config.timeout_ms = POST_TIMEOUT_MS;
+    AudioResponse response = {};
+    config.event_handler = audio_response_event;
+    config.user_data = &response;
     if (remote) {
         config.crt_bundle_attach = esp_crt_bundle_attach;
     }
@@ -183,6 +209,18 @@ static bool post_audio_url(const char *url, const int16_t *samples, size_t count
                  remote ? "Remote" : "Local", status);
         return false;
     }
+
+    cJSON *root = cJSON_Parse(response.body);
+    cJSON *command_item = root ? cJSON_GetObjectItem(root, "command") : nullptr;
+    cJSON *sequence_item = root ? cJSON_GetObjectItem(root, "sequence") : nullptr;
+    if (cJSON_IsString(command_item) && cJSON_IsNumber(sequence_item)) {
+        kage_bridge_apply_command(
+            command_item->valuestring,
+            static_cast<uint32_t>(sequence_item->valuedouble));
+    } else {
+        ESP_LOGW(TAG, "Audio backend response missing command");
+    }
+    if (root) cJSON_Delete(root);
 
     return true;
 }

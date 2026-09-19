@@ -151,6 +151,25 @@ static void dispatch_command(const char *command) {
     }
 }
 
+void apply_command_impl(const char *command, uint32_t sequence) {
+    if (!command || !command[0] || std::strcmp(command, "none") == 0) return;
+
+    bool is_new = false;
+    portENTER_CRITICAL(&s_lock);
+    if (sequence != s_last_sequence) {
+        s_last_sequence = sequence;
+        is_new = true;
+    }
+    portEXIT_CRITICAL(&s_lock);
+
+    if (!is_new) return;
+    ESP_LOGI("kage-bridge", "Immediate command #%lu: %s",
+             static_cast<unsigned long>(sequence), command);
+    event_log_add("Immediate command #%lu: %s",
+                  static_cast<unsigned long>(sequence), command);
+    dispatch_command(command);
+}
+
 static void bridge_task(void *) {
     bool was_reachable = false;
 
@@ -240,20 +259,17 @@ static void bridge_task(void *) {
         was_reachable = true;
         update_info(true, status, sequence, command, "");
 
-        if (sequence != s_last_sequence) {
-            s_last_sequence = sequence;
-            ESP_LOGI("kage-bridge", "Command #%lu: %s",
-                     static_cast<unsigned long>(sequence), command);
-            event_log_add("Command #%lu: %s",
-                          static_cast<unsigned long>(sequence), command);
-            dispatch_command(command);
-        }
+        apply_command_impl(command, sequence);
 
         cJSON_Delete(root);
         vTaskDelay(current_poll_delay());
     }
 }
 }  // namespace
+
+void kage_bridge_apply_command(const char *command, uint32_t sequence) {
+    apply_command_impl(command, sequence);
+}
 
 void kage_bridge_begin(void) {
     if (s_started) return;
