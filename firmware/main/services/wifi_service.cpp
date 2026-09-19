@@ -1,6 +1,16 @@
-/* Improv Wi-Fi Serial service. It deliberately has no SoftAP and no local
- * web server: credentials are sent through USB Serial/JTAG straight to the
- * ESP32's normal Wi-Fi station configuration. */
+/* Improv Wi-Fi Serial service.
+ *
+ * Kage keeps up to two Wi-Fi profiles in its own NVS namespace. The first
+ * profile is imported from the existing ESP-IDF station configuration on the
+ * first boot after upgrading, so the current home network is preserved.
+ *
+ * When Kage is already online and Improv receives credentials for a different
+ * SSID, they are stored as the second profile without interrupting the current
+ * connection. If the active network disappears, Kage automatically alternates
+ * between the stored profiles after a few failed reconnects.
+ *
+ * No credentials are compiled into the firmware or committed to the repo.
+ */
 #include "wifi_service.h"
 
 #include <cstdio>
@@ -15,6 +25,7 @@
 #include "event_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs.h"
 
 namespace {
 constexpr uint8_t TYPE_STATE = 0x01;
@@ -29,6 +40,24 @@ constexpr uint8_t RPC_DEVICE_INFO = 0x03;
 constexpr uint8_t STATE_AUTHORIZED = 0x02;
 constexpr uint8_t STATE_PROVISIONING = 0x03;
 constexpr uint8_t STATE_PROVISIONED = 0x04;
+
+constexpr char NVS_NAMESPACE[] = "kage_wifi";
+constexpr char KEY_P0_SSID[] = "p0_ssid";
+constexpr char KEY_P0_PASS[] = "p0_pass";
+constexpr char KEY_P1_SSID[] = "p1_ssid";
+constexpr char KEY_P1_PASS[] = "p1_pass";
+constexpr int PROFILE_COUNT = 2;
+constexpr int FAILURES_BEFORE_SWITCH = 3;
+
+struct WifiProfile {
+    bool valid;
+    char ssid[33];
+    char password[65];
+};
+
+static WifiProfile profiles[PROFILE_COUNT] = {};
+static int active_profile = -1;
+static int reconnect_failures = 0;
 
 static bool connected;
 static bool configured;
@@ -52,6 +81,162 @@ static void copy_text(char *destination, size_t size, const char *source) {
     if (length >= size) length = size - 1;
     std::memcpy(destination, source, length);
     destination[length] = 0;
+}
+
+static const char *ssid_key(int index) {
+    return index == 0 ? KEY_P0_SSID : KEY_P1_SSID;
+}
+
+static const char *pass_key(int index) {
+    return index == 0 ? KEY_P0_PASS : KEY_P1_PASS;
+}
+
+static bool load_nvs_string(nvs_handle_t handle, const char *key,
+                            char *destination, size_t size) {
+    size_t required = size;
+    const esp_err_t result = nvs_get_str(handle, key, destination, &required);
+    if (result != ESP_OK || destination[0] == 0) {
+        if (size) destination[0] = 0;
+        return false;
+    }
+    destination[size - 1] = 0;
+    return true;
+}
+
+static bool save_profile_to_nvs(int index) {
+    if (index < 0 || index >= PROFILE_COUNT || !profiles[index].valid) {
+        return false;
+    }
+
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
+        return false;
+    }
+
+    esp_err_t result = nvs_set_str(handle, ssid_key(index), profiles[index].ssid);
+    if (result == ESP_OK) {
+        result = nvs_set_str(handle, pass_key(index), profiles[index].password);
+    }
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+    return result == ESP_OK;
+}
+
+static void load_profiles_from_nvs() {
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
+        return;
+    }
+
+    for (int i = 0; i < PROFILE_COUNT; ++i) {
+        profiles[i] = {};
+        const bool have_ssid =
+            load_nvs_string(handle, ssid_key(i), profiles[i].ssid,
+                            sizeof(profiles[i].ssid));
+        if (have_ssid) {
+            size_t required = sizeof(profiles[i].password);
+            const esp_err_t pass_result =
+                nvs_get_str(handle, pass_key(i), profiles[i].password, &required);
+            if (pass_result != ESP_OK) profiles[i].password[0] = 0;
+            profiles[i].password[sizeof(profiles[i].password) - 1] = 0;
+            profiles[i].valid = true;
+        }
+    }
+
+    nvs_close(handle);
+}
+
+static void import_legacy_profile_if_needed(const wifi_config_t &legacy) {
+    if (profiles[0].valid || legacy.sta.ssid[0] == 0) return;
+
+    profiles[0] = {};
+    copy_text(profiles[0].ssid, sizeof(profiles[0].ssid),
+              reinterpret_cast<const char *>(legacy.sta.ssid));
+    copy_text(profiles[0].password, sizeof(profiles[0].password),
+              reinterpret_cast<const char *>(legacy.sta.password));
+    profiles[0].valid = true;
+
+    if (save_profile_to_nvs(0)) {
+        ESP_LOGI("kage-wifi", "Imported existing Wi-Fi as profile 1: %s",
+                 profiles[0].ssid);
+        event_log_add("Saved Wi-Fi profile 1: %s", profiles[0].ssid);
+    }
+}
+
+static int first_valid_profile() {
+    for (int i = 0; i < PROFILE_COUNT; ++i) {
+        if (profiles[i].valid) return i;
+    }
+    return -1;
+}
+
+static int other_valid_profile(int current) {
+    for (int i = 0; i < PROFILE_COUNT; ++i) {
+        if (i != current && profiles[i].valid) return i;
+    }
+    return -1;
+}
+
+static int profile_for_ssid(const char *network_ssid) {
+    if (!network_ssid) return -1;
+    for (int i = 0; i < PROFILE_COUNT; ++i) {
+        if (profiles[i].valid &&
+            std::strcmp(profiles[i].ssid, network_ssid) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int slot_for_new_profile() {
+    for (int i = 0; i < PROFILE_COUNT; ++i) {
+        if (!profiles[i].valid) return i;
+    }
+    const int other = other_valid_profile(active_profile);
+    return other >= 0 ? other : 1;
+}
+
+static esp_err_t configure_profile_in_ram(int index) {
+    if (index < 0 || index >= PROFILE_COUNT || !profiles[index].valid) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    wifi_config_t config = {};
+    copy_text(reinterpret_cast<char *>(config.sta.ssid),
+              sizeof(config.sta.ssid), profiles[index].ssid);
+    copy_text(reinterpret_cast<char *>(config.sta.password),
+              sizeof(config.sta.password), profiles[index].password);
+
+    const esp_err_t result = esp_wifi_set_config(WIFI_IF_STA, &config);
+    if (result != ESP_OK) return result;
+
+    active_profile = index;
+
+    portENTER_CRITICAL(&info_lock);
+    copy_text(ssid, sizeof(ssid), profiles[index].ssid);
+    configured = true;
+    portEXIT_CRITICAL(&info_lock);
+
+    ESP_LOGI("kage-wifi", "Selected Wi-Fi profile %d: %s",
+             index + 1, profiles[index].ssid);
+    return ESP_OK;
+}
+
+static esp_err_t connect_profile(int index) {
+    const esp_err_t configured_result = configure_profile_in_ram(index);
+    if (configured_result != ESP_OK) return configured_result;
+
+    esp_wifi_disconnect();
+    return esp_wifi_connect();
+}
+
+static void clear_runtime_connection_info() {
+    portENTER_CRITICAL(&info_lock);
+    connected = false;
+    ip_address[0] = 0;
+    gateway[0] = 0;
+    subnet_mask[0] = 0;
+    portEXIT_CRITICAL(&info_lock);
 }
 
 static void send_packet(uint8_t type, const uint8_t *data, size_t length) {
@@ -111,35 +296,49 @@ static void apply_wifi(const uint8_t *data, size_t length) {
         return;
     }
 
-    wifi_config_t config = {};
-    memcpy(config.sta.ssid, data + 3, ssid_len);
-    if (ssid_len < sizeof(config.sta.ssid)) config.sta.ssid[ssid_len] = 0;
-    memcpy(config.sta.password, data + 4 + ssid_len, pass_len);
-    if (pass_len < sizeof(config.sta.password)) config.sta.password[pass_len] = 0;
+    char incoming_ssid[33] = {};
+    char incoming_password[65] = {};
+    std::memcpy(incoming_ssid, data + 3, ssid_len);
+    std::memcpy(incoming_password, data + 4 + ssid_len, pass_len);
 
-    if (esp_wifi_set_config(WIFI_IF_STA, &config) != ESP_OK) {
+    int target = profile_for_ssid(incoming_ssid);
+    if (target < 0) target = slot_for_new_profile();
+
+    profiles[target] = {};
+    copy_text(profiles[target].ssid, sizeof(profiles[target].ssid), incoming_ssid);
+    copy_text(profiles[target].password, sizeof(profiles[target].password),
+              incoming_password);
+    profiles[target].valid = true;
+
+    if (!save_profile_to_nvs(target)) {
         send_error(0xFF);
         return;
     }
 
-    portENTER_CRITICAL(&info_lock);
-    std::memset(ssid, 0, sizeof(ssid));
-    std::memcpy(ssid, data + 3, ssid_len);
-    configured = true;
-    connected = false;
-    provisioning_request = true;
-    last_disconnect_reason = 0;
-    ip_address[0] = 0;
-    gateway[0] = 0;
-    subnet_mask[0] = 0;
-    portEXIT_CRITICAL(&info_lock);
+    ESP_LOGI("kage-wifi", "Stored Wi-Fi profile %d: %s",
+             target + 1, profiles[target].ssid);
+    event_log_add("Saved Wi-Fi profile %d: %s",
+                  target + 1, profiles[target].ssid);
 
-    ESP_LOGI("kage-wifi", "Provisioning requested for SSID: %s", ssid);
-    event_log_add("Wi-Fi provisioning: %s", ssid);
-
+    send_error(0x00);
     send_state(STATE_PROVISIONING);
-    esp_wifi_disconnect();
-    esp_wifi_connect();
+
+    /* If another profile is already online, keep it online. The new network is
+       now ready for automatic fallback later. */
+    if (connected && target != active_profile) {
+        send_state(STATE_PROVISIONED);
+        send_empty_rpc_response(RPC_WIFI_SETTINGS);
+        return;
+    }
+
+    provisioning_request = true;
+    reconnect_failures = 0;
+    clear_runtime_connection_info();
+
+    if (connect_profile(target) != ESP_OK) {
+        provisioning_request = false;
+        send_error(0xFF);
+    }
 }
 
 static void handle_rpc(const uint8_t *data, size_t length) {
@@ -220,7 +419,11 @@ static void serial_task(void *) {
 
 static void wifi_event(void *, esp_event_base_t base, int32_t id, void *event_data) {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START && configured) {
-        esp_wifi_connect();
+        const int index = active_profile >= 0 ? active_profile : first_valid_profile();
+        if (index >= 0) {
+            configure_profile_in_ram(index);
+            esp_wifi_connect();
+        }
     }
 
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
@@ -239,7 +442,23 @@ static void wifi_event(void *, esp_event_base_t base, int32_t id, void *event_da
                  configured ? ssid : "<not configured>",
                  static_cast<long>(reason));
         event_log_add("Wi-Fi disconnected (reason %ld)", static_cast<long>(reason));
-        if (configured) esp_wifi_connect();
+
+        if (configured) {
+            ++reconnect_failures;
+
+            if (reconnect_failures >= FAILURES_BEFORE_SWITCH) {
+                const int alternate = other_valid_profile(active_profile);
+                if (alternate >= 0) {
+                    reconnect_failures = 0;
+                    ESP_LOGI("kage-wifi", "Trying alternate Wi-Fi profile: %s",
+                             profiles[alternate].ssid);
+                    event_log_add("Trying Wi-Fi: %s", profiles[alternate].ssid);
+                    configure_profile_in_ram(alternate);
+                }
+            }
+
+            esp_wifi_connect();
+        }
     }
 
     if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
@@ -262,6 +481,8 @@ static void wifi_event(void *, esp_event_base_t base, int32_t id, void *event_da
         copy_text(subnet_mask, sizeof(subnet_mask), new_mask);
         portEXIT_CRITICAL(&info_lock);
 
+        reconnect_failures = 0;
+
         ESP_LOGI("kage-wifi", "Connected to %s with IP %s", ssid, new_ip);
         event_log_add("Wi-Fi online: %s", new_ip[0] ? new_ip : "IP pending");
 
@@ -282,18 +503,30 @@ void wifi_service_begin(void) {
 
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&init));
+
+    /* Read the old single-profile station configuration before switching the
+       Wi-Fi driver to RAM-backed configs. This imports the user's current Wi-Fi
+       into Kage's own two-profile store exactly once. */
+    wifi_config_t legacy = {};
+    ESP_ERROR_CHECK(esp_wifi_get_config(WIFI_IF_STA, &legacy));
+
+    load_profiles_from_nvs();
+    import_legacy_profile_if_needed(legacy);
+
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, nullptr));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event, nullptr));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
 
-    wifi_config_t stored = {};
-    ESP_ERROR_CHECK(esp_wifi_get_config(WIFI_IF_STA, &stored));
-    configured = stored.sta.ssid[0] != 0;
+    active_profile = first_valid_profile();
+    configured = active_profile >= 0;
+
     if (configured) {
-        memcpy(ssid, stored.sta.ssid, sizeof(stored.sta.ssid));
-        ssid[sizeof(stored.sta.ssid)] = 0;
-        ESP_LOGI("kage-wifi", "Stored Wi-Fi configuration found for SSID: %s", ssid);
+        copy_text(ssid, sizeof(ssid), profiles[active_profile].ssid);
+        ESP_LOGI("kage-wifi", "Loaded Wi-Fi profile %d: %s",
+                 active_profile + 1, ssid);
         event_log_add("Stored Wi-Fi: %s", ssid);
+        configure_profile_in_ram(active_profile);
     } else {
         ESP_LOGI("kage-wifi", "No stored Wi-Fi configuration");
         event_log_add("Wi-Fi not configured");
@@ -313,7 +546,17 @@ bool wifi_service_is_configured(void) {
 
 void wifi_service_forget(void) {
     esp_wifi_disconnect();
-    esp_wifi_restore();
+
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
+        nvs_erase_all(handle);
+        nvs_commit(handle);
+        nvs_close(handle);
+    }
+
+    for (auto &profile : profiles) profile = {};
+    active_profile = -1;
+    reconnect_failures = 0;
 
     portENTER_CRITICAL(&info_lock);
     configured = false;
@@ -326,7 +569,7 @@ void wifi_service_forget(void) {
     subnet_mask[0] = 0;
     portEXIT_CRITICAL(&info_lock);
 
-    event_log_add("Wi-Fi configuration cleared");
+    event_log_add("Wi-Fi profiles cleared");
 }
 
 const char *wifi_service_name(void) {
