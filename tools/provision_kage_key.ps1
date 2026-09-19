@@ -12,13 +12,13 @@ if ($Key -notmatch '^[0-9a-fA-F]{64}$') {
 if (-not $Port) {
     $devices = Get-CimInstance Win32_PnPEntity |
         Where-Object {
-            $_.Name -match '\\(COM\\d+\\)' -and
+            $_.Name -match '\(COM\d+\)' -and
             $_.Name -match 'JTAG|Espressif|USB Serial|serial debug'
         }
 
     $ports = @(
         $devices | ForEach-Object {
-            if ($_.Name -match '\\((COM\\d+)\\)') { $Matches[1] }
+            if ($_.Name -match '\((COM\d+)\)') { $Matches[1] }
         } | Select-Object -Unique
     )
 
