@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+pydantic
+faster-whisper
+pyttsx3
+pywin32
