@@ -53,8 +53,11 @@ def main():
         sys.exit(f"{fa_path}: not a firmware build dir (run idf.py build first)")
     fa = json.load(open(fa_path))
     parts = []   # (offset, source path, published name)
+    # Include otadata as well as the app itself. Without it, an ESP32 that
+    # previously booted ota_1 can keep starting that older slot after a USB
+    # installer flash writes the new image to ota_0.
     for key, pub in (("bootloader", "bootloader.bin"), ("partition-table", "partition-table.bin"),
-                     ("app", "kage_eyes.bin")):
+                     ("app", "kage_eyes.bin"), ("otadata", "ota_data_initial.bin")):
         ent = fa[key]
         parts.append((int(ent["offset"], 0), os.path.join(a.build_dir, ent["file"]), pub))
     parts.sort()
