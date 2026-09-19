@@ -15,6 +15,7 @@
 #include "event_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "kage_bridge.h"
 #include "wifi_service.h"
 
 namespace {
@@ -201,8 +202,23 @@ static bool post_audio_to_backend(const int16_t *samples, size_t count) {
                   static_cast<unsigned>((bytes + 1023) / 1024));
 
     const bool on_primary_network = wifi_service_active_profile_index() == 0;
-    bool ok = false;
 
+    if (!on_primary_network && !wifi_service_has_api_key()) {
+        ESP_LOGW(TAG, "Remote voice disabled: no API key");
+        event_log_add("Voice remote: key missing");
+        return false;
+    }
+
+    // Stop /command/latest polling from competing with the voice POST. If a
+    // GET is already in flight, wait for that one request to finish; once this
+    // flag is raised the bridge will not start another GET.
+    if (!kage_bridge_voice_upload_begin(9000)) {
+        ESP_LOGW(TAG, "Voice upload could not acquire network slot");
+        event_log_add("Voice upload blocked by GET");
+        return false;
+    }
+
+    bool ok = false;
     if (on_primary_network) {
         ok = post_audio_url(LOCAL_BACKEND_AUDIO_URL, samples, count, false);
         if (!ok && wifi_service_has_api_key()) {
@@ -210,17 +226,13 @@ static bool post_audio_to_backend(const int16_t *samples, size_t count) {
             ok = post_audio_url(REMOTE_BACKEND_AUDIO_URL, samples, count, true);
         }
     } else {
-        if (!wifi_service_has_api_key()) {
-            ESP_LOGW(TAG, "Remote voice disabled: no API key");
-            event_log_add("Voice remote: key missing");
-            return false;
-        }
-
         ok = post_audio_url(REMOTE_BACKEND_AUDIO_URL, samples, count, true);
         if (!ok) {
             event_log_add("Voice: remote failed");
         }
     }
+
+    kage_bridge_voice_upload_end();
 
     if (!ok) {
         event_log_add("Voice upload failed");

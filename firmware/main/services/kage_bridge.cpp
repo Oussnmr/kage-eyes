@@ -1,5 +1,6 @@
 #include "kage_bridge.h"
 
+#include <atomic>
 #include <cstring>
 
 #include "cJSON.h"
@@ -10,6 +11,7 @@
 #include "eyes/robot_eyes.h"
 #include "event_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "wifi_service.h"
 
@@ -23,6 +25,29 @@ static KageBridgeInfo s_info = {};
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_last_sequence = UINT32_MAX;
 static bool s_started;
+
+// The ESP32-S3 should never run the command poll and a voice upload over
+// HTTPS at the same time. TLS handshakes/buffers are comparatively expensive,
+// especially when Kage is on the iPhone hotspot through Tailscale Funnel.
+//
+// A pending voice upload has priority. The mutex guarantees that a GET already
+// in flight finishes before /audio starts, and that no new GET starts until the
+// upload has completed.
+static std::atomic<bool> s_voice_network_pending{false};
+static SemaphoreHandle_t s_http_mutex;
+static StaticSemaphore_t s_http_mutex_storage;
+static portMUX_TYPE s_http_mutex_init_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static SemaphoreHandle_t http_mutex() {
+    if (s_http_mutex) return s_http_mutex;
+
+    portENTER_CRITICAL(&s_http_mutex_init_lock);
+    if (!s_http_mutex) {
+        s_http_mutex = xSemaphoreCreateMutexStatic(&s_http_mutex_storage);
+    }
+    portEXIT_CRITICAL(&s_http_mutex_init_lock);
+    return s_http_mutex;
+}
 
 static TickType_t current_poll_delay() {
     return wifi_service_active_profile_index() == 0 ? LOCAL_POLL_DELAY : REMOTE_POLL_DELAY;
@@ -146,6 +171,26 @@ static void bridge_task(void *) {
         const char *request_error = "";
         const bool on_primary_network = wifi_service_active_profile_index() == 0;
 
+        // Give a pending voice upload priority over command polling.
+        if (s_voice_network_pending.load(std::memory_order_acquire)) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+
+        SemaphoreHandle_t mutex = http_mutex();
+        if (!mutex || xSemaphoreTake(mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+
+        // Voice may have become pending while this task was waiting for the
+        // mutex. Yield immediately instead of starting another GET.
+        if (s_voice_network_pending.load(std::memory_order_acquire)) {
+            xSemaphoreGive(mutex);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+
         bool request_ok = false;
         if (on_primary_network) {
             request_ok = request_latest(
@@ -160,6 +205,8 @@ static void bridge_task(void *) {
         } else {
             request_error = "Remote key missing";
         }
+
+        xSemaphoreGive(mutex);
 
         if (!request_ok) {
             if (was_reachable) event_log_add("Backend offline: %s", request_error);
@@ -211,8 +258,30 @@ static void bridge_task(void *) {
 void kage_bridge_begin(void) {
     if (s_started) return;
     s_started = true;
+    (void)http_mutex();
     event_log_add("Command bridge starting");
     xTaskCreate(bridge_task, "kage_bridge", 6144, nullptr, 4, nullptr);
+}
+
+bool kage_bridge_voice_upload_begin(uint32_t timeout_ms) {
+    s_voice_network_pending.store(true, std::memory_order_release);
+
+    SemaphoreHandle_t mutex = http_mutex();
+    if (!mutex ||
+        xSemaphoreTake(mutex, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        s_voice_network_pending.store(false, std::memory_order_release);
+        return false;
+    }
+
+    return true;
+}
+
+void kage_bridge_voice_upload_end(void) {
+    SemaphoreHandle_t mutex = http_mutex();
+    s_voice_network_pending.store(false, std::memory_order_release);
+    if (mutex) {
+        xSemaphoreGive(mutex);
+    }
 }
 
 void kage_bridge_get_info(KageBridgeInfo *info) {
