@@ -31,11 +31,13 @@ void ota_task(void *) {
     http.crt_bundle_attach = esp_crt_bundle_attach;
     http.timeout_ms = 30000;
     http.keep_alive_enable = true;
-    http.buffer_size = 8192;
-    http.buffer_size_tx = 2048;
+    http.buffer_size = 4096;
+    http.buffer_size_tx = 1024;
     http.skip_cert_common_name_check = false;
     esp_https_ota_config_t ota = {};
     ota.http_config = &http;
+    ota.partial_http_download = true;
+    ota.max_http_request_size = 4096;
     const esp_err_t result = esp_https_ota(&ota);
     if (result == ESP_OK) {
         set_status("RESTARTING");
