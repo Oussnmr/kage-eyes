@@ -20,6 +20,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_netif_sntp.h"
 #include "esp_netif_ip_addr.h"
 #include "esp_wifi.h"
 #include "event_log.h"
@@ -48,6 +49,8 @@ constexpr char KEY_P1_SSID[] = "p1_ssid";
 constexpr char KEY_P1_PASS[] = "p1_pass";
 constexpr int PROFILE_COUNT = 2;
 constexpr int FAILURES_BEFORE_SWITCH = 3;
+constexpr char KEY_API_KEY[] = "api_key";
+constexpr size_t API_KEY_HEX_LENGTH = 64;
 
 struct WifiProfile {
     bool valid;
@@ -58,6 +61,11 @@ struct WifiProfile {
 static WifiProfile profiles[PROFILE_COUNT] = {};
 static int active_profile = -1;
 static int reconnect_failures = 0;
+static char api_key[API_KEY_HEX_LENGTH + 1] = {};
+static char key_line[96] = {};
+static size_t key_line_len = 0;
+static bool key_line_active = false;
+static bool sntp_started = false;
 
 static bool connected;
 static bool configured;
@@ -101,6 +109,91 @@ static bool load_nvs_string(nvs_handle_t handle, const char *key,
     }
     destination[size - 1] = 0;
     return true;
+}
+
+static bool is_hex_key(const char *value) {
+    if (!value || std::strlen(value) != API_KEY_HEX_LENGTH) return false;
+    for (size_t i = 0; i < API_KEY_HEX_LENGTH; ++i) {
+        const char ch = value[i];
+        const bool digit = ch >= '0' && ch <= '9';
+        const bool lower = ch >= 'a' && ch <= 'f';
+        const bool upper = ch >= 'A' && ch <= 'F';
+        if (!digit && !lower && !upper) return false;
+    }
+    return true;
+}
+
+static bool save_api_key_to_nvs(const char *value) {
+    if (!is_hex_key(value)) return false;
+
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) return false;
+
+    esp_err_t result = nvs_set_str(handle, KEY_API_KEY, value);
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+
+    if (result == ESP_OK) {
+        copy_text(api_key, sizeof(api_key), value);
+        event_log_add("Remote access key saved");
+        ESP_LOGI("kage-wifi", "Remote access key saved in NVS");
+        return true;
+    }
+    return false;
+}
+
+static void load_api_key_from_nvs() {
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return;
+
+    size_t required = sizeof(api_key);
+    const esp_err_t result = nvs_get_str(handle, KEY_API_KEY, api_key, &required);
+    nvs_close(handle);
+
+    if (result != ESP_OK || !is_hex_key(api_key)) {
+        api_key[0] = 0;
+        return;
+    }
+
+    ESP_LOGI("kage-wifi", "Remote access key found in NVS");
+    event_log_add("Remote access key ready");
+}
+
+static void start_sntp_if_needed() {
+    if (sntp_started) return;
+    esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    const esp_err_t result = esp_netif_sntp_init(&config);
+    if (result == ESP_OK) {
+        sntp_started = true;
+        ESP_LOGI("kage-wifi", "SNTP time sync started");
+    } else if (result != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW("kage-wifi", "SNTP init failed: %s", esp_err_to_name(result));
+    }
+}
+
+static void send_serial_text(const char *text) {
+    if (!text) return;
+    usb_serial_jtag_write_bytes(
+        reinterpret_cast<const uint8_t *>(text),
+        std::strlen(text),
+        pdMS_TO_TICKS(100));
+}
+
+static void finish_key_line() {
+    key_line[key_line_len] = 0;
+    constexpr char prefix[] = "KAGEKEY:";
+    const size_t prefix_len = sizeof(prefix) - 1;
+
+    if (std::strncmp(key_line, prefix, prefix_len) == 0 &&
+        save_api_key_to_nvs(key_line + prefix_len)) {
+        send_serial_text("KAGEKEY:OK\n");
+    } else {
+        send_serial_text("KAGEKEY:ERROR\n");
+    }
+
+    key_line_active = false;
+    key_line_len = 0;
+    key_line[0] = 0;
 }
 
 static bool save_profile_to_nvs(int index) {
@@ -382,6 +475,32 @@ static void serial_task(void *) {
             const uint8_t byte = bytes[index];
             static const uint8_t header[] = {'I','M','P','R','O','V'};
 
+            /* A tiny local-only provisioning command for the remote API key.
+               Send exactly: KAGEKEY:<64 hex characters> followed by newline.
+               It is consumed over USB Serial/JTAG and never sent over Wi-Fi. */
+            if (key_line_active) {
+                if (byte == '\r') continue;
+                if (byte == '\n') {
+                    finish_key_line();
+                    continue;
+                }
+                if (key_line_len + 1 >= sizeof(key_line)) {
+                    key_line_active = false;
+                    key_line_len = 0;
+                    send_serial_text("KAGEKEY:ERROR\n");
+                    continue;
+                }
+                key_line[key_line_len++] = static_cast<char>(byte);
+                continue;
+            }
+
+            if (input_len == 0 && byte == 'K') {
+                key_line_active = true;
+                key_line_len = 0;
+                key_line[key_line_len++] = 'K';
+                continue;
+            }
+
             if (input_len < sizeof(header)) {
                 if (byte == header[input_len]) input[input_len++] = byte;
                 else input_len = byte == header[0] ? 1 : 0;
@@ -482,6 +601,7 @@ static void wifi_event(void *, esp_event_base_t base, int32_t id, void *event_da
         portEXIT_CRITICAL(&info_lock);
 
         reconnect_failures = 0;
+        start_sntp_if_needed();
 
         ESP_LOGI("kage-wifi", "Connected to %s with IP %s", ssid, new_ip);
         event_log_add("Wi-Fi online: %s", new_ip[0] ? new_ip : "IP pending");
@@ -511,6 +631,7 @@ void wifi_service_begin(void) {
     ESP_ERROR_CHECK(esp_wifi_get_config(WIFI_IF_STA, &legacy));
 
     load_profiles_from_nvs();
+    load_api_key_from_nvs();
     import_legacy_profile_if_needed(legacy);
 
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
@@ -555,6 +676,7 @@ void wifi_service_forget(void) {
     }
 
     for (auto &profile : profiles) profile = {};
+    api_key[0] = 0;
     active_profile = -1;
     reconnect_failures = 0;
 
@@ -605,4 +727,17 @@ void wifi_service_get_info(WifiServiceInfo *info) {
                       ap.bssid[0], ap.bssid[1], ap.bssid[2],
                       ap.bssid[3], ap.bssid[4], ap.bssid[5]);
     }
+}
+
+
+bool wifi_service_has_api_key(void) {
+    return api_key[0] != 0;
+}
+
+const char *wifi_service_api_key(void) {
+    return api_key;
+}
+
+int wifi_service_active_profile_index(void) {
+    return active_profile;
 }
