@@ -13,6 +13,7 @@
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "event_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -256,6 +257,7 @@ static bool post_audio_to_backend(const int16_t *samples, size_t count) {
         return false;
     }
 
+    const int64_t upload_start_us = esp_timer_get_time();
     bool ok = false;
     if (on_primary_network) {
         ok = post_audio_url(LOCAL_BACKEND_AUDIO_URL, samples, count, false);
@@ -271,6 +273,10 @@ static bool post_audio_to_backend(const int16_t *samples, size_t count) {
     }
 
     kage_bridge_voice_upload_end();
+
+    const double upload_ms = (esp_timer_get_time() - upload_start_us) / 1000.0;
+    ESP_LOGI(TAG, "Voice upload/response: %.1f ms", upload_ms);
+    event_log_add("Voice upload/response: %.0f ms", upload_ms);
 
     if (!ok) {
         event_log_add("Voice upload failed");
@@ -305,6 +311,7 @@ static void microphone_task(void *) {
     int start_confirm = 0;
     float noise_floor = 0.008f;
     float envelope = 0.0f;
+    int64_t capture_start_us = 0;
 
     /* app_shell also initializes devices on the shared I2C bus during boot.
        Let that finish before the codec claims the bus. */
@@ -362,6 +369,7 @@ static void microphone_task(void *) {
                     pre_roll_copy(s_recording, MAX_RECORD_SAMPLES);
                 silent_samples = 0;
                 speaking = true;
+                capture_start_us = esp_timer_get_time();
                 start_confirm = 0;
                 ESP_LOGI(TAG, "Voice start (noise %.4f, rms %.4f)",
                          noise_floor, rms);
@@ -394,6 +402,12 @@ static void microphone_task(void *) {
                  reached_limit ? " (limit)" : "");
         event_log_add("Voice captured: %.1f s",
                       static_cast<double>(recording_samples) / SAMPLE_RATE);
+
+        const int64_t speech_end_us = esp_timer_get_time();
+        event_log_add("Voice endpoint: %.0f ms capture",
+                      capture_start_us > 0
+                          ? (speech_end_us - capture_start_us) / 1000.0
+                          : 0.0);
 
         post_audio_to_backend(s_recording, recording_samples);
 
