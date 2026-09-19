@@ -7,6 +7,7 @@
 
 #include "bsp/esp-bsp.h"
 #include "esp_codec_dev.h"
+#include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
