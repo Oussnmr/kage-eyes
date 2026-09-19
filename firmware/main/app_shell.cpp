@@ -17,6 +17,7 @@
 #include "services/event_log.h"
 #include "services/kage_bridge.h"
 #include "services/ota_service.h"
+#include "services/speaker_test.h"
 #include "services/wifi_service.h"
 
 #ifndef LV_SYMBOL_EYE_OPEN
@@ -33,6 +34,7 @@ constexpr uint32_t COLOR_BORDER = 0x2A3A46;
 constexpr uint32_t COLOR_TEXT = 0xEAFBFF;
 constexpr uint32_t COLOR_MUTED = 0x78909C;
 constexpr uint32_t COLOR_CYAN = 0x4FE3FF;
+constexpr uint32_t COLOR_ORANGE = 0xFFB35C;
 constexpr uint32_t COLOR_ORB = 0xA78BFA;
 constexpr uint32_t COLOR_RED = 0xFF5964;
 constexpr int BUBBLE_COUNT = 7;
@@ -377,6 +379,7 @@ static void microphone_animation(lv_timer_t *) {
     uint32_t color = COLOR_MUTED;
     if (state == MicMeterState::Starting) status = "STARTING";
     else if (state == MicMeterState::Listening) { status = "LISTENING"; color = COLOR_CYAN; }
+    else if (state == MicMeterState::Processing) { status = "PROCESSING"; color = COLOR_ORANGE; }
     else if (state == MicMeterState::Error) { status = "MIC ERROR"; color = COLOR_RED; }
     lv_label_set_text_fmt(s_mic_status, "%s  %d%%", status, static_cast<int>(level * 100.0f));
     lv_obj_set_style_text_color(s_mic_status, lv_color_hex(color), 0);
@@ -543,6 +546,19 @@ static void create_system_screen() {
                         LV_EVENT_SHORT_CLICKED, nullptr);
     lv_obj_t *update_text = make_label(update, "UPDATE FIRMWARE", &lv_font_montserrat_14, COLOR_CYAN);
     lv_obj_center(update_text);
+
+    lv_obj_t *speaker_test = lv_button_create(s_system);
+    lv_obj_set_size(speaker_test, 214, 34);
+    lv_obj_align(speaker_test, LV_ALIGN_BOTTOM_MID, 0, -94);
+    lv_obj_set_style_bg_color(speaker_test, lv_color_hex(COLOR_SURFACE_2), 0);
+    lv_obj_set_style_border_color(speaker_test, lv_color_hex(COLOR_CYAN), 0);
+    lv_obj_set_style_border_width(speaker_test, 1, 0);
+    lv_obj_set_style_radius(speaker_test, LV_RADIUS_CIRCLE, 0);
+    lv_obj_add_flag(speaker_test, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(speaker_test, [](lv_event_t *) { speaker_test_play(); },
+                        LV_EVENT_SHORT_CLICKED, nullptr);
+    lv_obj_t *speaker_test_text = make_label(speaker_test, "TEST SPEAKER", &lv_font_montserrat_14, COLOR_CYAN);
+    lv_obj_center(speaker_test_text);
 
     s_ota_status = make_label(s_system, ota_service_status(), &lv_font_montserrat_14, COLOR_MUTED);
     lv_obj_align(s_ota_status, LV_ALIGN_BOTTOM_MID, 0, -50);

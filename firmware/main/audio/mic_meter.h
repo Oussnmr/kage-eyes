@@ -4,6 +4,7 @@ enum class MicMeterState {
     Off,
     Starting,
     Listening,
+    Processing,
     Error,
 };
 

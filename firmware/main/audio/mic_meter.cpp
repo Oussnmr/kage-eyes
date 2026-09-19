@@ -226,6 +226,13 @@ static bool post_audio_url(const char *url, const int16_t *samples, size_t count
     return true;
 }
 
+static void close_microphone() {
+    if (!s_microphone) return;
+    esp_codec_dev_close(s_microphone);
+    esp_codec_dev_delete(s_microphone);
+    s_microphone = nullptr;
+}
+
 static bool post_audio_to_backend(const int16_t *samples, size_t count) {
     if (!samples || count < MIN_PHRASE_SAMPLES) return false;
     if (!wifi_service_connected()) {
@@ -335,7 +342,13 @@ static void microphone_task(void *) {
             s_state.store(MicMeterState::Error);
             s_level.store(0.0f);
             ESP_LOGW(TAG, "Microphone read failed: %d", result);
-            vTaskDelay(pdMS_TO_TICKS(100));
+            event_log_add("Microphone read failed; retrying");
+            /* The codec I2S driver uses a finite 1 s read timeout. Once it
+               reports an error it is safe to release this handle and reopen
+               it on the same task, rather than leaving the UI at 0%% forever. */
+            close_microphone();
+            initialized = false;
+            vTaskDelay(pdMS_TO_TICKS(250));
             continue;
         }
 
@@ -411,6 +424,7 @@ static void microphone_task(void *) {
                           ? (speech_end_us - capture_start_us) / 1000.0
                           : 0.0);
 
+        s_state.store(MicMeterState::Processing);
         post_audio_to_backend(s_recording, recording_samples);
 
         speaking = false;
