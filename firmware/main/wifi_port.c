@@ -128,8 +128,8 @@ void wifi_port_init(void) {
         nvs_close(nvs);
     }
     wifi_config_t station = {0};
-    strncpy((char *)station.sta.ssid, ssid, sizeof(station.sta.ssid) - 1);
-    strncpy((char *)station.sta.password, password, sizeof(station.sta.password) - 1);
+    memcpy(station.sta.ssid, ssid, strnlen(ssid, sizeof(station.sta.ssid) - 1));
+    memcpy(station.sta.password, password, strnlen(password, sizeof(station.sta.password) - 1));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     if (saved == ESP_OK) ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &station));
     ESP_ERROR_CHECK(esp_wifi_start());

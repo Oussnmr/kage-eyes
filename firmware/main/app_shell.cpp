@@ -17,6 +17,7 @@
 #include "services/event_log.h"
 #include "services/kage_bridge.h"
 #include "services/wifi_service.h"
+#include "wifi_port.h"
 
 #ifndef LV_SYMBOL_EYE_OPEN
 #define LV_SYMBOL_EYE_OPEN "o o"
@@ -527,6 +528,19 @@ static void create_system_screen() {
     lv_obj_set_pos(s_system_values, 24, 22);
     lv_obj_set_style_text_line_space(s_system_values, 10, 0);
     lv_timer_create(system_animation, 1000, nullptr);
+
+    lv_obj_t *update = lv_button_create(s_system);
+    lv_obj_set_size(update, 214, 34);
+    lv_obj_align(update, LV_ALIGN_BOTTOM_MID, 0, -12);
+    lv_obj_set_style_bg_color(update, lv_color_hex(COLOR_SURFACE_2), 0);
+    lv_obj_set_style_border_color(update, lv_color_hex(COLOR_CYAN), 0);
+    lv_obj_set_style_border_width(update, 1, 0);
+    lv_obj_set_style_radius(update, LV_RADIUS_CIRCLE, 0);
+    lv_obj_add_flag(update, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(update, [](lv_event_t *) { wifi_port_start_update(); },
+                        LV_EVENT_SHORT_CLICKED, nullptr);
+    lv_obj_t *update_text = make_label(update, "UPDATE FIRMWARE", &lv_font_montserrat_14, COLOR_CYAN);
+    lv_obj_center(update_text);
 }
 
 static void show_wifi_overview(lv_event_t *) {
