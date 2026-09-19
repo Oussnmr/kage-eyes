@@ -12,3 +12,18 @@ to `POST /audio`. The backend:
 5. optionally speaks the reply through the M920q Windows audio output.
 
 The live copy is expected at `C:\Kage\app.py`.
+
+
+## Remote access security
+
+Sensitive endpoints require the `X-Kage-Key` header. The backend reads the
+expected 64-character secret from the `KAGE_API_KEY` environment variable.
+The secret must never be committed to this repository.
+
+Kage stores the same secret locally in NVS after USB Serial/JTAG provisioning.
+Use `tools/provision_kage_key.ps1` from Windows after flashing the firmware.
+
+The firmware prefers the local M920q endpoint on Wi-Fi profile 1 and uses the
+HTTPS Funnel endpoint on profile 2. The HTTPS client validates the server
+certificate with the ESP-IDF certificate bundle; SNTP is started after Wi-Fi
+gets an IP so certificate dates can be checked.

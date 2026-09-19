@@ -7,6 +7,7 @@
 
 #include "bsp/esp-bsp.h"
 #include "esp_codec_dev.h"
+#include "esp_crt_bundle.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
@@ -18,7 +19,8 @@
 
 namespace {
 constexpr char TAG[] = "kage-mic";
-constexpr char BACKEND_AUDIO_URL[] = "http://192.168.129.157:8000/audio";
+constexpr char LOCAL_BACKEND_AUDIO_URL[] = "http://192.168.129.157:8000/audio";
+constexpr char REMOTE_BACKEND_AUDIO_URL[] = "https://m920q.tailbf4c85.ts.net:8443/audio";
 
 constexpr int SAMPLE_RATE = 16000;
 constexpr int SAMPLE_COUNT = 256;
@@ -132,6 +134,58 @@ static bool append_recording(const int16_t *samples, size_t count, size_t *used)
     return copy_count == count;
 }
 
+static bool post_audio_url(const char *url, const int16_t *samples, size_t count,
+                           bool remote) {
+    const size_t bytes = count * sizeof(int16_t);
+
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.timeout_ms = POST_TIMEOUT_MS;
+    if (remote) {
+        config.crt_bundle_attach = esp_crt_bundle_attach;
+    }
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        ESP_LOGE(TAG, "Could not create audio HTTP client");
+        return false;
+    }
+
+    esp_http_client_set_method(client, HTTP_METHOD_POST);
+    esp_http_client_set_header(client, "Content-Type", "application/octet-stream");
+    esp_http_client_set_header(client, "X-Kage-Audio-Format", "s16le-mono");
+    esp_http_client_set_header(client, "X-Kage-Sample-Rate", "16000");
+
+    const char *api_key = wifi_service_api_key();
+    if (api_key && api_key[0]) {
+        esp_http_client_set_header(client, "X-Kage-Key", api_key);
+    }
+
+    esp_http_client_set_post_field(
+        client,
+        reinterpret_cast<const char *>(samples),
+        static_cast<int>(bytes));
+
+    const esp_err_t result = esp_http_client_perform(client);
+    const int status =
+        result == ESP_OK ? esp_http_client_get_status_code(client) : 0;
+    esp_http_client_cleanup(client);
+
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "%s audio upload failed: %s",
+                 remote ? "Remote" : "Local", esp_err_to_name(result));
+        return false;
+    }
+
+    if (status != 200) {
+        ESP_LOGW(TAG, "%s audio backend returned HTTP %d",
+                 remote ? "Remote" : "Local", status);
+        return false;
+    }
+
+    return true;
+}
+
 static bool post_audio_to_backend(const int16_t *samples, size_t count) {
     if (!samples || count < MIN_PHRASE_SAMPLES) return false;
     if (!wifi_service_connected()) {
@@ -146,40 +200,30 @@ static bool post_audio_to_backend(const int16_t *samples, size_t count) {
     event_log_add("Voice upload: %u KB",
                   static_cast<unsigned>((bytes + 1023) / 1024));
 
-    esp_http_client_config_t config = {};
-    config.url = BACKEND_AUDIO_URL;
-    config.timeout_ms = POST_TIMEOUT_MS;
+    const bool on_primary_network = wifi_service_active_profile_index() == 0;
+    bool ok = false;
 
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) {
-        ESP_LOGE(TAG, "Could not create audio HTTP client");
-        event_log_add("Voice upload: HTTP init failed");
-        return false;
+    if (on_primary_network) {
+        ok = post_audio_url(LOCAL_BACKEND_AUDIO_URL, samples, count, false);
+        if (!ok && wifi_service_has_api_key()) {
+            event_log_add("Voice: local failed, trying remote");
+            ok = post_audio_url(REMOTE_BACKEND_AUDIO_URL, samples, count, true);
+        }
+    } else {
+        if (!wifi_service_has_api_key()) {
+            ESP_LOGW(TAG, "Remote voice disabled: no API key");
+            event_log_add("Voice remote: key missing");
+            return false;
+        }
+
+        ok = post_audio_url(REMOTE_BACKEND_AUDIO_URL, samples, count, true);
+        if (!ok) {
+            event_log_add("Voice: remote failed");
+        }
     }
 
-    esp_http_client_set_method(client, HTTP_METHOD_POST);
-    esp_http_client_set_header(client, "Content-Type", "application/octet-stream");
-    esp_http_client_set_header(client, "X-Kage-Audio-Format", "s16le-mono");
-    esp_http_client_set_header(client, "X-Kage-Sample-Rate", "16000");
-    esp_http_client_set_post_field(
-        client,
-        reinterpret_cast<const char *>(samples),
-        static_cast<int>(bytes));
-
-    const esp_err_t result = esp_http_client_perform(client);
-    const int status =
-        result == ESP_OK ? esp_http_client_get_status_code(client) : 0;
-    esp_http_client_cleanup(client);
-
-    if (result != ESP_OK) {
-        ESP_LOGW(TAG, "Audio upload failed: %s", esp_err_to_name(result));
-        event_log_add("Voice upload failed: %s", esp_err_to_name(result));
-        return false;
-    }
-
-    if (status != 200) {
-        ESP_LOGW(TAG, "Audio backend returned HTTP %d", status);
-        event_log_add("Voice backend HTTP %d", status);
+    if (!ok) {
+        event_log_add("Voice upload failed");
         return false;
     }
 

@@ -36,3 +36,7 @@ CONFIG_LV_FONT_MONTSERRAT_24=y
 # Two persistent internal DMA buffers (draw + software rotation): 47,104 bytes.
 # The QSPI panel uses partial rendering, not RGB full-frame/tearing modes.
 CONFIG_BSP_DISPLAY_LVGL_BUF_HEIGHT=32
+
+# HTTPS fallback to the M920q Funnel uses the ESP x509 certificate bundle.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y

@@ -4,6 +4,7 @@ from starlette.concurrency import run_in_threadpool
 
 from faster_whisper import WhisperModel
 
+import hmac
 import json
 import os
 import re
@@ -23,17 +24,21 @@ except ImportError:
     pythoncom = None
 
 
-app = FastAPI(title="Kage M920q Backend")
+app = FastAPI(title="Kage M920q Backend", docs_url=None, redoc_url=None, openapi_url=None)
 
 VALID_COMMANDS = {"idle", "blink", "sleep", "angry", "dizzy"}
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 OLLAMA_MODEL = "qwen3:4b-instruct-2507-q4_K_M"
+KAGE_API_KEY = os.getenv("KAGE_API_KEY", "").strip()
 
 AUDIO_SAMPLE_RATE = 16000
 AUDIO_CHANNELS = 1
 AUDIO_SAMPLE_WIDTH = 2
 MAX_AUDIO_BYTES = AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH * 12
 TTS_ENABLED = True
+
+if not KAGE_API_KEY:
+    print("ATTENTION: KAGE_API_KEY absent. Les endpoints protégés refuseront les requêtes.")
 
 state_lock = threading.Lock()
 state = {
@@ -52,6 +57,18 @@ print("Whisper small prêt.")
 
 class AskRequest(BaseModel):
     message: str
+
+
+def require_kage_key(request: Request) -> None:
+    if not KAGE_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="KAGE_API_KEY n'est pas configurée sur le M920q",
+        )
+
+    provided = request.headers.get("x-kage-key", "")
+    if not provided or not hmac.compare_digest(provided, KAGE_API_KEY):
+        raise HTTPException(status_code=401, detail="Clé Kage invalide")
 
 
 def normalize_kage_name(text: str) -> str:
@@ -273,7 +290,8 @@ def process_audio(pcm: bytes) -> dict:
 
 
 @app.get("/status")
-def get_status():
+def get_status(request: Request):
+    require_kage_key(request)
     current = current_state()
     return {
         "server": "Kage",
@@ -284,7 +302,8 @@ def get_status():
 
 
 @app.post("/command/{command}")
-def send_command(command: str):
+def send_command(command: str, request: Request):
+    require_kage_key(request)
     command = command.lower().strip()
     if command not in VALID_COMMANDS:
         raise HTTPException(
@@ -301,17 +320,20 @@ def send_command(command: str):
 
 
 @app.get("/command/latest")
-def latest_command():
+def latest_command(request: Request):
+    require_kage_key(request)
     return current_state()
 
 
 @app.post("/ask")
-def ask(body: AskRequest):
+def ask(body: AskRequest, request: Request):
+    require_kage_key(request)
     return process_message(body.message)
 
 
 @app.post("/audio")
 async def audio(request: Request):
+    require_kage_key(request)
     if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/octet-stream":
         raise HTTPException(
             status_code=415,
