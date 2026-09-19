@@ -40,3 +40,16 @@ CONFIG_BSP_DISPLAY_LVGL_BUF_HEIGHT=32
 # HTTPS fallback to the M920q Funnel uses the ESP x509 certificate bundle.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# Remote HTTPS/Tailscale Funnel memory tuning.
+# Current Let's Encrypt chains can require an RSA-4096 verification step.
+# Keep the full 16 KB RX record size for standards-compliant servers, but make
+# TLS buffers dynamic and place mbedTLS allocations in the board's 8 MB PSRAM
+# so certificate verification does not exhaust fragmented internal heap.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN=y
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CA_CERT=y
