@@ -24,7 +24,7 @@ except ImportError:
     pythoncom = None
 
 
-app = FastAPI(title="Kage M920q Backend")
+app = FastAPI(title="Kage M920q Backend", docs_url=None, redoc_url=None, openapi_url=None)
 
 VALID_COMMANDS = {"idle", "blink", "sleep", "angry", "dizzy"}
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
@@ -290,7 +290,8 @@ def process_audio(pcm: bytes) -> dict:
 
 
 @app.get("/status")
-def get_status():
+def get_status(request: Request):
+    require_kage_key(request)
     current = current_state()
     return {
         "server": "Kage",
