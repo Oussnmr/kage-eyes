@@ -669,8 +669,8 @@ void app_shell_begin(lv_display_t *display) {
     create_system_screen();
     create_wifi_screen();
     create_storage_screen();
-    mic_meter_begin();
     battery_monitor_begin(bsp_i2c_get_handle());
+    mic_meter_begin();
     lv_timer_create(battery_animation, 500, nullptr);
     set_app_activity(static_cast<AppId>(-1));
     s_home_last_us = esp_timer_get_time();
