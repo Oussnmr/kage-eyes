@@ -16,12 +16,17 @@
 namespace {
 constexpr const char *LOCAL_BACKEND_URL = "http://192.168.129.157:8000/command/latest";
 constexpr const char *REMOTE_BACKEND_URL = "https://m920q.tailbf4c85.ts.net:8443/command/latest";
-constexpr TickType_t POLL_DELAY = pdMS_TO_TICKS(500);
+constexpr TickType_t LOCAL_POLL_DELAY = pdMS_TO_TICKS(500);
+constexpr TickType_t REMOTE_POLL_DELAY = pdMS_TO_TICKS(2500);
 
 static KageBridgeInfo s_info = {};
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_last_sequence = UINT32_MAX;
 static bool s_started;
+
+static TickType_t current_poll_delay() {
+    return wifi_service_active_profile_index() == 0 ? LOCAL_POLL_DELAY : REMOTE_POLL_DELAY;
+}
 
 static void copy_text(char *destination, size_t size, const char *source) {
     if (!destination || size == 0) return;
@@ -132,7 +137,7 @@ static void bridge_task(void *) {
             }
             update_info(false, 0, s_last_sequence == UINT32_MAX ? 0 : s_last_sequence,
                         "", "Wi-Fi disconnected");
-            vTaskDelay(POLL_DELAY);
+            vTaskDelay(current_poll_delay());
             continue;
         }
 
@@ -161,7 +166,7 @@ static void bridge_task(void *) {
             was_reachable = false;
             update_info(false, status, s_last_sequence == UINT32_MAX ? 0 : s_last_sequence,
                         "", request_error);
-            vTaskDelay(POLL_DELAY);
+            vTaskDelay(current_poll_delay());
             continue;
         }
 
@@ -174,7 +179,7 @@ static void bridge_task(void *) {
             was_reachable = false;
             update_info(false, status, s_last_sequence == UINT32_MAX ? 0 : s_last_sequence,
                         "", "Invalid JSON");
-            vTaskDelay(POLL_DELAY);
+            vTaskDelay(current_poll_delay());
             continue;
         }
 
@@ -198,7 +203,7 @@ static void bridge_task(void *) {
         }
 
         cJSON_Delete(root);
-        vTaskDelay(POLL_DELAY);
+        vTaskDelay(current_poll_delay());
     }
 }
 }  // namespace
