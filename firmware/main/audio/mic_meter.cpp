@@ -442,6 +442,25 @@ static void microphone_task(void *) {
     vTaskDelay(pdMS_TO_TICKS(600));
 
     while (true) {
+        /* Privacy and traffic gate: outside the Microphone application, do
+           not keep the codec recording and never run VAD or upload audio. */
+        if (!s_active.load(std::memory_order_relaxed)) {
+            if (initialized) {
+                close_microphone();
+                initialized = false;
+            }
+            speaking = false;
+            recording_samples = 0;
+            silent_samples = 0;
+            start_confirm = 0;
+            s_pre_roll_write = 0;
+            s_pre_roll_filled = 0;
+            s_level.store(0.0f, std::memory_order_relaxed);
+            s_state.store(MicMeterState::Off, std::memory_order_relaxed);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
         if (!initialized) {
             initialized = open_microphone();
             if (!initialized) {

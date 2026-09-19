@@ -9,6 +9,7 @@
 #include "battery_monitor.h"
 #include "bsp/esp-bsp.h"
 #include "esp_heap_caps.h"
+#include "esp_app_desc.h"
 #include "esp_idf_version.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -216,7 +217,9 @@ static void select_bubble(int index) {
 
 static void set_app_activity(AppId app) {
     robot_eyes_set_active(app == APP_ROBOT);
-    mic_meter_set_active(app == APP_MIC);
+    /* Voice interaction is available only in the Kage face and Microphone
+       applications. All other screens close the microphone and block uploads. */
+    mic_meter_set_active(app == APP_ROBOT || app == APP_MIC);
 }
 
 static lv_obj_t *screen_for(AppId app) {
@@ -506,8 +509,10 @@ static void system_animation(lv_timer_t *) {
     } else {
         std::snprintf(battery_text, sizeof(battery_text), "NOT DETECTED");
     }
+    const esp_app_desc_t *app = esp_app_get_description();
     lv_label_set_text_fmt(s_system_values,
-                          "ESP32-S3  240 MHz\nBattery         %s\nFree memory     %lu KB\nFree PSRAM      %lu KB\nUptime          %llu s\nESP-IDF         %s",
+                          "Firmware        %s\nESP32-S3  240 MHz\nBattery         %s\nFree memory     %lu KB\nFree PSRAM      %lu KB\nUptime          %llu s\nESP-IDF         %s",
+                          app && app->version[0] ? app->version : "unknown",
                           battery_text, static_cast<unsigned long>(heap_kb),
                           static_cast<unsigned long>(psram_kb),
                           static_cast<unsigned long long>(uptime), esp_get_idf_version());
