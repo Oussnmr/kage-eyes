@@ -4,6 +4,7 @@
 
 #include "cJSON.h"
 #include "esp_err.h"
+#include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "eyes/robot_eyes.h"
@@ -13,7 +14,8 @@
 #include "wifi_service.h"
 
 namespace {
-constexpr const char *BACKEND_URL = "http://192.168.129.157:8000/command/latest";
+constexpr const char *LOCAL_BACKEND_URL = "http://192.168.129.157:8000/command/latest";
+constexpr const char *REMOTE_BACKEND_URL = "https://m920q.tailbf4c85.ts.net:8443/command/latest";
 constexpr TickType_t POLL_DELAY = pdMS_TO_TICKS(500);
 
 static KageBridgeInfo s_info = {};
@@ -53,6 +55,46 @@ static esp_err_t http_event(esp_http_client_event_t *event) {
         response->body[response->length] = 0;
     }
     return ESP_OK;
+}
+
+static bool request_latest(const char *url, bool remote, HttpResponse *response,
+                           int *status, const char **error) {
+    if (!url || !response || !status || !error) return false;
+
+    *response = {};
+    *status = 0;
+    *error = "";
+
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.timeout_ms = remote ? 6000 : 1800;
+    config.event_handler = http_event;
+    config.user_data = response;
+    if (remote) {
+        config.crt_bundle_attach = esp_crt_bundle_attach;
+    }
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        *error = "HTTP init failed";
+        return false;
+    }
+
+    const char *api_key = wifi_service_api_key();
+    if (api_key && api_key[0]) {
+        esp_http_client_set_header(client, "X-Kage-Key", api_key);
+    }
+
+    const esp_err_t result = esp_http_client_perform(client);
+    *status = result == ESP_OK ? esp_http_client_get_status_code(client) : 0;
+    if (result != ESP_OK) {
+        *error = esp_err_to_name(result);
+    } else if (*status != 200) {
+        *error = "HTTP status error";
+    }
+
+    esp_http_client_cleanup(client);
+    return result == ESP_OK && *status == 200;
 }
 
 static void update_info(bool reachable, int status, uint32_t sequence,
@@ -95,30 +137,30 @@ static void bridge_task(void *) {
         }
 
         HttpResponse response = {};
-        esp_http_client_config_t config = {};
-        config.url = BACKEND_URL;
-        config.timeout_ms = 1800;
-        config.event_handler = http_event;
-        config.user_data = &response;
+        int status = 0;
+        const char *request_error = "";
+        const bool on_primary_network = wifi_service_active_profile_index() == 0;
 
-        esp_http_client_handle_t client = esp_http_client_init(&config);
-        if (!client) {
-            update_info(false, 0, s_last_sequence == UINT32_MAX ? 0 : s_last_sequence,
-                        "", "HTTP init failed");
-            vTaskDelay(POLL_DELAY);
-            continue;
+        bool request_ok = false;
+        if (on_primary_network) {
+            request_ok = request_latest(
+                LOCAL_BACKEND_URL, false, &response, &status, &request_error);
+            if (!request_ok && wifi_service_has_api_key()) {
+                request_ok = request_latest(
+                    REMOTE_BACKEND_URL, true, &response, &status, &request_error);
+            }
+        } else if (wifi_service_has_api_key()) {
+            request_ok = request_latest(
+                REMOTE_BACKEND_URL, true, &response, &status, &request_error);
+        } else {
+            request_error = "Remote key missing";
         }
 
-        const esp_err_t result = esp_http_client_perform(client);
-        const int status = result == ESP_OK ? esp_http_client_get_status_code(client) : 0;
-        esp_http_client_cleanup(client);
-
-        if (result != ESP_OK || status != 200) {
-            const char *error = result == ESP_OK ? "HTTP status error" : esp_err_to_name(result);
-            if (was_reachable) event_log_add("Backend offline: %s", error);
+        if (!request_ok) {
+            if (was_reachable) event_log_add("Backend offline: %s", request_error);
             was_reachable = false;
             update_info(false, status, s_last_sequence == UINT32_MAX ? 0 : s_last_sequence,
-                        "", error);
+                        "", request_error);
             vTaskDelay(POLL_DELAY);
             continue;
         }
