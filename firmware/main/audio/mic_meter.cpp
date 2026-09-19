@@ -240,9 +240,11 @@ static bool post_audio_to_backend(const int16_t *samples, size_t count) {
     event_log_add("Voice upload: %u KB",
                   static_cast<unsigned>((bytes + 1023) / 1024));
 
-    const bool on_primary_network = wifi_service_active_profile_index() == 0;
+    WifiServiceInfo wifi = {};
+    wifi_service_get_info(&wifi);
+    const bool on_local_lan = std::strncmp(wifi.ip, "192.168.129.", 13) == 0;
 
-    if (!on_primary_network && !wifi_service_has_api_key()) {
+    if (!on_local_lan && !wifi_service_has_api_key()) {
         ESP_LOGW(TAG, "Remote voice disabled: no API key");
         event_log_add("Voice remote: key missing");
         return false;
@@ -259,7 +261,7 @@ static bool post_audio_to_backend(const int16_t *samples, size_t count) {
 
     const int64_t upload_start_us = esp_timer_get_time();
     bool ok = false;
-    if (on_primary_network) {
+    if (on_local_lan) {
         ok = post_audio_url(LOCAL_BACKEND_AUDIO_URL, samples, count, false);
         if (!ok && wifi_service_has_api_key()) {
             event_log_add("Voice: local failed, trying remote");
