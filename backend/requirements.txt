@@ -7,3 +7,4 @@ pywin32
 numpy
 sounddevice
 kokoro-onnx
+pocketsphinx==5.0.4

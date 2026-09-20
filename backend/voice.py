@@ -9,6 +9,7 @@ import collections
 import pyttsx3
 from concurrent.futures import ThreadPoolExecutor
 import re
+from pocketsphinx import LiveSpeech
 
 SAMPLE_RATE = 16000
 MIC_DEVICE = None  # garde le numéro qui fonctionne actuellement chez toi
@@ -20,6 +21,9 @@ BLOCK_MS = 50
 SILENCE_AFTER_SPEECH = 0.7   # traite après 0,7 s de silence
 MAX_RECORD_SECONDS = 12
 PRE_ROLL_SECONDS = 0.30
+WAKE_WORD_ENABLED = os.getenv("KAGE_WAKE_WORD", "1").strip().lower() in {"1", "true", "yes", "on"}
+WAKE_KEYPHRASE = "cage"  # English pronunciation of Kage.
+WAKE_THRESHOLD = float(os.getenv("KAGE_WAKE_THRESHOLD", "1e-18"))
 
 print("Chargement de Whisper...")
 
@@ -76,6 +80,23 @@ def is_direct_command(text):
     )
     return any(normalized == phrase or normalized.endswith(" " + phrase)
                for phrase in phrases)
+
+
+def wait_for_wake_word():
+    """Block locally until the PC microphone hears Kage; no audio leaves the PC."""
+    print("\n🟣 Wake word active — say ‘Kage’.")
+    listener = LiveSpeech(
+        keyphrase=WAKE_KEYPHRASE,
+        kws_threshold=WAKE_THRESHOLD,
+        sampling_rate=SAMPLE_RATE,
+        audio_device=MIC_DEVICE,
+    )
+    try:
+        for _ in listener:
+            print("🟣 Kage detected")
+            return True
+    finally:
+        listener.ad.close()
 
 
 def speak(text):
@@ -266,12 +287,16 @@ def send_to_kage(text):
 print("\nKage Voice prêt.")
 
 while True:
-    choice = input(
-        "\nEntrée = parler | q = quitter : "
-    )
-
-    if choice.lower() == "q":
-        break
+    if WAKE_WORD_ENABLED:
+        try:
+            wait_for_wake_word()
+        except KeyboardInterrupt:
+            break
+        speak("I'm listening.")
+    else:
+        choice = input("\nEntrée = parler | q = quitter : ")
+        if choice.lower() == "q":
+            break
 
     try:
         recorded = record_until_silence()

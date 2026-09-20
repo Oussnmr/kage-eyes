@@ -199,4 +199,11 @@ Replace the local confirmation tone with a real backend-generated audio stream, 
 
 ## Exact next step
 
-Implement the PC-local wake word `Kage`, so the microphone audio is not sent for transcription until the wake word has been detected. Then add interruption while Kagé is speaking.
+Test the PC-local wake word `Kage` with the user. It uses PocketSphinx keyword spotting and no audio leaves the PC until wake detection. Then tune sensitivity from real results before adding interruption while Kagé is speaking.
+
+### PC wake word prototype — 2026-09-20
+
+- Installed the free local `pocketsphinx 5.0.4` package. It has an included English acoustic model and does not require an account, access key, cloud request, or payment.
+- `C:\Kage\voice.py` now starts in wake-word mode by default. It waits locally for English-pronounced `Kage` (detected as phonetic `cage`), says “I’m listening”, then records and processes the following command.
+- `KAGE_WAKE_WORD=0` restores the previous Enter-to-speak mode if required for debugging.
+- Microphone initialization passed. Real false-positive/false-negative testing is pending.
