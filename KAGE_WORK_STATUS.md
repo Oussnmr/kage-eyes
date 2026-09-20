@@ -286,3 +286,10 @@ Restart the PC voice session and compare two multi-sentence questions with the n
 
 - User selected Kokoro's American-English male `am_puck` voice.
 - `KAGE_TTS_VOICE` now selects the default consistently for the backend, direct speech endpoint, and PC voice client. Its default is `am_puck`, so future launches retain the choice without storing a secret.
+
+### Assistant states, first integration — 2026-09-20
+
+- Added a separate transient assistant-state channel: `idle`, `listening`, `thinking`, `speaking`, `error`, and `offline`. It does not replace the persistent remote emotion commands such as Angry, Dizzy, or Sleep.
+- The PC voice client publishes state changes asynchronously to the authenticated local backend. A network failure cannot delay recording, STT, Codex, or audio playback.
+- The ESP32 command bridge consumes state updates alongside its existing command polling. Listening uses green eyes, Thinking purple, Error red, Offline dim, and Speaking animates the existing mouth locally.
+- No firmware flash has been performed. The next step is CI firmware compilation, then user-directed OTA/USB installation and visual verification.

@@ -20,3 +20,12 @@ void robot_eyes_remote_blink();
 void robot_eyes_remote_sleep();
 void robot_eyes_remote_angry();
 void robot_eyes_remote_dizzy();
+
+/* Transient assistant activity from the PC voice pipeline. These overlays do
+ * not replace the existing remote emotion commands. */
+void robot_eyes_assistant_idle();
+void robot_eyes_assistant_listening();
+void robot_eyes_assistant_thinking();
+void robot_eyes_assistant_speaking();
+void robot_eyes_assistant_error();
+void robot_eyes_assistant_offline();

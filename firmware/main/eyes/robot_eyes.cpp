@@ -29,6 +29,8 @@ constexpr int ANGRY_STRIPES = 9;
 constexpr uint32_t CYAN = 0x4FE3FF;
 constexpr uint32_t GREEN = 0x42F58D;
 constexpr uint32_t RED = 0xFF4057;
+constexpr uint32_t PURPLE = 0xB58CFF;
+constexpr uint32_t DIM = 0x3F5260;
 
 static lv_obj_t *s_left_eye;
 static lv_obj_t *s_right_eye;
@@ -72,10 +74,19 @@ enum RemoteCommand {
     REMOTE_ANGRY,
     REMOTE_DIZZY,
 };
+enum AssistantState {
+    ASSISTANT_IDLE = 0,
+    ASSISTANT_LISTENING,
+    ASSISTANT_THINKING,
+    ASSISTANT_SPEAKING,
+    ASSISTANT_ERROR,
+    ASSISTANT_OFFLINE,
+};
 
 static std::atomic<bool> s_shake_pending{false};
 static std::atomic<bool> s_charge_pending{false};
 static std::atomic<int> s_remote_command{REMOTE_NONE};
+static std::atomic<int> s_assistant_state{ASSISTANT_IDLE};
 
 static float random_unit() {
     return static_cast<float>(esp_random()) / static_cast<float>(UINT32_MAX);
@@ -245,6 +256,8 @@ static void animate(lv_timer_t *) {
         }
     }
 
+    const int assistant_state = s_assistant_state.load();
+
     if (s_shake_pending.exchange(false)) {
         if (s_angry) {
             s_angry = false;
@@ -351,6 +364,14 @@ static void animate(lv_timer_t *) {
     float bob = sinf(s_time * 2.20f) * 11.0f + sinf(s_time * 0.65f) * 2.0f;
     if (s_angry) {
         set_face_color(RED);
+    } else if (assistant_state == ASSISTANT_LISTENING) {
+        set_face_color(GREEN);
+    } else if (assistant_state == ASSISTANT_THINKING) {
+        set_face_color(PURPLE);
+    } else if (assistant_state == ASSISTANT_ERROR) {
+        set_face_color(RED);
+    } else if (assistant_state == ASSISTANT_OFFLINE) {
+        set_face_color(DIM);
     } else if (s_time < s_charge_until) {
         const float remaining = s_charge_until - s_time;
         const float pulse = 0.5f + 0.5f * sinf((CHARGE_DURATION_S - remaining) * 8.0f);
@@ -390,7 +411,13 @@ static void animate(lv_timer_t *) {
         mouth_y += static_cast<int>(cosf(phase * 0.8f) * 4.0f);
         mouth_rotation = static_cast<int>(sinf(phase * 0.55f) * 120.0f);
     }
-    set_geometry(s_mouth, mouth_x, mouth_y, mouth_w, MOUTH_H);
+    if (!s_angry && assistant_state == ASSISTANT_SPEAKING) {
+        const float voice_pulse = 0.35f + 0.65f * fabsf(sinf(s_time * 15.0f));
+        set_geometry(s_mouth, mouth_x, mouth_y - static_cast<int>(voice_pulse * 11.0f),
+                     mouth_w, MOUTH_H + static_cast<int>(voice_pulse * 22.0f));
+    } else {
+        set_geometry(s_mouth, mouth_x, mouth_y, mouth_w, MOUTH_H);
+    }
     lv_obj_set_style_transform_rotation(s_mouth, mouth_rotation, 0);
     update_sleep_marks(static_cast<float>(center_y));
     update_charge_bolt();
@@ -518,3 +545,10 @@ void robot_eyes_remote_angry() {
 void robot_eyes_remote_dizzy() {
     s_remote_command.store(REMOTE_DIZZY);
 }
+
+void robot_eyes_assistant_idle() { s_assistant_state.store(ASSISTANT_IDLE); }
+void robot_eyes_assistant_listening() { s_assistant_state.store(ASSISTANT_LISTENING); }
+void robot_eyes_assistant_thinking() { s_assistant_state.store(ASSISTANT_THINKING); }
+void robot_eyes_assistant_speaking() { s_assistant_state.store(ASSISTANT_SPEAKING); }
+void robot_eyes_assistant_error() { s_assistant_state.store(ASSISTANT_ERROR); }
+void robot_eyes_assistant_offline() { s_assistant_state.store(ASSISTANT_OFFLINE); }

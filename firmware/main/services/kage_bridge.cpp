@@ -24,6 +24,7 @@ constexpr TickType_t REMOTE_POLL_DELAY = pdMS_TO_TICKS(2500);
 static KageBridgeInfo s_info = {};
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_last_sequence = UINT32_MAX;
+static uint32_t s_last_assistant_sequence = UINT32_MAX;
 static bool s_started;
 
 // The ESP32-S3 should never run the command poll and a voice upload over
@@ -151,6 +152,25 @@ static void dispatch_command(const char *command) {
     }
 }
 
+static void dispatch_assistant_state(const char *assistant_state) {
+    if (!assistant_state) return;
+    if (std::strcmp(assistant_state, "idle") == 0) robot_eyes_assistant_idle();
+    else if (std::strcmp(assistant_state, "listening") == 0) robot_eyes_assistant_listening();
+    else if (std::strcmp(assistant_state, "thinking") == 0) robot_eyes_assistant_thinking();
+    else if (std::strcmp(assistant_state, "speaking") == 0) robot_eyes_assistant_speaking();
+    else if (std::strcmp(assistant_state, "error") == 0) robot_eyes_assistant_error();
+    else if (std::strcmp(assistant_state, "offline") == 0) robot_eyes_assistant_offline();
+}
+
+static void apply_assistant_state(const char *assistant_state, uint32_t sequence) {
+    if (!assistant_state || !assistant_state[0] || sequence == s_last_assistant_sequence) return;
+    s_last_assistant_sequence = sequence;
+    ESP_LOGI("kage-bridge", "Assistant state #%lu: %s",
+             static_cast<unsigned long>(sequence), assistant_state);
+    event_log_add("Assistant: %s", assistant_state);
+    dispatch_assistant_state(assistant_state);
+}
+
 void apply_command_impl(const char *command, uint32_t sequence) {
     if (!command || !command[0] || std::strcmp(command, "none") == 0) return;
 
@@ -239,6 +259,8 @@ static void bridge_task(void *) {
         cJSON *root = cJSON_Parse(response.body);
         cJSON *command_item = root ? cJSON_GetObjectItem(root, "command") : nullptr;
         cJSON *sequence_item = root ? cJSON_GetObjectItem(root, "sequence") : nullptr;
+        cJSON *assistant_state_item = root ? cJSON_GetObjectItem(root, "assistant_state") : nullptr;
+        cJSON *assistant_sequence_item = root ? cJSON_GetObjectItem(root, "assistant_sequence") : nullptr;
         if (!root || !cJSON_IsString(command_item) || !cJSON_IsNumber(sequence_item)) {
             if (root) cJSON_Delete(root);
             if (was_reachable) event_log_add("Backend response invalid");
@@ -260,6 +282,10 @@ static void bridge_task(void *) {
         update_info(true, status, sequence, command, "");
 
         apply_command_impl(command, sequence);
+        if (cJSON_IsString(assistant_state_item) && cJSON_IsNumber(assistant_sequence_item)) {
+            apply_assistant_state(assistant_state_item->valuestring,
+                                  static_cast<uint32_t>(assistant_sequence_item->valuedouble));
+        }
 
         cJSON_Delete(root);
         vTaskDelay(current_poll_delay());

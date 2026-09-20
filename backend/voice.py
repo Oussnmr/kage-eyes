@@ -86,6 +86,32 @@ def choose_english_male_voice():
 choose_english_male_voice()
 
 request_executor = ThreadPoolExecutor(max_workers=1)
+assistant_state_lock = threading.Lock()
+last_assistant_state = None
+
+
+def publish_assistant_state(state):
+    """Tell the local backend about a visual state without delaying audio."""
+    global last_assistant_state
+    with assistant_state_lock:
+        if state == last_assistant_state:
+            return
+        last_assistant_state = state
+
+    def publish():
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:8000/assistant-state/{state}",
+                headers={"X-Kage-Key": KAGE_API_KEY},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=0.75):
+                pass
+        except Exception as exc:
+            print(json.dumps({"event": "assistant_state_unavailable", "state": state,
+                              "error": str(exc)}, ensure_ascii=False))
+
+    threading.Thread(target=publish, name=f"kage-state-{state}", daemon=True).start()
 WAITING_REPLIES = (
     "Okay, one second.",
     "I'm thinking.",
@@ -478,6 +504,7 @@ class SentencePlayback:
                             if stream_started_at else None,
                         }, ensure_ascii=False))
                         first_useful_audio_logged = True
+                        publish_assistant_state("speaking")
                     if samples is not None:
                         sd.play(samples, samplerate=16000, blocking=True)
                     elif clean_text:
@@ -883,24 +910,29 @@ def send_to_kage(text):
 
 def handle_utterance(wait_for_speech_seconds):
     try:
+        publish_assistant_state("listening")
         recorded = record_until_silence(wait_for_speech_seconds)
 
         if not recorded:
             return False
 
+        publish_assistant_state("thinking")
         transcription_started = time.perf_counter()
         text = transcribe()
         transcription_ms = round((time.perf_counter() - transcription_started) * 1000, 1)
 
         if not text:
             print("❌ Je n'ai pas compris.")
+            publish_assistant_state("listening")
             return True
 
         print(f"📝 Entendu : {text}")
 
         if is_end_session(text):
             request_executor.submit(send_to_kage, text)
+            publish_assistant_state("speaking")
             speak(random.choice(SESSION_END_REPLIES))
+            publish_assistant_state("idle")
             return "end"
 
         # Codex sends text chunks as it generates them. Completed sentences
@@ -913,11 +945,13 @@ def handle_utterance(wait_for_speech_seconds):
             transcription_ms=transcription_ms,
         )
         if was_interrupted:
+            publish_assistant_state("listening")
             return "interrupted"
 
         print(f"🤖 Kage : {result['reply']}")
         print(f"🎭 Commande : {result['command']}")
         print(f"🔢 Séquence : {result['sequence']}")
+        publish_assistant_state("listening")
 
         return True
 
@@ -954,6 +988,7 @@ def main():
             print(f"🟣 Conversation active — listening for {int(FOLLOW_UP_TIMEOUT_SECONDS)} more seconds.")
 
         if WAKE_WORD_ENABLED:
+            publish_assistant_state("idle")
             print("⚪ Conversation ended — returning to wake word.")
 
     if os.path.exists(WAV_FILE):

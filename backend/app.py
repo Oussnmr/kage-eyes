@@ -39,6 +39,7 @@ except ImportError:
 app = FastAPI(title="Kage M920q Backend", docs_url=None, redoc_url=None, openapi_url=None)
 
 VALID_COMMANDS = {"idle", "blink", "sleep", "angry", "dizzy"}
+VALID_ASSISTANT_STATES = {"idle", "listening", "thinking", "speaking", "error", "offline"}
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 OLLAMA_MODEL = "qwen3:4b-instruct-2507-q4_K_M"
 DEFAULT_CONVERSATION_BACKEND = os.getenv("KAGE_CONVERSATION_BACKEND", "ollama").strip().lower()
@@ -59,6 +60,8 @@ state_lock = threading.Lock()
 state = {
     "command": "idle",
     "sequence": 0,
+    "assistant_state": "idle",
+    "assistant_sequence": 0,
 }
 backend_lock = threading.Lock()
 
@@ -140,6 +143,14 @@ def set_command(command: str) -> int:
         state["command"] = command
         state["sequence"] += 1
         return state["sequence"]
+
+
+def set_assistant_state(assistant_state: str) -> int:
+    with state_lock:
+        if state["assistant_state"] != assistant_state:
+            state["assistant_state"] = assistant_state
+            state["assistant_sequence"] += 1
+        return state["assistant_sequence"]
 
 
 def current_state() -> dict:
@@ -620,6 +631,8 @@ def get_status(request: Request):
         "online": True,
         "command": current["command"],
         "sequence": current["sequence"],
+        "assistant_state": current["assistant_state"],
+        "assistant_sequence": current["assistant_sequence"],
         "conversation_backend": get_conversation_backend(),
         "codex_model": os.getenv("KAGE_CODEX_MODEL", "gpt-5.6-luna"),
     }
@@ -641,6 +654,19 @@ def send_command(command: str, request: Request):
         "command": command,
         "sequence": sequence,
     }
+
+
+@app.post("/assistant-state/{assistant_state}")
+def update_assistant_state(assistant_state: str, request: Request):
+    """Publish a transient PC voice state for the Waveshare animation."""
+    require_kage_key(request)
+    assistant_state = assistant_state.lower().strip()
+    if assistant_state not in VALID_ASSISTANT_STATES:
+        raise HTTPException(status_code=400, detail="Assistant state invalid")
+    sequence = set_assistant_state(assistant_state)
+    print(json.dumps({"event": "assistant_state", "state": assistant_state,
+                      "sequence": sequence}, ensure_ascii=False))
+    return {"ok": True, "assistant_state": assistant_state, "assistant_sequence": sequence}
 
 
 @app.get("/command/latest")
