@@ -12,6 +12,7 @@ except ImportError:
 MODEL_PATH = os.getenv("KAGE_KOKORO_MODEL", r"C:\Kage\models\kokoro\kokoro-v1.0.onnx")
 VOICES_PATH = os.getenv("KAGE_KOKORO_VOICES", r"C:\Kage\models\kokoro\voices-v1.0.bin")
 TARGET_RATE = 16000
+DEFAULT_VOICE = os.getenv("KAGE_TTS_VOICE", "am_puck").strip() or "am_puck"
 
 
 class KokoroService:
@@ -24,7 +25,7 @@ class KokoroService:
     def available(self) -> bool:
         return self.engine is not None
 
-    async def stream_pcm(self, text: str, voice: str = "am_adam") -> AsyncIterator[bytes]:
+    async def stream_pcm(self, text: str, voice: str = DEFAULT_VOICE) -> AsyncIterator[bytes]:
         if self.engine is None:
             raise RuntimeError("Kokoro TTS indisponible")
         async for samples, sample_rate in self.engine.create_stream(

@@ -29,6 +29,7 @@ SAMPLE_RATE = 16000
 MIC_DEVICE = None  # garde le numéro qui fonctionne actuellement chez toi
 WAV_FILE = r"C:\Kage\voice_temp.wav"
 KAGE_API_KEY = os.getenv("KAGE_API_KEY", "").strip()
+KAGE_TTS_VOICE = os.getenv("KAGE_TTS_VOICE", "am_puck").strip() or "am_puck"
 
 # Détection de voix
 BLOCK_MS = 50
@@ -294,7 +295,7 @@ def synthesize_speech(text):
     text = clean_speech_text(text)
     if not text:
         return None, ""
-    payload = json.dumps({"text": text, "voice": "am_adam"}, ensure_ascii=False).encode("utf-8")
+    payload = json.dumps({"text": text, "voice": KAGE_TTS_VOICE}, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         "http://127.0.0.1:8000/speech",
         data=payload,

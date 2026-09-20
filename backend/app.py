@@ -23,6 +23,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+KAGE_TTS_VOICE = os.getenv("KAGE_TTS_VOICE", "am_puck").strip() or "am_puck"
+
 try:
     import pyttsx3
 except ImportError:
@@ -110,7 +112,7 @@ class AskRequest(BaseModel):
 
 class SpeechRequest(BaseModel):
     text: str
-    voice: str = "am_adam"
+    voice: str = KAGE_TTS_VOICE
 
 
 def require_kage_key(request: Request) -> None:

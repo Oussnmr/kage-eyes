@@ -281,3 +281,8 @@ Restart the PC voice session and compare two multi-sentence questions with the n
 
 - Removed the deliberate two-sentence playback hold. The first complete sentence is synthesized and released immediately, while later sentences remain queued for continuous playback.
 - Telemetry now reports `first_sentence_ms` instead of `two_sentences_ms`.
+
+### Voice selection — 2026-09-20
+
+- User selected Kokoro's American-English male `am_puck` voice.
+- `KAGE_TTS_VOICE` now selects the default consistently for the backend, direct speech endpoint, and PC voice client. Its default is `am_puck`, so future launches retain the choice without storing a secret.
