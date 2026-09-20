@@ -18,6 +18,7 @@ constexpr int EYE_RADIUS = 32;
 constexpr int MOUTH_W = 46;
 constexpr int MOUTH_H = 7;
 constexpr int MOUTH_Y = 258;
+constexpr int THINKING_DOT_COUNT = 3;
 constexpr int FRAME_MS = 33;
 constexpr float IDLE_BEFORE_SLEEP_S = 22.0f;
 constexpr float SLEEP_DURATION_S = 22.0f;
@@ -35,6 +36,7 @@ constexpr uint32_t DIM = 0x3F5260;
 static lv_obj_t *s_left_eye;
 static lv_obj_t *s_right_eye;
 static lv_obj_t *s_mouth;
+static lv_obj_t *s_thinking_dots[THINKING_DOT_COUNT];
 static lv_obj_t *s_sleep_z[3];
 static lv_obj_t *s_angry_left;
 static lv_obj_t *s_angry_right;
@@ -211,6 +213,20 @@ static void update_sleep_marks(float center_y) {
     }
 }
 
+static void update_thinking_dots(int assistant_state) {
+    const bool visible = assistant_state == ASSISTANT_THINKING && s_sleep_started < 0.0f;
+    for (int i = 0; i < THINKING_DOT_COUNT; ++i) {
+        if (!visible) {
+            lv_obj_set_style_opa(s_thinking_dots[i], LV_OPA_TRANSP, 0);
+            continue;
+        }
+        const float phase = std::fmod(s_time * 3.0f - static_cast<float>(i) * 0.7f + 9.0f, 3.0f);
+        const float distance = std::fabs(phase - 1.5f);
+        const float pulse = 0.35f + 0.65f * (1.0f - std::min(1.0f, distance / 1.5f));
+        lv_obj_set_style_opa(s_thinking_dots[i], static_cast<lv_opa_t>(pulse * 255.0f), 0);
+    }
+}
+
 static void animate(lv_timer_t *) {
     if (!s_active) return;
     const int64_t now = esp_timer_get_time();
@@ -221,6 +237,7 @@ static void animate(lv_timer_t *) {
     if (dt > 0.08f) dt = 0.08f;
     s_time += dt;
 
+    const int assistant_state = s_assistant_state.load();
     const int remote = s_remote_command.exchange(REMOTE_NONE);
     if (remote != REMOTE_NONE) {
         if (remote == REMOTE_IDLE) {
@@ -233,7 +250,7 @@ static void animate(lv_timer_t *) {
             wake_up(false);
             s_blink_time = 0.0f;
             s_blinks_left = 1;
-        } else if (remote == REMOTE_SLEEP) {
+        } else if (remote == REMOTE_SLEEP && assistant_state == ASSISTANT_IDLE) {
             s_angry = false;
             s_dizzy_until = s_time;
             s_charge_until = s_time;
@@ -256,8 +273,6 @@ static void animate(lv_timer_t *) {
         }
     }
 
-    const int assistant_state = s_assistant_state.load();
-
     if (s_shake_pending.exchange(false)) {
         if (s_angry) {
             s_angry = false;
@@ -272,7 +287,9 @@ static void animate(lv_timer_t *) {
         if (!s_angry) s_charge_until = s_time + CHARGE_DURATION_S;
     }
 
-    if (!s_angry && s_sleep_started < 0.0f && s_time >= s_dizzy_until &&
+    if (s_sleep_started >= 0.0f && assistant_state != ASSISTANT_IDLE) wake_up(false);
+
+    if (!s_angry && assistant_state == ASSISTANT_IDLE && s_sleep_started < 0.0f && s_time >= s_dizzy_until &&
         s_time >= s_charge_until && s_time - s_last_activity >= IDLE_BEFORE_SLEEP_S) {
         s_sleep_started = s_time;
         s_target_x = 0.0f;
@@ -420,6 +437,7 @@ static void animate(lv_timer_t *) {
     }
     lv_obj_set_style_transform_rotation(s_mouth, mouth_rotation, 0);
     update_sleep_marks(static_cast<float>(center_y));
+    update_thinking_dots(assistant_state);
     update_charge_bolt();
 }
 
@@ -475,6 +493,15 @@ void robot_eyes_begin(lv_obj_t *parent) {
     s_left_eye = create_eye(parent);
     s_right_eye = create_eye(parent);
     s_mouth = create_mouth(parent);
+    for (int i = 0; i < THINKING_DOT_COUNT; ++i) {
+        s_thinking_dots[i] = lv_label_create(parent);
+        lv_label_set_text(s_thinking_dots[i], ".");
+        lv_obj_set_style_text_font(s_thinking_dots[i], &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_color(s_thinking_dots[i], lv_color_hex(PURPLE), 0);
+        lv_obj_set_style_opa(s_thinking_dots[i], LV_OPA_TRANSP, 0);
+        lv_obj_set_pos(s_thinking_dots[i], SCREEN_W / 2 - 27 + i * 18, MOUTH_Y + 18);
+        lv_obj_clear_flag(s_thinking_dots[i], LV_OBJ_FLAG_CLICKABLE);
+    }
     s_angry_left = create_angry_eye(parent, s_angry_left_stripes);
     s_angry_right = create_angry_eye(parent, s_angry_right_stripes);
     lv_obj_clear_flag(s_left_eye, LV_OBJ_FLAG_CLICKABLE);
