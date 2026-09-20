@@ -19,6 +19,7 @@ import wave
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 try:
     import pyttsx3
@@ -36,7 +37,8 @@ app = FastAPI(title="Kage M920q Backend", docs_url=None, redoc_url=None, openapi
 VALID_COMMANDS = {"idle", "blink", "sleep", "angry", "dizzy"}
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 OLLAMA_MODEL = "qwen3:4b-instruct-2507-q4_K_M"
-CONVERSATION_BACKEND = os.getenv("KAGE_CONVERSATION_BACKEND", "ollama").strip().lower()
+DEFAULT_CONVERSATION_BACKEND = os.getenv("KAGE_CONVERSATION_BACKEND", "ollama").strip().lower()
+SETTINGS_PATH = Path(os.getenv("KAGE_SETTINGS_PATH", r"C:\Kage\kage_settings.json"))
 KAGE_API_KEY = os.getenv("KAGE_API_KEY", "").strip()
 
 AUDIO_SAMPLE_RATE = 16000
@@ -54,6 +56,42 @@ state = {
     "command": "idle",
     "sequence": 0,
 }
+backend_lock = threading.Lock()
+
+
+def load_conversation_backend() -> str:
+    try:
+        saved = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        backend = str(saved.get("conversation_backend", "")).strip().lower()
+        if backend in {"ollama", "codex"}:
+            return backend
+    except (OSError, json.JSONDecodeError):
+        pass
+    return DEFAULT_CONVERSATION_BACKEND if DEFAULT_CONVERSATION_BACKEND in {"ollama", "codex"} else "ollama"
+
+
+conversation_backend = load_conversation_backend()
+
+
+def get_conversation_backend() -> str:
+    with backend_lock:
+        return conversation_backend
+
+
+def set_conversation_backend(backend: str) -> str:
+    if backend not in {"ollama", "codex"}:
+        raise ValueError(f"Unsupported conversation backend: {backend}")
+    with backend_lock:
+        global conversation_backend
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = SETTINGS_PATH.with_suffix(".tmp")
+        temporary_path.write_text(
+            json.dumps({"conversation_backend": backend}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary_path.replace(SETTINGS_PATH)
+        conversation_backend = backend
+        return conversation_backend
 
 print(f"Chargement de Whisper {WHISPER_MODEL_NAME}...")
 whisper_model = WhisperModel(
@@ -109,6 +147,38 @@ def route_direct_command(message: str):
     """Return a local command result for unambiguous, supported intents."""
     normalized = re.sub(r"[^a-zA-ZÀ-ÿ0-9 ]", " ", message.lower())
     normalized = re.sub(r"\s+", " ", normalized).strip()
+
+    local_backend_phrases = (
+        "switch to local", "use local", "go local", "use ollama",
+        "switch to ollama", "pass in local mode", "passe en local",
+    )
+    codex_backend_phrases = (
+        "switch to chatgpt", "switch to codex", "use chatgpt", "use codex",
+        "go back to chatgpt", "repasse sur chatgpt",
+    )
+    if any(normalized == phrase or normalized.endswith(" " + phrase)
+           for phrase in local_backend_phrases):
+        backend = set_conversation_backend("ollama")
+        print(json.dumps({"event": "backend_switched", "backend": backend}, ensure_ascii=False))
+        current = current_state()
+        return {
+            "ok": True, "heard": normalize_kage_name(message),
+            "reply": "Okay. I will use local mode.", "command": "none",
+            "sequence": current["sequence"], "route": "direct", "speak": True,
+            "conversation_backend": backend,
+        }
+    if any(normalized == phrase or normalized.endswith(" " + phrase)
+           for phrase in codex_backend_phrases):
+        backend = set_conversation_backend("codex")
+        print(json.dumps({"event": "backend_switched", "backend": backend}, ensure_ascii=False))
+        current = current_state()
+        return {
+            "ok": True, "heard": normalize_kage_name(message),
+            "reply": "Okay. I will use ChatGPT.", "command": "none",
+            "sequence": current["sequence"], "route": "direct", "speak": True,
+            "conversation_backend": backend,
+        }
+
     english_rules = (
         ("idle", ("stop", "be normal", "return to normal", "go back to normal", "calm down"),
          "Okay, I am back to normal."),
@@ -187,7 +257,8 @@ def process_message(message: str) -> dict:
     if direct is not None:
         return direct
 
-    if CONVERSATION_BACKEND == "codex":
+    backend = get_conversation_backend()
+    if backend == "codex":
         try:
             codex = codex_bridge.ask(message, timeout=60)
             reply = codex["reply"] or "I could not form a response."
@@ -205,6 +276,7 @@ def process_message(message: str) -> dict:
                 "command": "none",
                 "sequence": current["sequence"],
                 "route": "codex",
+                "conversation_backend": backend,
                 "speak": True,
             }
         except CodexBridgeError as exc:
@@ -289,6 +361,8 @@ idle, blink, sleep, angry, dizzy, none.
         "reply": reply,
         "command": command,
         "sequence": sequence,
+        "route": "ollama",
+        "conversation_backend": backend,
         "speak": True,
     }
 
@@ -440,7 +514,7 @@ def get_status(request: Request):
         "online": True,
         "command": current["command"],
         "sequence": current["sequence"],
-        "conversation_backend": CONVERSATION_BACKEND,
+        "conversation_backend": get_conversation_backend(),
         "codex_model": os.getenv("KAGE_CODEX_MODEL", "gpt-5.6-luna"),
     }
 

@@ -192,10 +192,11 @@ Replace the local confirmation tone with a real backend-generated audio stream, 
 - Authentication remains the existing ChatGPT/Codex login. No OpenAI API key, network listener, secret copy, or paid API configuration was added.
 - The bridge discovers enabled plugins at startup and disables all 22 for the Kagé thread, preventing their global skills/MCP context from being injected.
 - Kagé uses `gpt-5.6-luna` with low reasoning and the default service tier for Codex conversations. No Fast service tier is used.
-- Backend selection is controlled at launch by `KAGE_CONVERSATION_BACKEND`: `codex` currently selected; `ollama` remains the automatic fallback if Codex cannot respond. Direct physical commands always run before either backend.
+- The selected backend is persisted safely in `C:\Kage\kage_settings.json`; `KAGE_CONVERSATION_BACKEND` is used only as the first-run default. No secrets are stored in that file.
+- Spoken commands `Kage, switch to local` and `Kage, switch to ChatGPT` update the setting immediately and confirm it aloud. Direct physical commands always run before either backend.
 - Validation: Codex bridge startup 1.57 s; first text 2.26 s; full short answer 2.55 s. Direct `can you be angry` route remained local at 293 ms end-to-end.
 - Backend was securely restarted with the existing `KAGE_API_KEY` user environment variable and Codex selected.
 
 ## Exact next step
 
-Test one spoken English conversation through the PC microphone and speakers. Then implement the user-facing persistent local/Codex backend switch and the 3-second one-time thinking filler; wake-word support follows after that.
+Implement the PC-local wake word `Kage`, so the microphone audio is not sent for transcription until the wake word has been detected. Then add interruption while Kagé is speaking.
