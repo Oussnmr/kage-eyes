@@ -366,6 +366,10 @@ static void animate(lv_timer_t *) {
         left_width += 8;
         right_width += 8;
     }
+    if (assistant_state == ASSISTANT_THINKING) {
+        left_height = std::max(30, static_cast<int>(left_height * 0.62f));
+        right_height = std::max(30, static_cast<int>(right_height * 0.62f));
+    }
 
     if (s_time < s_dizzy_until) {
         const float phase = (DIZZY_DURATION_S - (s_dizzy_until - s_time)) * 11.0f;
@@ -499,7 +503,7 @@ void robot_eyes_begin(lv_obj_t *parent) {
         lv_obj_set_style_text_font(s_thinking_dots[i], &lv_font_montserrat_24, 0);
         lv_obj_set_style_text_color(s_thinking_dots[i], lv_color_hex(PURPLE), 0);
         lv_obj_set_style_opa(s_thinking_dots[i], LV_OPA_TRANSP, 0);
-        lv_obj_set_pos(s_thinking_dots[i], SCREEN_W / 2 - 27 + i * 18, MOUTH_Y + 18);
+        lv_obj_set_pos(s_thinking_dots[i], SCREEN_W / 2 - 36 + i * 24, MOUTH_Y - 34);
         lv_obj_clear_flag(s_thinking_dots[i], LV_OBJ_FLAG_CLICKABLE);
     }
     s_angry_left = create_angry_eye(parent, s_angry_left_stripes);
