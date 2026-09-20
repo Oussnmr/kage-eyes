@@ -183,6 +183,49 @@ def clean_speech_text(text):
     text = re.sub(r"[*_`#]", "", text)
     text = text.replace("«", "").replace("»", "")
     text = text.replace("\u201c", "").replace("\u201d", "")
+
+    # Make euro prices sound natural. Do ranges first so `€100-€300` is not
+    # read as three separate symbols/numbers by the speech engine.
+    number = r"\d+(?:[.,]\d+)?"
+
+    def euro_range(match):
+        low = match.group(1).replace(",", ".")
+        high = match.group(2).replace(",", ".")
+        return f"__KAGE_EURO_RANGE_{low}_{high}__"
+
+    text = re.sub(
+        rf"€\s*({number})\s*(?:-|–|—|to)\s*€\s*({number})",
+        euro_range,
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    def restore_euro_range(match):
+        return f"around {match.group(1)} to {match.group(2)} euros"
+    text = re.sub(
+        rf"(?:€\s*)?({number})\s*(?:€|EUR)?\s*(?:-|–|—|to)\s*"
+        rf"(?:€\s*)?({number})\s*(?:€|EUR)",
+        euro_range,
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    def euro_amount(match):
+        amount = (match.group(1) or match.group(2)).replace(",", ".")
+        return f"{amount} euros"
+
+    text = re.sub(
+        rf"€\s*({number})|({number})\s*(?:€|EUR)",
+        euro_amount,
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        rf"__KAGE_EURO_RANGE_({number})_({number})__",
+        restore_euro_range,
+        text,
+        flags=re.IGNORECASE,
+    )
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
