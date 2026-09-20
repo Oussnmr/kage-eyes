@@ -8,6 +8,7 @@ import os
 import collections
 import pyttsx3
 from concurrent.futures import ThreadPoolExecutor
+import re
 
 SAMPLE_RATE = 16000
 MIC_DEVICE = None  # garde le numéro qui fonctionne actuellement chez toi
@@ -62,6 +63,19 @@ choose_english_male_voice()
 
 request_executor = ThreadPoolExecutor(max_workers=1)
 WAITING_REPLY = "Let me think for a second."
+
+
+def is_direct_command(text):
+    normalized = re.sub(r"[^a-z0-9 ]", " ", text.lower())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    phrases = (
+        "stop", "be normal", "return to normal", "go back to normal",
+        "calm down", "blink", "blink your eyes", "go to sleep", "sleep",
+        "enter sleep mode", "be angry", "get angry", "angry", "be dizzy",
+        "get dizzy", "dizzy",
+    )
+    return any(normalized == phrase or normalized.endswith(" " + phrase)
+               for phrase in phrases)
 
 
 def speak(text):
@@ -274,14 +288,13 @@ while True:
 
         print(f"📝 Entendu : {text}")
 
-        # Keep listening for the backend response while allowing a short,
-        # natural acknowledgement if a conversational answer takes longer.
+        # Start the backend request immediately. While it runs, acknowledge
+        # conversational requests right after transcription; direct physical
+        # commands stay silent and return without an unnecessary phrase.
         request_future = request_executor.submit(send_to_kage, text)
-        try:
-            result = request_future.result(timeout=3.0)
-        except TimeoutError:
+        if not is_direct_command(text):
             speak(WAITING_REPLY)
-            result = request_future.result(timeout=60.0)
+        result = request_future.result(timeout=60.0)
 
         print(f"🤖 Kage : {result['reply']}")
         print(f"🎭 Commande : {result['command']}")
