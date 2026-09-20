@@ -3,15 +3,18 @@
 This folder mirrors the FastAPI service used on the Windows M920q.
 
 The ESP32 voice firmware sends raw **16 kHz / mono / signed 16-bit little-endian PCM**
-to `POST /audio`. The backend:
+to `POST /audio`. The PC microphone client in `voice.py` uses the same backend
+and sends its authenticated text requests to `POST /ask`. The backend:
 
-1. transcribes with faster-whisper `small` in French;
-2. normalizes common transcriptions of the name Kage ("cagée", "cagé", etc.);
+1. transcribes with faster-whisper `small` in English;
+2. recognizes the name Kage and direct English commands without an LLM;
 3. sends the text to the local Ollama Qwen model;
 4. updates the existing robot command state;
-5. optionally speaks the reply through the M920q Windows audio output.
+5. streams English Kokoro speech (`am_adam`) when requested.
 
 The live copy is expected at `C:\Kage\app.py`.
+The PC voice client is `C:\Kage\voice.py`; it reads `KAGE_API_KEY` from the
+Windows user environment and never prints or stores the key.
 
 
 ## Remote access security

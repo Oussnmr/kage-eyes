@@ -1,6 +1,9 @@
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
+
+from tts_service import kokoro_service
 
 from faster_whisper import WhisperModel
 
@@ -12,6 +15,9 @@ import tempfile
 import threading
 import urllib.request
 import wave
+import time
+import uuid
+from datetime import datetime, timezone
 
 try:
     import pyttsx3
@@ -35,7 +41,8 @@ AUDIO_SAMPLE_RATE = 16000
 AUDIO_CHANNELS = 1
 AUDIO_SAMPLE_WIDTH = 2
 MAX_AUDIO_BYTES = AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH * 12
-TTS_ENABLED = True
+TTS_ENABLED = os.getenv("KAGE_PC_TTS", "0").strip().lower() in {"1", "true", "yes", "on"}
+WHISPER_MODEL_NAME = os.getenv("KAGE_WHISPER_MODEL", "small").strip() or "small"
 
 if not KAGE_API_KEY:
     print("ATTENTION: KAGE_API_KEY absent. Les endpoints protégés refuseront les requêtes.")
@@ -46,17 +53,22 @@ state = {
     "sequence": 0,
 }
 
-print("Chargement de Whisper small...")
+print(f"Chargement de Whisper {WHISPER_MODEL_NAME}...")
 whisper_model = WhisperModel(
-    "small",
+    WHISPER_MODEL_NAME,
     device="cpu",
     compute_type="int8",
 )
-print("Whisper small prêt.")
+print(f"Whisper {WHISPER_MODEL_NAME} prêt.")
 
 
 class AskRequest(BaseModel):
     message: str
+
+
+class SpeechRequest(BaseModel):
+    text: str
+    voice: str = "am_adam"
 
 
 def require_kage_key(request: Request) -> None:
@@ -91,26 +103,103 @@ def current_state() -> dict:
         return dict(state)
 
 
+def route_direct_command(message: str):
+    """Return a local command result for unambiguous, supported intents."""
+    normalized = re.sub(r"[^a-zA-ZÀ-ÿ0-9 ]", " ", message.lower())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    english_rules = (
+        ("idle", ("stop", "be normal", "return to normal", "go back to normal", "calm down"),
+         "Okay, I am back to normal."),
+        ("blink", ("blink", "blink your eyes"), "Sure."),
+        ("sleep", ("go to sleep", "sleep", "enter sleep mode"), "I am going to sleep."),
+        ("angry", ("be angry", "get angry", "angry"), "Okay."),
+        ("dizzy", ("spin around", "get dizzy"), "Oops."),
+    )
+    for command, phrases, reply in english_rules:
+        if any(normalized == phrase or normalized.endswith(" " + phrase) for phrase in phrases):
+            sequence = set_command(command)
+            print(json.dumps({"event": "direct_route", "route": command, "latency_ms": 0}, ensure_ascii=False))
+            return {"ok": True, "heard": normalize_kage_name(message), "reply": reply,
+                    "command": command, "sequence": sequence, "route": "direct", "speak": False}
+    rules = (
+        ("idle", ("stop", "arrête", "arrete", "tais toi", "au repos",
+                   "reviens à la normale", "revient à la normale", "reviens a la normale",
+                   "revient a la normale", "revient la normale", "retourne à la normale",
+                   "retourne a la normale", "redeviens normal", "redeviens normale"),
+         "D'accord, je reviens à la normale."),
+        ("blink", ("cligne", "clignote"), "Voilà."),
+        ("sleep", ("endors toi", "mets toi en veille", "mise en veille"), "Je passe en veille."),
+        ("angry", ("sois en colère", "sois en colere", "en colère", "en colere"), "Très bien."),
+        ("dizzy", ("tourne sur toi même", "tourne sur toi meme", "étourdis", "etourdis"), "Oups."),
+    )
+    for command, phrases, reply in rules:
+        if any(normalized == phrase or normalized.endswith(" " + phrase) for phrase in phrases):
+            sequence = set_command(command)
+            print(json.dumps({"event": "direct_route", "route": command,
+                              "latency_ms": 0}, ensure_ascii=False))
+            return {
+                "ok": True,
+                "heard": normalize_kage_name(message),
+                "reply": "" if command == "idle" else reply,
+                "command": command,
+                "sequence": sequence,
+                "route": "direct",
+                "speak": False,
+            }
+    if "colere" in normalized or "colère" in normalized:
+        if any(word in normalized for word in ("met", "mets", "mettre", "sois")):
+            sequence = set_command("angry")
+            print(json.dumps({"event": "direct_route", "route": "angry",
+                              "latency_ms": 0}, ensure_ascii=False))
+            return {
+                "ok": True,
+                "heard": normalize_kage_name(message),
+                "reply": "Très bien.",
+                "command": "angry",
+                "sequence": sequence,
+                "route": "direct",
+                "speak": False,
+            }
+    if "angry" in normalized and any(word in normalized for word in ("can", "please", "make", "become", "be")):
+        sequence = set_command("angry")
+        print(json.dumps({"event": "direct_route", "route": "angry", "latency_ms": 0}, ensure_ascii=False))
+        return {
+            "ok": True,
+            "heard": normalize_kage_name(message),
+            "reply": "Okay.",
+            "command": "angry",
+            "sequence": sequence,
+            "route": "direct",
+            "speak": False,
+        }
+    return None
+
+
 def process_message(message: str) -> dict:
+    llm_started = time.perf_counter()
     message = normalize_kage_name(message.strip())
     if not message:
         raise HTTPException(status_code=400, detail="Message vide")
 
+    direct = route_direct_command(message)
+    if direct is not None:
+        return direct
+
     prompt = f"""
-Tu es l'assistant d'un petit robot de bureau nommé Kage.
-Tu réponds en français, de façon courte et naturelle.
+    You are the assistant of a small desktop robot named Kage.
+    You answer in English, briefly and naturally.
 
 Tu peux demander UNE réaction physique parmi:
 idle, blink, sleep, angry, dizzy, none.
 
-Choisis une réaction seulement si elle est pertinente à la demande.
-Ne prétends jamais avoir exécuté une action qui n'existe pas.
+    Choose a reaction only when it is relevant to the request.
+    Never claim to have executed an action that does not exist.
 
-Phrase de l'utilisateur:
+    User request:
 {message}
 
-Réponds uniquement avec un objet JSON exactement sous cette forme:
-{{"command":"none","reply":"ta réponse en français"}}
+    Reply only with a JSON object in exactly this form:
+    {{"command":"none","reply":"your short answer in English"}}
 """.strip()
 
     payload = json.dumps(
@@ -118,6 +207,7 @@ Réponds uniquement avec un objet JSON exactement sous cette forme:
             "model": OLLAMA_MODEL,
             "prompt": prompt,
             "stream": False,
+            "think": False,
             "format": "json",
             "keep_alive": "30m",
             "options": {
@@ -143,6 +233,10 @@ Réponds uniquement avec un objet JSON exactement sous cette forme:
             status_code=502,
             detail=f"Ollama indisponible: {exc}",
         ) from exc
+
+    print(json.dumps({"event": "llm_completed",
+                      "llm_ms": round((time.perf_counter() - llm_started) * 1000, 1),
+                      "model": OLLAMA_MODEL}, ensure_ascii=False))
 
     try:
         result = json.loads(ollama.get("response", "{}"))
@@ -170,6 +264,7 @@ Réponds uniquement avec un objet JSON exactement sous cette forme:
         "reply": reply,
         "command": command,
         "sequence": sequence,
+        "speak": True,
     }
 
 
@@ -195,15 +290,15 @@ def transcribe_pcm(pcm: bytes) -> str:
 
         segments, _ = whisper_model.transcribe(
             wav_path,
-            language="fr",
+            language="en",
             task="transcribe",
             vad_filter=True,
             beam_size=5,
             condition_on_previous_text=False,
             initial_prompt=(
-                "Conversation en français. "
-                "Le robot s'appelle Kage, prononcé cagée. "
-                "L'utilisateur parle en français."
+                "This is an English conversation. "
+                "The robot is named Kage; keep the name pronounced Kage. "
+                "The user speaks English."
             ),
         )
 
@@ -268,24 +363,46 @@ def speak_reply(text: str) -> None:
 
 
 def process_audio(pcm: bytes) -> dict:
+    request_id = uuid.uuid4().hex[:12]
+    started = time.perf_counter()
+    print(json.dumps({"event": "request_started", "request_id": request_id,
+                      "ts": datetime.now(timezone.utc).isoformat()}, ensure_ascii=False))
+    stt_started = time.perf_counter()
     text = transcribe_pcm(pcm)
+    stt_ms = round((time.perf_counter() - stt_started) * 1000, 1)
 
     if not text:
-        return {
+        result = {
             "ok": False,
             "heard": "",
             "reply": "Je n'ai rien compris.",
             "command": "none",
             "sequence": current_state()["sequence"],
         }
+        print(json.dumps({"event": "request_completed", "request_id": request_id,
+                          "stt_ms": stt_ms,
+                          "total_ms": round((time.perf_counter() - started) * 1000, 1),
+                          "empty": True,
+                          "pcm_bytes": len(pcm),
+                          "audio_seconds": round(len(pcm) / (AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH), 3)}, ensure_ascii=False))
+        return result
 
     print(f"Entendu: {text}")
+    route_started = time.perf_counter()
     result = process_message(text)
+    route_ms = round((time.perf_counter() - route_started) * 1000, 1)
     print(f"Kage: {result['reply']} | commande={result['command']}")
 
     # This is deliberately synchronous. The ESP32 waits for /audio to finish,
     # so it is not listening while the nearby M920q speaker speaks the reply.
-    speak_reply(result["reply"])
+    if result.get("speak", True):
+        speak_reply(result["reply"])
+    print(json.dumps({"event": "request_completed", "request_id": request_id,
+                      "stt_ms": stt_ms, "route_ms": route_ms,
+                      "total_ms": round((time.perf_counter() - started) * 1000, 1),
+                      "pcm_bytes": len(pcm),
+                      "audio_seconds": round(len(pcm) / (AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH), 3),
+                      "heard": text, "command": result["command"]}, ensure_ascii=False))
     return result
 
 
@@ -329,6 +446,33 @@ def latest_command(request: Request):
 def ask(body: AskRequest, request: Request):
     require_kage_key(request)
     return process_message(body.message)
+
+
+@app.post("/speech")
+async def speech(body: SpeechRequest, request: Request):
+    require_kage_key(request)
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Texte vide")
+    if not kokoro_service.available:
+        raise HTTPException(status_code=503, detail="Kokoro TTS indisponible")
+
+    async def audio_stream():
+        try:
+            async for chunk in kokoro_service.stream_pcm(text, body.voice):
+                yield chunk
+        except Exception as exc:
+            print(f"TTS streaming warning: {exc}")
+
+    return StreamingResponse(
+        audio_stream(),
+        media_type="application/octet-stream",
+        headers={
+            "X-Kage-Audio-Format": "s16le-mono",
+            "X-Kage-Sample-Rate": "16000",
+            "X-Kage-Voice": body.voice,
+        },
+    )
 
 
 @app.post("/audio")
