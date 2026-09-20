@@ -207,3 +207,8 @@ Test the PC-local wake word `Kage` with the user. It uses PocketSphinx keyword s
 - `C:\Kage\voice.py` now starts in wake-word mode by default. It waits locally for English-pronounced `Kage` (detected as phonetic `cage`), says “I’m listening”, then records and processes the following command.
 - `KAGE_WAKE_WORD=0` restores the previous Enter-to-speak mode if required for debugging.
 - Microphone initialization passed. Real false-positive/false-negative testing is pending.
+
+### Follow-up conversation window — 2026-09-20
+
+- After wake detection, Kagé now keeps the PC microphone session open for 25 seconds after every answer. A follow-up does not require saying `Kage` again.
+- If no speech is detected during that window, Kagé returns silently to wake-word mode. The timeout is configurable with `KAGE_FOLLOW_UP_TIMEOUT`; its default is 25 seconds.

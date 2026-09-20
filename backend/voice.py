@@ -24,6 +24,7 @@ PRE_ROLL_SECONDS = 0.30
 WAKE_WORD_ENABLED = os.getenv("KAGE_WAKE_WORD", "1").strip().lower() in {"1", "true", "yes", "on"}
 WAKE_KEYPHRASE = "cage"  # English pronunciation of Kage.
 WAKE_THRESHOLD = float(os.getenv("KAGE_WAKE_THRESHOLD", "1e-18"))
+FOLLOW_UP_TIMEOUT_SECONDS = float(os.getenv("KAGE_FOLLOW_UP_TIMEOUT", "25"))
 
 print("Chargement de Whisper...")
 
@@ -131,7 +132,7 @@ def rms(block):
     return float(np.sqrt(np.mean(np.square(block))))
 
 
-def record_until_silence():
+def record_until_silence(wait_for_speech_seconds=MAX_RECORD_SECONDS):
     block_size = int(SAMPLE_RATE * BLOCK_MS / 1000)
     pre_roll_blocks = max(1, int(PRE_ROLL_SECONDS * 1000 / BLOCK_MS))
     pre_roll = collections.deque(maxlen=pre_roll_blocks)
@@ -159,15 +160,18 @@ def record_until_silence():
         frames = []
         speech_started = False
         silent_time = 0.0
-        total_time = 0.0
+        waited_for_speech = 0.0
+        utterance_time = 0.0
 
-        while total_time < MAX_RECORD_SECONDS:
+        while True:
             block, overflowed = stream.read(block_size)
 
             level = rms(block)
-            total_time += BLOCK_MS / 1000
 
             if not speech_started:
+                waited_for_speech += BLOCK_MS / 1000
+                if waited_for_speech >= wait_for_speech_seconds:
+                    break
                 pre_roll.append(block.copy())
 
                 if level >= speech_threshold:
@@ -178,7 +182,12 @@ def record_until_silence():
                     frames.append(block.copy())
 
             else:
+                utterance_time += BLOCK_MS / 1000
                 frames.append(block.copy())
+
+                if utterance_time >= MAX_RECORD_SECONDS:
+                    print("🔵 Phrase maximale atteinte")
+                    break
 
                 if level < speech_threshold:
                     silent_time += BLOCK_MS / 1000
@@ -284,32 +293,18 @@ def send_to_kage(text):
 
 # ---------- BOUCLE ----------
 
-print("\nKage Voice prêt.")
-
-while True:
-    if WAKE_WORD_ENABLED:
-        try:
-            wait_for_wake_word()
-        except KeyboardInterrupt:
-            break
-        speak("I'm listening.")
-    else:
-        choice = input("\nEntrée = parler | q = quitter : ")
-        if choice.lower() == "q":
-            break
-
+def handle_utterance(wait_for_speech_seconds):
     try:
-        recorded = record_until_silence()
+        recorded = record_until_silence(wait_for_speech_seconds)
 
         if not recorded:
-            print("❌ Aucune parole détectée.")
-            continue
+            return False
 
         text = transcribe()
 
         if not text:
             print("❌ Je n'ai pas compris.")
-            continue
+            return True
 
         print(f"📝 Entendu : {text}")
 
@@ -327,9 +322,36 @@ while True:
 
         # Kage répond à voix haute
         speak(result["reply"])
+        return True
 
     except Exception as e:
         print(f"❌ Erreur : {e}")
+        return True
+
+
+print("\nKage Voice prêt.")
+
+while True:
+    if WAKE_WORD_ENABLED:
+        try:
+            wait_for_wake_word()
+        except KeyboardInterrupt:
+            break
+        speak("I'm listening.")
+        wait_time = FOLLOW_UP_TIMEOUT_SECONDS
+    else:
+        choice = input("\nEntrée = parler | q = quitter : ")
+        if choice.lower() == "q":
+            break
+        wait_time = MAX_RECORD_SECONDS
+
+    while handle_utterance(wait_time):
+        if not WAKE_WORD_ENABLED:
+            break
+        print(f"🟣 Conversation active — listening for {int(FOLLOW_UP_TIMEOUT_SECONDS)} more seconds.")
+
+    if WAKE_WORD_ENABLED:
+        print("⚪ Conversation ended — returning to wake word.")
 
 
 if os.path.exists(WAV_FILE):
