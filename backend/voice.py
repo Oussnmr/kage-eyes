@@ -5,6 +5,7 @@ import urllib.request
 import json
 import wave
 import os
+import sys
 import collections
 import pyttsx3
 from concurrent.futures import ThreadPoolExecutor
@@ -13,6 +14,15 @@ import random
 import threading
 import time
 from pocketsphinx import LiveSpeech
+
+# A detached PowerShell window can default to a legacy Windows code page.
+# Keep status messages from terminating the assistant when they contain accents
+# or visual state icons.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, OSError):
+    pass
 
 SAMPLE_RATE = 16000
 MIC_DEVICE = None  # garde le numéro qui fonctionne actuellement chez toi
