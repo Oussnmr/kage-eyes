@@ -172,13 +172,14 @@ def wait_for_wake_word(stop_event=None, announce=True, keyphrase=None):
     keyphrase = keyphrase or WAKE_KEYPHRASE
     if announce:
         print(f"\n🟣 Wake word active — say ‘{keyphrase}’.")
-    listener = LiveSpeech(
-        keyphrase=keyphrase,
-        kws_threshold=WAKE_THRESHOLD,
-        sampling_rate=SAMPLE_RATE,
-        audio_device=MIC_DEVICE,
-    )
+    listener = None
     try:
+        listener = LiveSpeech(
+            keyphrase=keyphrase,
+            kws_threshold=WAKE_THRESHOLD,
+            sampling_rate=SAMPLE_RATE,
+            audio_device=MIC_DEVICE,
+        )
         with listener.ad:
             while stop_event is None or not stop_event.is_set():
                 audio, _ = listener.ad.read(listener.buffer_size // 2)
@@ -193,11 +194,22 @@ def wait_for_wake_word(stop_event=None, announce=True, keyphrase=None):
                     print("🟣 Kage detected")
                     return True
         return False
+    except sd.PortAudioError as exc:
+        # A second sounddevice stream can briefly fail while the PC audio
+        # device is switching between capture and playback. The listener is
+        # optional during playback; never let its failure kill the voice loop.
+        print(json.dumps({
+            "event": "wake_listener_unavailable",
+            "error": str(exc),
+            "keyphrase": keyphrase,
+        }, ensure_ascii=False))
+        return False
     finally:
-        try:
-            listener.ad.close()
-        except Exception:
-            pass
+        if listener is not None:
+            try:
+                listener.ad.close()
+            except Exception:
+                pass
 
 
 def clean_speech_text(text):
