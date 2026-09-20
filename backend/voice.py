@@ -361,7 +361,7 @@ class SentencePlayback:
         self._audio = queue.Queue()
         self.active = threading.Event()
 
-    def start(self):
+    def start(self, started_at=None):
         self.stop()
         with self._lock:
             self._generation += 1
@@ -370,14 +370,17 @@ class SentencePlayback:
             self._audio = queue.Queue()
             sentences = self._sentences
             audio = self._audio
+            stream_started_at = started_at
             self.active.set()
+        first_useful_audio_logged = False
 
         def synthesize_sentences():
             while True:
-                sentence = sentences.get()
-                if sentence is None:
+                item = sentences.get()
+                if item is None:
                     audio.put(None)
                     return
+                sentence, useful = item
                 with self._lock:
                     if generation != self._generation:
                         return
@@ -387,18 +390,26 @@ class SentencePlayback:
                         return
                 # The playback worker can now read this audio while this
                 # worker immediately prepares the following sentence.
-                audio.put((samples, clean_text))
+                audio.put((samples, clean_text, useful))
 
         def play_prepared_audio():
+            nonlocal first_useful_audio_logged
             try:
                 while True:
                     prepared = audio.get()
                     if prepared is None:
                         return
-                    samples, clean_text = prepared
+                    samples, clean_text, useful = prepared
                     with self._lock:
                         if generation != self._generation:
                             return
+                    if useful and not first_useful_audio_logged:
+                        print(json.dumps({
+                            "event": "tts_first_useful_audio",
+                            "since_stream_start_ms": round((time.perf_counter() - stream_started_at) * 1000, 1)
+                            if stream_started_at else None,
+                        }, ensure_ascii=False))
+                        first_useful_audio_logged = True
                     if samples is not None:
                         sd.play(samples, samplerate=16000, blocking=True)
                     elif clean_text:
@@ -412,9 +423,9 @@ class SentencePlayback:
         threading.Thread(target=synthesize_sentences, name="kage-sentence-synthesis", daemon=True).start()
         threading.Thread(target=play_prepared_audio, name="kage-sentence-playback", daemon=True).start()
 
-    def enqueue(self, text):
+    def enqueue(self, text, useful=False):
         if text and text.strip():
-            self._sentences.put(text.strip())
+            self._sentences.put((text.strip(), useful))
 
     def finish(self):
         self._sentences.put(None)
@@ -467,13 +478,14 @@ def stream_to_kage(text, events):
         events.put({"type": "error", "detail": str(exc)})
 
 
-def speak_streaming_reply_with_barge_in(text, waiting_reply=None):
+def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_ms=None):
     """Speak sentence chunks while Codex is still generating the remaining reply."""
+    stream_started_at = time.perf_counter()
     events = queue.Queue()
     interrupted = threading.Event()
     listener_stop = threading.Event()
     playback = SentencePlayback()
-    playback.start()
+    playback.start(stream_started_at)
     if waiting_reply:
         playback.enqueue(waiting_reply)
 
@@ -499,6 +511,9 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None):
     streamed_text_received = False
     streamed_audio_queued = False
     stream_started = False
+    first_delta_ms = None
+    two_sentences_ms = None
+    completed_ms = None
     result = None
     completed = False
     while not completed:
@@ -518,6 +533,8 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None):
             delta = event.get("text", "")
             if delta:
                 streamed_text_received = True
+                if first_delta_ms is None:
+                    first_delta_ms = round((time.perf_counter() - stream_started_at) * 1000, 1)
             pending += delta
             sentences, pending = split_complete_sentences(pending)
             ready_sentences.extend(sentences)
@@ -526,23 +543,25 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None):
             # later generation and speech.
             if not stream_started and len(ready_sentences) >= 2:
                 stream_started = True
+                two_sentences_ms = round((time.perf_counter() - stream_started_at) * 1000, 1)
             if stream_started:
                 while ready_sentences:
-                    playback.enqueue(ready_sentences.pop(0))
+                    playback.enqueue(ready_sentences.pop(0), useful=True)
                     streamed_audio_queued = True
         elif event_type == "done":
+            completed_ms = round((time.perf_counter() - stream_started_at) * 1000, 1)
             result = event.get("result", {})
             for sentence in ready_sentences:
-                playback.enqueue(sentence)
+                playback.enqueue(sentence, useful=True)
                 streamed_audio_queued = True
             if pending.strip():
-                playback.enqueue(pending)
+                playback.enqueue(pending, useful=True)
                 streamed_audio_queued = True
             # Fall back to the completed answer only when the server did not
             # send any usable stream text (for example the Ollama fallback).
             elif (not streamed_text_received and not streamed_audio_queued
                   and result.get("speak", True) and result.get("reply")):
-                playback.enqueue(result["reply"])
+                playback.enqueue(result["reply"], useful=True)
             playback.finish()
             completed = True
         elif event_type == "error":
@@ -563,6 +582,14 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None):
 
     listener_stop.set()
     listener.join(timeout=1)
+    print(json.dumps({
+        "event": "streaming_timing",
+        "transcription_ms": transcription_ms,
+        "first_delta_ms": first_delta_ms,
+        "two_sentences_ms": two_sentences_ms,
+        "generation_complete_ms": completed_ms,
+        "total_until_playback_done_ms": round((time.perf_counter() - stream_started_at) * 1000, 1),
+    }, ensure_ascii=False))
     return result or {}, False
 
 
@@ -772,7 +799,9 @@ def handle_utterance(wait_for_speech_seconds):
         if not recorded:
             return False
 
+        transcription_started = time.perf_counter()
         text = transcribe()
+        transcription_ms = round((time.perf_counter() - transcription_started) * 1000, 1)
 
         if not text:
             print("❌ Je n'ai pas compris.")
@@ -789,7 +818,11 @@ def handle_utterance(wait_for_speech_seconds):
         # are queued for Kokoro immediately, rather than waiting for the full
         # response. Direct commands remain locally routed by the backend.
         waiting_reply = None if is_direct_command(text) else choose_waiting_reply(text)
-        result, was_interrupted = speak_streaming_reply_with_barge_in(text, waiting_reply)
+        result, was_interrupted = speak_streaming_reply_with_barge_in(
+            text,
+            waiting_reply,
+            transcription_ms=transcription_ms,
+        )
         if was_interrupted:
             return "interrupted"
 
