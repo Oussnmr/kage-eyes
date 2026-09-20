@@ -507,33 +507,38 @@ def handle_utterance(wait_for_speech_seconds):
         return True
 
 
-print("\nKage Voice prêt.")
-
-while True:
-    if WAKE_WORD_ENABLED:
-        try:
-            wait_for_wake_word()
-        except KeyboardInterrupt:
-            break
-        speak("Kagé is listening.")
-        wait_time = FOLLOW_UP_TIMEOUT_SECONDS
-    else:
-        choice = input("\nEntrée = parler | q = quitter : ")
-        if choice.lower() == "q":
-            break
-        wait_time = MAX_RECORD_SECONDS
+def main():
+    """Run one interactive voice loop in the primary Python process only."""
+    print("\nKage Voice prêt.")
 
     while True:
-        outcome = handle_utterance(wait_time)
-        if not outcome or outcome == "end":
-            break
-        if not WAKE_WORD_ENABLED:
-            break
-        print(f"🟣 Conversation active — listening for {int(FOLLOW_UP_TIMEOUT_SECONDS)} more seconds.")
+        if WAKE_WORD_ENABLED:
+            try:
+                wait_for_wake_word()
+            except KeyboardInterrupt:
+                break
+            speak("Kagé is listening.")
+            wait_time = FOLLOW_UP_TIMEOUT_SECONDS
+        else:
+            choice = input("\nEntrée = parler | q = quitter : ")
+            if choice.lower() == "q":
+                break
+            wait_time = MAX_RECORD_SECONDS
 
-    if WAKE_WORD_ENABLED:
-        print("⚪ Conversation ended — returning to wake word.")
+        while True:
+            outcome = handle_utterance(wait_time)
+            if not outcome or outcome == "end":
+                break
+            if not WAKE_WORD_ENABLED:
+                break
+            print(f"🟣 Conversation active — listening for {int(FOLLOW_UP_TIMEOUT_SECONDS)} more seconds.")
+
+        if WAKE_WORD_ENABLED:
+            print("⚪ Conversation ended — returning to wake word.")
+
+    if os.path.exists(WAV_FILE):
+        os.remove(WAV_FILE)
 
 
-if os.path.exists(WAV_FILE):
-    os.remove(WAV_FILE)
+if __name__ == "__main__":
+    main()
