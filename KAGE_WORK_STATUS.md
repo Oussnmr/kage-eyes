@@ -226,6 +226,7 @@ Test the PC-local wake word `Kage` with the user. It uses PocketSphinx keyword s
 ### Explicit Web search — 2026-09-20
 
 - Installed free `ddgs 9.16.0` and added `C:\Kage\web_search.py`.
-- Web egress is intentionally narrow: only explicit phrases such as `search the web`, `search online`, `look it up online`, `check online`, or `use the internet` trigger it.
+- Web egress is intentionally narrow: explicit search phrases plus clear current-information requests such as `what is the weather in...`, `how much is...`, `price of...`, `cost of...`, `worth of...`, and `current value of...` trigger it.
 - Search results are compacted to title, URL, and snippet, then supplied to Codex or Ollama for the answer. Normal voice requests and direct commands never leave the PC for search.
 - Validation passed with an explicit Brussels weather request: five results returned, Codex answered with a source, and backend telemetry recorded the Web-search event.
+- Screenshot cases validated: `How much is a Maple Leaf gold coin?` and `What is the weather in Brussels?` both returned current search-backed answers with sources.
