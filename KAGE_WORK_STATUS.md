@@ -264,3 +264,15 @@ Test the PC-local wake word `Kage` with the user. It uses PocketSphinx keyword s
 - Validation passed with an explicit Brussels weather request: five results returned, Codex answered with a source, and backend telemetry recorded the Web-search event.
 - Screenshot cases validated: `How much is a Maple Leaf gold coin?` and `What is the weather in Brussels?` both returned current search-backed answers with sources.
 - With explicit user authorization, the search adapter now fetches and compacts the top two public HTML result pages when they allow automated reads. Sites that return 403 or non-HTML content are skipped while search snippets remain available.
+
+### Streamed speech latency review — 2026-09-20
+
+- A no-waiting-reply test confirmed that the acknowledgement is not the main cause of the slowest spoken answers. A short answer reached first useful audio in 3.04 s from stream start, while one longer answer reached it in 9.03 s even without an acknowledgement.
+- The remaining delay is chiefly caused by long first Codex sentences: the client previously waited for a final `.`, `!`, or `?` before sending the sentence to local Kokoro synthesis.
+- Codex is now instructed to lead with a useful short sentence and to use compact, period-terminated ideas. The voice client can also hand a sufficiently long `;` or `:` clause to Kokoro while the model continues generating. Short clauses and URL schemes remain buffered.
+- Validation: both updated Python files compile; focused splitter checks passed for normal sentences, long clauses, and short colon phrases.
+- The active comparison run keeps `KAGE_WAITING_REPLIES=0` so the next measurements isolate sentence-length and synthesis latency.
+
+## Exact next step
+
+Restart the backend and PC voice session, then compare two multi-sentence questions with the no-waiting-reply run. Record `first_delta_ms`, `two_sentences_ms`, and `tts_first_useful_audio` before deciding whether to restore acknowledgements or profile the remaining Kokoro synthesis cost.

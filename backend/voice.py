@@ -492,6 +492,16 @@ def split_complete_sentences(buffer):
     complete = []
     while True:
         match = re.search(r"[.!?](?=\s|$)", buffer)
+        clause_match = re.search(r"[;:](?=\s)", buffer)
+
+        # A long clause can be synthesized while the model writes the rest of
+        # the sentence.  Keep very short clauses buffered to avoid choppy speech
+        # and avoid treating a URL scheme such as "https:" as a boundary.
+        if clause_match:
+            clause = buffer[:clause_match.end()]
+            word_count = len(re.findall(r"[A-Za-z0-9]+(?:'[A-Za-z0-9]+)?", clause))
+            if word_count >= 8 and (not match or clause_match.start() < match.start()):
+                match = clause_match
         if not match:
             return complete, buffer
         sentence = buffer[:match.end()].strip()
