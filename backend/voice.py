@@ -226,6 +226,9 @@ def clean_speech_text(text):
         text,
         flags=re.IGNORECASE,
     )
+    # A web answer may already say "around" before the currency range. Avoid
+    # producing "around around ..." after the speech normalization.
+    text = re.sub(r"\baround\s+around\b", "around", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
