@@ -170,6 +170,7 @@ Implement a small microphone health watchdog with explicit `PROCESSING` state an
 - Voice telemetry now reports transcription duration, first Codex delta, two-sentence readiness, generation completion, and first useful TTS audio latency as JSON events in the voice console.
 - The interrupt listener now catches transient PortAudio device-open failures and records `wake_listener_unavailable` instead of terminating its thread. The screenshot showed this failure while the main streaming reply continued normally.
 - The PC voice client now warms the Kokoro `/speech` path once at startup, so the first user response does not pay the model's cold-start cost in the critical path.
+- The first substantive sentence is now synthesized as soon as it arrives but held from playback until the second sentence is ready. This preserves the two-sentence guard while overlapping the first TTS computation with Codex generation.
 
 ## Exact next step
 

@@ -388,6 +388,7 @@ class SentencePlayback:
         self._generation = 0
         self._sentences = queue.Queue()
         self._audio = queue.Queue()
+        self._release_useful = threading.Event()
         self.active = threading.Event()
 
     def start(self, started_at=None):
@@ -397,8 +398,10 @@ class SentencePlayback:
             generation = self._generation
             self._sentences = queue.Queue()
             self._audio = queue.Queue()
+            self._release_useful = threading.Event()
             sentences = self._sentences
             audio = self._audio
+            release_useful = self._release_useful
             stream_started_at = started_at
             self.active.set()
         first_useful_audio_logged = False
@@ -432,6 +435,8 @@ class SentencePlayback:
                     with self._lock:
                         if generation != self._generation:
                             return
+                    if useful and not release_useful.wait(timeout=None):
+                        return
                     if useful and not first_useful_audio_logged:
                         print(json.dumps({
                             "event": "tts_first_useful_audio",
@@ -459,13 +464,18 @@ class SentencePlayback:
     def finish(self):
         self._sentences.put(None)
 
+    def release_useful(self):
+        self._release_useful.set()
+
     def stop(self):
         with self._lock:
             self._generation += 1
             self.active.clear()
             sentences = self._sentences
             audio = self._audio
+            release_useful = self._release_useful
         # Wake both workers when a reply is interrupted.
+        release_useful.set()
         sentences.put(None)
         audio.put(None)
         sd.stop()
@@ -536,7 +546,7 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
     listener.start()
 
     pending = ""
-    ready_sentences = []
+    complete_sentence_count = 0
     streamed_text_received = False
     streamed_audio_queued = False
     stream_started = False
@@ -566,31 +576,34 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
                     first_delta_ms = round((time.perf_counter() - stream_started_at) * 1000, 1)
             pending += delta
             sentences, pending = split_complete_sentences(pending)
-            ready_sentences.extend(sentences)
+            for sentence in sentences:
+                playback.enqueue(sentence, useful=True)
+                streamed_audio_queued = True
+                complete_sentence_count += 1
             # Wait for two complete sentences before beginning the substantive
-            # reply. This avoids a too-early fragment while still overlapping
-            # later generation and speech.
-            if not stream_started and len(ready_sentences) >= 2:
+            # reply. The first sentence is synthesized immediately but held in
+            # the playback worker until the second one is ready.
+            if not stream_started and complete_sentence_count >= 2:
                 stream_started = True
                 two_sentences_ms = round((time.perf_counter() - stream_started_at) * 1000, 1)
-            if stream_started:
-                while ready_sentences:
-                    playback.enqueue(ready_sentences.pop(0), useful=True)
-                    streamed_audio_queued = True
+                playback.release_useful()
         elif event_type == "done":
             completed_ms = round((time.perf_counter() - stream_started_at) * 1000, 1)
             result = event.get("result", {})
-            for sentence in ready_sentences:
-                playback.enqueue(sentence, useful=True)
-                streamed_audio_queued = True
             if pending.strip():
                 playback.enqueue(pending, useful=True)
                 streamed_audio_queued = True
+                complete_sentence_count += 1
+            if complete_sentence_count and not stream_started:
+                # Short replies with fewer than two sentences should not stay
+                # held forever once the model has completed.
+                playback.release_useful()
             # Fall back to the completed answer only when the server did not
             # send any usable stream text (for example the Ollama fallback).
             elif (not streamed_text_received and not streamed_audio_queued
                   and result.get("speak", True) and result.get("reply")):
                 playback.enqueue(result["reply"], useful=True)
+                playback.release_useful()
             playback.finish()
             completed = True
         elif event_type == "error":
