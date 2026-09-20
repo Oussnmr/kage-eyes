@@ -471,6 +471,10 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None):
     listener.start()
 
     pending = ""
+    ready_sentences = []
+    streamed_text_received = False
+    streamed_audio_queued = False
+    stream_started = False
     result = None
     completed = False
     while not completed:
@@ -487,15 +491,33 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None):
             continue
         event_type = event.get("type")
         if event_type == "delta":
-            pending += event.get("text", "")
+            delta = event.get("text", "")
+            if delta:
+                streamed_text_received = True
+            pending += delta
             sentences, pending = split_complete_sentences(pending)
-            for sentence in sentences:
-                playback.enqueue(sentence)
+            ready_sentences.extend(sentences)
+            # Wait for two complete sentences before beginning the substantive
+            # reply. This avoids a too-early fragment while still overlapping
+            # later generation and speech.
+            if not stream_started and len(ready_sentences) >= 2:
+                stream_started = True
+            if stream_started:
+                while ready_sentences:
+                    playback.enqueue(ready_sentences.pop(0))
+                    streamed_audio_queued = True
         elif event_type == "done":
             result = event.get("result", {})
+            for sentence in ready_sentences:
+                playback.enqueue(sentence)
+                streamed_audio_queued = True
             if pending.strip():
                 playback.enqueue(pending)
-            elif result.get("speak", True) and result.get("reply"):
+                streamed_audio_queued = True
+            # Fall back to the completed answer only when the server did not
+            # send any usable stream text (for example the Ollama fallback).
+            elif (not streamed_text_received and not streamed_audio_queued
+                  and result.get("speak", True) and result.get("reply")):
                 playback.enqueue(result["reply"])
             playback.finish()
             completed = True

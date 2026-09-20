@@ -165,6 +165,7 @@ Implement a small microphone health watchdog with explicit `PROCESSING` state an
 - The backend now exposes authenticated `/ask/stream` as newline-delimited local events. Codex deltas are forwarded as they arrive; direct commands stay deterministic and Ollama remains a full-response fallback for now.
 - The PC client queues completed sentences for Kokoro while later text continues to arrive. This is intended to reduce first-audible-response latency without changing the displayed full reply.
 - The first live validation must check a multi-sentence Codex answer, sentence order, wake-word interruption during playback, and any gap between queued sentences.
+- The client now waits for two complete streamed sentences before starting the substantive reply. It tracks already queued stream text so the final complete response is never added a second time.
 
 ## Exact next step
 
