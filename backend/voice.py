@@ -196,8 +196,24 @@ def wait_for_wake_word(stop_event=None, announce=True, keyphrase=None):
                     listener.start_utt()
                 listener.process_raw(speech)
                 if listener.hyp():
+                    hypothesis = listener.hyp()
                     listener.end_utt()
-                    print("🟣 Kage detected")
+                    hypothesis_text = getattr(hypothesis, "hypstr", str(hypothesis))
+                    best_score = getattr(hypothesis, "best_score", None)
+                    print(json.dumps({
+                        "event": "wake_detection_candidate",
+                        "keyphrase": keyphrase,
+                        "hypothesis": hypothesis_text,
+                        "best_score": best_score,
+                    }, ensure_ascii=False))
+                    if keyphrase == INTERRUPT_KEYPHRASE:
+                        print(json.dumps({
+                            "event": "interruption_triggered",
+                            "keyphrase": keyphrase,
+                            "hypothesis": hypothesis_text,
+                        }, ensure_ascii=False))
+                    else:
+                        print("🟣 Kage detected")
                     return True
         return False
     except sd.PortAudioError as exc:
