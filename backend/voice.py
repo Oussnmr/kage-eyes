@@ -10,6 +10,8 @@ import pyttsx3
 from concurrent.futures import ThreadPoolExecutor
 import re
 import random
+import threading
+import time
 from pocketsphinx import LiveSpeech
 
 SAMPLE_RATE = 16000
@@ -129,9 +131,10 @@ def choose_waiting_reply(text):
     return random.choice(WAITING_REPLIES)
 
 
-def wait_for_wake_word():
+def wait_for_wake_word(stop_event=None, announce=True):
     """Block locally until the PC microphone hears Kage; no audio leaves the PC."""
-    print("\n🟣 Wake word active — say ‘Kage’.")
+    if announce:
+        print("\n🟣 Wake word active — say ‘Kage’.")
     listener = LiveSpeech(
         keyphrase=WAKE_KEYPHRASE,
         kws_threshold=WAKE_THRESHOLD,
@@ -139,16 +142,30 @@ def wait_for_wake_word():
         audio_device=MIC_DEVICE,
     )
     try:
-        for _ in listener:
-            print("🟣 Kage detected")
-            return True
+        with listener.ad:
+            while stop_event is None or not stop_event.is_set():
+                audio, _ = listener.ad.read(listener.buffer_size // 2)
+                speech = listener.ep.process(audio)
+                if speech is None:
+                    continue
+                if not listener.in_speech:
+                    listener.start_utt()
+                listener.process_raw(speech)
+                if listener.hyp():
+                    listener.end_utt()
+                    print("🟣 Kage detected")
+                    return True
+        return False
     finally:
-        listener.ad.close()
+        try:
+            listener.ad.close()
+        except Exception:
+            pass
 
 
-def speak(text):
+def clean_speech_text(text):
     if not text:
-        return
+        return ""
     # Keep Markdown and citation syntax out of spoken audio. The full answer
     # remains visible in the console, but the voice should read natural prose.
     text = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", text)
@@ -157,8 +174,13 @@ def speak(text):
     text = text.replace("«", "").replace("»", "")
     text = text.replace("\u201c", "").replace("\u201d", "")
     text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def synthesize_speech(text):
+    text = clean_speech_text(text)
     if not text:
-        return
+        return None, ""
     payload = json.dumps({"text": text, "voice": "am_adam"}, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         "http://127.0.0.1:8000/speech",
@@ -174,12 +196,91 @@ def speak(text):
             pcm = response.read()
         samples = np.frombuffer(pcm, dtype=np.int16)
         if samples.size:
-            sd.play(samples, samplerate=16000, blocking=True)
-            return
+            return samples, text
     except Exception as exc:
         print(f"Kokoro unavailable, Windows voice fallback: {exc}")
+    return None, text
+
+
+def speak(text):
+    samples, text = synthesize_speech(text)
+    if not text:
+        return
+    if samples is not None:
+        sd.play(samples, samplerate=16000, blocking=True)
+        return
     tts.say(text)
     tts.runAndWait()
+
+
+class InterruptiblePlayback:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._generation = 0
+        self.active = threading.Event()
+
+    def start(self, text):
+        self.stop()
+        with self._lock:
+            self._generation += 1
+            generation = self._generation
+            self.active.set()
+
+        def play():
+            try:
+                samples, clean_text = synthesize_speech(text)
+                with self._lock:
+                    if generation != self._generation:
+                        return
+                if samples is not None:
+                    sd.play(samples, samplerate=16000, blocking=True)
+                elif clean_text:
+                    tts.say(clean_text)
+                    tts.runAndWait()
+            finally:
+                with self._lock:
+                    if generation == self._generation:
+                        self.active.clear()
+
+        threading.Thread(target=play, name="kage-playback", daemon=True).start()
+
+    def stop(self):
+        with self._lock:
+            self._generation += 1
+            self.active.clear()
+        sd.stop()
+        tts.stop()
+
+
+speech_playback = InterruptiblePlayback()
+
+
+def speak_reply_with_barge_in(text):
+    """Speak a conversational reply while listening only for a local wake word."""
+    listener_stop = threading.Event()
+    interrupted = threading.Event()
+
+    def listen_for_interrupt():
+        if wait_for_wake_word(listener_stop, announce=False):
+            interrupted.set()
+
+    speech_playback.start(text)
+    listener = threading.Thread(target=listen_for_interrupt, name="kage-barge-in", daemon=True)
+    listener.start()
+
+    while speech_playback.active.is_set():
+        if interrupted.is_set():
+            speech_playback.stop()
+            listener_stop.set()
+            listener.join(timeout=1)
+            print("🛑 Reply interrupted by wake word")
+            speak("Kagé is listening.")
+            return True
+        time.sleep(0.03)
+
+    listener_stop.set()
+    listener.join(timeout=1)
+    return False
 
 
 # ---------- MICRO ----------
@@ -383,8 +484,12 @@ def handle_utterance(wait_for_speech_seconds):
         print(f"🎭 Commande : {result['command']}")
         print(f"🔢 Séquence : {result['sequence']}")
 
-        # Kage répond à voix haute
-        speak(result["reply"])
+        # Conversational replies can be interrupted by saying “Kage”.
+        if result.get("route") in {"codex", "ollama"}:
+            if speak_reply_with_barge_in(result["reply"]):
+                return "interrupted"
+        else:
+            speak(result["reply"])
         return True
 
     except Exception as e:

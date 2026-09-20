@@ -144,6 +144,26 @@ Restart the existing backend without changing its behavior, verify telemetry out
 
 Implement a small microphone health watchdog with explicit `PROCESSING` state and recoverable codec reinitialization; validate it with the device logs. Then add a minimal speaker hardware playback test before choosing and integrating the French TTS engine.
 
+### PC voice client: English conversation, Codex and web search
+
+- The primary live interaction path is now the PC microphone and PC speaker, rather than the Waveshare microphone upload. The ESP32 remains available for eyes and direct physical states.
+- Speech recognition uses local faster-whisper `small` in English; spoken replies use local Kokoro (`am_adam`) with Windows TTS fallback.
+- The PC client detects the local wake word as English phonetic `Kage` and speaks the name as `Kagé`. A wake session stays open for 25 seconds to allow natural follow-up turns.
+- Supported direct state commands, backend selection, waiting phrases, stop/closing phrases, and spoken-markup cleanup are implemented locally.
+- The persistent locally authenticated Codex app-server bridge is available for conversational turns. It uses the existing ChatGPT/Codex login and does not use a separately billed API key. Ollama remains the local fallback.
+- Explicit current-information questions can use public search, and the backend may read accessible result pages. This is limited to the web-search categories authorized by the user.
+
+### Current interruption implementation (pending live test)
+
+- `voice.py` now plays conversational replies asynchronously and, while a reply is playing, listens locally only for the wake word.
+- Hearing `Kagé` stops PC audio immediately, says `Kagé is listening.`, and returns to the existing follow-up capture loop. The first supported use is: say `Kagé`, wait briefly for the interruption, then say `stop` or another request.
+- This reduces self-transcription during playback but is not full acoustic echo cancellation, does not yet cancel an already-completing Codex request, and needs a real microphone/speaker test.
+- Local `/speech` synthesis was validated: HTTP 200 and 37,546 bytes of PCM for a short test phrase.
+
+## Exact next step
+
+Mirror and commit the PC voice interruption change, restart the visible voice client, and test it with a long spoken response. Then measure whether wake-word interruption cuts output reliably before adding same-utterance `Kagé stop`, streaming generation, or true echo handling.
+
 ### Microphone recovery and Waveshare speaker hardware test (firmware `4e4fefe`)
 
 - `MicMeterState::Processing` now makes the microphone screen distinguish a normal backend wait from listening. It is entered only after endpointing and before the synchronous upload.
