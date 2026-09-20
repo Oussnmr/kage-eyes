@@ -366,7 +366,8 @@ static bool post_audio_to_backend(const int16_t *samples, size_t count) {
 
     WifiServiceInfo wifi = {};
     wifi_service_get_info(&wifi);
-    const bool on_local_lan = std::strncmp(wifi.ip, "192.168.129.", 13) == 0;
+    const bool on_local_lan =
+        std::strncmp(wifi.ip, "192.168.129.", sizeof("192.168.129.") - 1) == 0;
 
     if (!on_local_lan && !wifi_service_has_api_key()) {
         ESP_LOGW(TAG, "Remote voice disabled: no API key");
