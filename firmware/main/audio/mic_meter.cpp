@@ -24,6 +24,9 @@ namespace {
 constexpr char TAG[] = "kage-mic";
 constexpr char LOCAL_BACKEND_AUDIO_URL[] = "http://192.168.129.157:8000/audio";
 constexpr char REMOTE_BACKEND_AUDIO_URL[] = "https://m920q.tailbf4c85.ts.net:8443/audio";
+// The PC microphone is the active voice pipeline. Keep the on-device meter
+// available, but do not upload captured audio from the Waveshare anymore.
+constexpr bool DEVICE_VOICE_UPLOAD_ENABLED = false;
 
 constexpr int SAMPLE_RATE = 16000;
 constexpr int SAMPLE_COUNT = 256;
@@ -562,7 +565,11 @@ static void microphone_task(void *) {
                           : 0.0);
 
         s_state.store(MicMeterState::Processing);
-        post_audio_to_backend(s_recording, recording_samples);
+        if (DEVICE_VOICE_UPLOAD_ENABLED) {
+            post_audio_to_backend(s_recording, recording_samples);
+        } else {
+            event_log_add("Voice upload skipped: PC microphone active");
+        }
 
         speaking = false;
         recording_samples = 0;
