@@ -169,7 +169,8 @@ class CodexBridge:
         print(json.dumps({"event": "codex_ready", "startup_ms": startup_ms,
                           "model": MODEL, "disabled_plugins": len(self._disabled_plugin_ids)}))
 
-    def ask(self, message: str, on_delta: Callable[[str], None] | None = None, timeout: float = 60) -> dict[str, Any]:
+    def ask(self, message: str, web_context: str | None = None,
+            on_delta: Callable[[str], None] | None = None, timeout: float = 60) -> dict[str, Any]:
         """Return a concise reply and first-token/total timings. Never gives Codex tools."""
         with self._lock:
             self._ensure_thread()
@@ -179,8 +180,10 @@ class CodexBridge:
             prompt = (
                 "You are Kage, a desktop voice assistant. Reply in one concise, natural English answer. "
                 "Do not inspect files, use tools, browse the web, or change anything. "
-                "If up-to-date information is required, say you cannot verify it right now.\n\n"
-                f"User: {message}"
+                "If web results are provided below, use them as the only source for current facts, "
+                "and mention the source title or URL when useful. Otherwise do not invent current facts.\n\n"
+                f"User: {message}\n\n"
+                f"{web_context or 'No web results were requested.'}"
             )
             params = {
                 "threadId": self._thread_id,

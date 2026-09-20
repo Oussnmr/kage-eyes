@@ -5,6 +5,7 @@ from starlette.concurrency import run_in_threadpool
 
 from tts_service import kokoro_service
 from codex_bridge import CodexBridgeError, codex_bridge
+from web_search import format_web_context, needs_web_search, search_web
 
 from faster_whisper import WhisperModel
 
@@ -261,10 +262,20 @@ def process_message(message: str) -> dict:
     if direct is not None:
         return direct
 
+    web_context = None
+    if needs_web_search(message):
+        web_data = search_web(message)
+        web_context = format_web_context(web_data)
+        print(json.dumps({
+            "event": "web_search",
+            "results": len(web_data.get("results", [])),
+            "available": not bool(web_data.get("error")),
+        }, ensure_ascii=False))
+
     backend = get_conversation_backend()
     if backend == "codex":
         try:
-            codex = codex_bridge.ask(message, timeout=60)
+            codex = codex_bridge.ask(message, web_context=web_context, timeout=60)
             reply = codex["reply"] or "I could not form a response."
             current = current_state()
             print(json.dumps({
@@ -298,6 +309,8 @@ idle, blink, sleep, angry, dizzy, none.
 
     User request:
 {message}
+
+    {web_context or "No web search was requested. Do not invent current facts."}
 
     Reply only with a JSON object in exactly this form:
     {{"command":"none","reply":"your short answer in English"}}

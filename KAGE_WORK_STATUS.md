@@ -222,3 +222,10 @@ Test the PC-local wake word `Kage` with the user. It uses PocketSphinx keyword s
 - Added many session-stop variants, including `stop`, `stop listening`, `stop talking`, `that's enough`, `quiet`, `goodbye`, and `go back to sleep`.
 - Session closure now uses a randomized helpful phrase containing the name `Kagé` where appropriate. The wake acknowledgement also says `Kagé is listening`.
 - The detector still uses the English phonetic form `cage` internally because PocketSphinx matches the sound; user-facing TTS text uses `Kagé`.
+
+### Explicit Web search — 2026-09-20
+
+- Installed free `ddgs 9.16.0` and added `C:\Kage\web_search.py`.
+- Web egress is intentionally narrow: only explicit phrases such as `search the web`, `search online`, `look it up online`, `check online`, or `use the internet` trigger it.
+- Search results are compacted to title, URL, and snippet, then supplied to Codex or Ollama for the answer. Normal voice requests and direct commands never leave the PC for search.
+- Validation passed with an explicit Brussels weather request: five results returned, Codex answered with a source, and backend telemetry recorded the Web-search event.
