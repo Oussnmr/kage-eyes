@@ -149,6 +149,16 @@ def wait_for_wake_word():
 def speak(text):
     if not text:
         return
+    # Keep Markdown and citation syntax out of spoken audio. The full answer
+    # remains visible in the console, but the voice should read natural prose.
+    text = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", text)
+    text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"[*_`#]", "", text)
+    text = text.replace("«", "").replace("»", "")
+    text = text.replace("\u201c", "").replace("\u201d", "")
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return
     payload = json.dumps({"text": text, "voice": "am_adam"}, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         "http://127.0.0.1:8000/speech",
