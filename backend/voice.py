@@ -80,6 +80,14 @@ WAITING_REPLIES = (
     "Hmm...",
     "Okay, I see.",
 )
+SESSION_END_REPLIES = (
+    "Kagé is here if you need me.",
+    "I’m here whenever you need me.",
+    "Feel free to ask me anything.",
+    "I’ll be here if you have another question.",
+    "No problem. Just say Kagé when you need me.",
+    "Alright. I’m listening whenever you’re ready.",
+)
 
 
 def is_direct_command(text):
@@ -100,7 +108,10 @@ def is_end_session(text):
     normalized = re.sub(r"[^a-z0-9 ]", " ", text.lower())
     normalized = re.sub(r"\s+", " ", normalized).strip()
     phrases = (
-        "stop listening", "stop the conversation", "end the conversation",
+        "stop", "stop listening", "stop talking", "stop the conversation",
+        "end the conversation", "end chat", "end this chat", "cancel chat",
+        "be quiet", "quiet", "enough", "that's enough", "that is enough",
+        "no more", "stop now",
         "that's all", "that is all", "we are done", "we're done",
         "goodbye", "go back to sleep", "go idle", "wait for kage",
     )
@@ -344,7 +355,8 @@ def handle_utterance(wait_for_speech_seconds):
         print(f"📝 Entendu : {text}")
 
         if is_end_session(text):
-            speak("Okay, I'll wait for Kage.")
+            request_executor.submit(send_to_kage, text)
+            speak(random.choice(SESSION_END_REPLIES))
             return "end"
 
         # Start the backend request immediately. While it runs, acknowledge
@@ -378,7 +390,7 @@ while True:
             wait_for_wake_word()
         except KeyboardInterrupt:
             break
-        speak("I'm listening.")
+        speak("Kagé is listening.")
         wait_time = FOLLOW_UP_TIMEOUT_SECONDS
     else:
         choice = input("\nEntrée = parler | q = quitter : ")

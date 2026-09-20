@@ -219,3 +219,6 @@ Test the PC-local wake word `Kage` with the user. It uses PocketSphinx keyword s
 - Added local end-session phrases such as `stop listening`, `that's all`, `we're done`, `goodbye`, and `go back to sleep`.
 - Expanded English direct command variants for idle, blink, sleep, angry, and dizzy so these continue to bypass Codex and Ollama.
 - TTS remains local Kokoro `am_adam`; Codex supplies text only.
+- Added many session-stop variants, including `stop`, `stop listening`, `stop talking`, `that's enough`, `quiet`, `goodbye`, and `go back to sleep`.
+- Session closure now uses a randomized helpful phrase containing the name `Kagé` where appropriate. The wake acknowledgement also says `Kagé is listening`.
+- The detector still uses the English phonetic form `cage` internally because PocketSphinx matches the sound; user-facing TTS text uses `Kagé`.

@@ -181,7 +181,10 @@ def route_direct_command(message: str):
 
     english_rules = (
         ("idle", ("stop", "be normal", "return to normal", "go back to normal", "calm down",
-                   "relax", "reset", "return to idle", "go idle", "normal mode", "back to idle"),
+                   "relax", "reset", "return to idle", "go idle", "normal mode", "back to idle",
+                   "stop listening", "stop talking", "stop the conversation", "end the conversation",
+                   "end chat", "end this chat", "cancel chat", "be quiet", "quiet", "enough",
+                   "that's enough", "that is enough", "no more", "stop now"),
          "Okay, I am back to normal."),
         ("blink", ("blink", "blink your eyes", "close and open your eyes", "blink twice"), "Sure."),
         ("sleep", ("go to sleep", "sleep", "enter sleep mode", "take a nap", "rest", "sleep now"), "I am going to sleep."),
