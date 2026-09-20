@@ -210,6 +210,18 @@ def wait_for_wake_word(stop_event=None, announce=True, keyphrase=None):
             "keyphrase": keyphrase,
         }, ensure_ascii=False))
         return False
+    except Exception as exc:
+        # PocketSphinx/PortAudio can surface device failures through a backend
+        # exception type that is not exported as sounddevice.PortAudioError.
+        # Barge-in is optional, so disable only that listener and keep playback
+        # and the main voice loop alive.
+        print(json.dumps({
+            "event": "wake_listener_unavailable",
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "keyphrase": keyphrase,
+        }, ensure_ascii=False))
+        return False
     finally:
         if listener is not None:
             try:
