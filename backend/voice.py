@@ -9,6 +9,7 @@ import collections
 import pyttsx3
 from concurrent.futures import ThreadPoolExecutor
 import re
+import random
 from pocketsphinx import LiveSpeech
 
 SAMPLE_RATE = 16000
@@ -67,7 +68,18 @@ def choose_english_male_voice():
 choose_english_male_voice()
 
 request_executor = ThreadPoolExecutor(max_workers=1)
-WAITING_REPLY = "Let me think for a second."
+WAITING_REPLIES = (
+    "Okay, one second.",
+    "I'm thinking.",
+    "Let me think.",
+    "Hmm, let me see.",
+    "Alright, one moment.",
+    "Give me a second.",
+    "Just a second.",
+    "I'm working on that.",
+    "Hmm...",
+    "Okay, I see.",
+)
 
 
 def is_direct_command(text):
@@ -75,12 +87,35 @@ def is_direct_command(text):
     normalized = re.sub(r"\s+", " ", normalized).strip()
     phrases = (
         "stop", "be normal", "return to normal", "go back to normal",
-        "calm down", "blink", "blink your eyes", "go to sleep", "sleep",
-        "enter sleep mode", "be angry", "get angry", "angry", "be dizzy",
-        "get dizzy", "dizzy",
+        "calm down", "relax", "blink", "blink your eyes", "close your eyes",
+        "go to sleep", "sleep", "enter sleep mode", "take a nap", "be angry",
+        "get angry", "act angry", "angry", "be dizzy", "get dizzy", "spin",
+        "spin around", "dizzy",
     )
     return any(normalized == phrase or normalized.endswith(" " + phrase)
                for phrase in phrases)
+
+
+def is_end_session(text):
+    normalized = re.sub(r"[^a-z0-9 ]", " ", text.lower())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    phrases = (
+        "stop listening", "stop the conversation", "end the conversation",
+        "that's all", "that is all", "we are done", "we're done",
+        "goodbye", "go back to sleep", "go idle", "wait for kage",
+    )
+    return any(normalized == phrase or normalized.endswith(" " + phrase)
+               for phrase in phrases)
+
+
+def choose_waiting_reply(text):
+    """Return None for short/simple requests where silence feels better."""
+    normalized = re.sub(r"\s+", " ", text.strip())
+    word_count = len(normalized.split())
+    if len(normalized) <= 14 or word_count <= 3:
+        if random.random() < 0.70:
+            return None
+    return random.choice(WAITING_REPLIES)
 
 
 def wait_for_wake_word():
@@ -308,12 +343,18 @@ def handle_utterance(wait_for_speech_seconds):
 
         print(f"📝 Entendu : {text}")
 
+        if is_end_session(text):
+            speak("Okay, I'll wait for Kage.")
+            return "end"
+
         # Start the backend request immediately. While it runs, acknowledge
         # conversational requests right after transcription; direct physical
         # commands stay silent and return without an unnecessary phrase.
         request_future = request_executor.submit(send_to_kage, text)
         if not is_direct_command(text):
-            speak(WAITING_REPLY)
+            waiting_reply = choose_waiting_reply(text)
+            if waiting_reply:
+                speak(waiting_reply)
         result = request_future.result(timeout=60.0)
 
         print(f"🤖 Kage : {result['reply']}")
@@ -345,7 +386,10 @@ while True:
             break
         wait_time = MAX_RECORD_SECONDS
 
-    while handle_utterance(wait_time):
+    while True:
+        outcome = handle_utterance(wait_time)
+        if not outcome or outcome == "end":
+            break
         if not WAKE_WORD_ENABLED:
             break
         print(f"🟣 Conversation active — listening for {int(FOLLOW_UP_TIMEOUT_SECONDS)} more seconds.")

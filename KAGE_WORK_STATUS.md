@@ -212,3 +212,10 @@ Test the PC-local wake word `Kage` with the user. It uses PocketSphinx keyword s
 
 - After wake detection, Kagé now keeps the PC microphone session open for 25 seconds after every answer. A follow-up does not require saying `Kage` again.
 - If no speech is detected during that window, Kagé returns silently to wake-word mode. The timeout is configurable with `KAGE_FOLLOW_UP_TIMEOUT`; its default is 25 seconds.
+
+### Conversation polish — 2026-09-20
+
+- Waiting acknowledgements now rotate through ten short English phrases, including a soft “Hmm...”, and may remain silent for short inputs. This avoids filling every small interaction with speech.
+- Added local end-session phrases such as `stop listening`, `that's all`, `we're done`, `goodbye`, and `go back to sleep`.
+- Expanded English direct command variants for idle, blink, sleep, angry, and dizzy so these continue to bypass Codex and Ollama.
+- TTS remains local Kokoro `am_adam`; Codex supplies text only.

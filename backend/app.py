@@ -180,12 +180,13 @@ def route_direct_command(message: str):
         }
 
     english_rules = (
-        ("idle", ("stop", "be normal", "return to normal", "go back to normal", "calm down"),
+        ("idle", ("stop", "be normal", "return to normal", "go back to normal", "calm down",
+                   "relax", "reset", "return to idle", "go idle", "normal mode", "back to idle"),
          "Okay, I am back to normal."),
-        ("blink", ("blink", "blink your eyes"), "Sure."),
-        ("sleep", ("go to sleep", "sleep", "enter sleep mode"), "I am going to sleep."),
-        ("angry", ("be angry", "get angry", "angry"), "Okay."),
-        ("dizzy", ("spin around", "get dizzy"), "Oops."),
+        ("blink", ("blink", "blink your eyes", "close and open your eyes", "blink twice"), "Sure."),
+        ("sleep", ("go to sleep", "sleep", "enter sleep mode", "take a nap", "rest", "sleep now"), "I am going to sleep."),
+        ("angry", ("be angry", "get angry", "act angry", "look angry", "show me angry", "angry mode"), "Okay."),
+        ("dizzy", ("spin", "spin around", "get dizzy", "act dizzy", "look dizzy", "dizzy mode"), "Oops."),
     )
     for command, phrases, reply in english_rules:
         if any(normalized == phrase or normalized.endswith(" " + phrase) for phrase in phrases):
