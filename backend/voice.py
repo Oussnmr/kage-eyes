@@ -186,11 +186,24 @@ def clean_speech_text(text):
 
     # Make euro prices sound natural. Do ranges first so `€100-€300` is not
     # read as three separate symbols/numbers by the speech engine.
-    number = r"\d+(?:[.,]\d+)?"
+    # Allow thousands separators plus an optional decimal part, e.g. 1,000.50.
+    number = r"\d+(?:[.,]\d+)*"
+
+    def normalize_euro_number(value):
+        value = value.strip()
+        # Commas/dots repeated every three digits are thousands separators,
+        # not decimal points. Remove them so TTS says "one thousand".
+        if re.fullmatch(r"\d{1,3}(?:,\d{3})+", value):
+            return value.replace(",", "")
+        if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", value):
+            return value.replace(".", "")
+        if "," in value and "." in value:
+            return value.replace(",", "")
+        return value.replace(",", ".")
 
     def euro_range(match):
-        low = match.group(1).replace(",", ".")
-        high = match.group(2).replace(",", ".")
+        low = normalize_euro_number(match.group(1))
+        high = normalize_euro_number(match.group(2))
         return f"__KAGE_EURO_RANGE_{low}_{high}__"
 
     text = re.sub(
@@ -211,7 +224,7 @@ def clean_speech_text(text):
     )
 
     def euro_amount(match):
-        amount = (match.group(1) or match.group(2)).replace(",", ".")
+        amount = normalize_euro_number(match.group(1) or match.group(2))
         return f"{amount} euros"
 
     text = re.sub(
