@@ -275,4 +275,9 @@ Test the PC-local wake word `Kage` with the user. It uses PocketSphinx keyword s
 
 ## Exact next step
 
-Restart the backend and PC voice session, then compare two multi-sentence questions with the no-waiting-reply run. Record `first_delta_ms`, `two_sentences_ms`, and `tts_first_useful_audio` before deciding whether to restore acknowledgements or profile the remaining Kokoro synthesis cost.
+Restart the PC voice session and compare two multi-sentence questions with the no-waiting-reply run. The first complete streamed sentence is now released immediately; record `first_delta_ms`, `first_sentence_ms`, and `tts_first_useful_audio` before deciding whether to restore acknowledgements or profile the remaining Kokoro synthesis cost.
+
+### First-sentence playback — 2026-09-20
+
+- Removed the deliberate two-sentence playback hold. The first complete sentence is synthesized and released immediately, while later sentences remain queued for continuous playback.
+- Telemetry now reports `first_sentence_ms` instead of `two_sentences_ms`.

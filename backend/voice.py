@@ -570,7 +570,7 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
     streamed_audio_queued = False
     stream_started = False
     first_delta_ms = None
-    two_sentences_ms = None
+    first_sentence_ms = None
     completed_ms = None
     result = None
     completed = False
@@ -599,12 +599,11 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
                 playback.enqueue(sentence, useful=True)
                 streamed_audio_queued = True
                 complete_sentence_count += 1
-            # Wait for two complete sentences before beginning the substantive
-            # reply. The first sentence is synthesized immediately but held in
-            # the playback worker until the second one is ready.
-            if not stream_started and complete_sentence_count >= 2:
+            # Release the first complete sentence immediately. Later sentences
+            # stay queued and are synthesized while the first one is spoken.
+            if not stream_started and complete_sentence_count >= 1:
                 stream_started = True
-                two_sentences_ms = round((time.perf_counter() - stream_started_at) * 1000, 1)
+                first_sentence_ms = round((time.perf_counter() - stream_started_at) * 1000, 1)
                 playback.release_useful()
         elif event_type == "done":
             completed_ms = round((time.perf_counter() - stream_started_at) * 1000, 1)
@@ -614,8 +613,8 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
                 streamed_audio_queued = True
                 complete_sentence_count += 1
             if complete_sentence_count and not stream_started:
-                # Short replies with fewer than two sentences should not stay
-                # held forever once the model has completed.
+                # A reply without a complete sentence should not stay held once
+                # the model has completed.
                 playback.release_useful()
             # Fall back to the completed answer only when the server did not
             # send any usable stream text (for example the Ollama fallback).
@@ -647,7 +646,7 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
         "event": "streaming_timing",
         "transcription_ms": transcription_ms,
         "first_delta_ms": first_delta_ms,
-        "two_sentences_ms": two_sentences_ms,
+        "first_sentence_ms": first_sentence_ms,
         "generation_complete_ms": completed_ms,
         "total_until_playback_done_ms": round((time.perf_counter() - stream_started_at) * 1000, 1),
     }, ensure_ascii=False))
