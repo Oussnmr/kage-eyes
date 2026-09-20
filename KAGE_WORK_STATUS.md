@@ -169,6 +169,7 @@ Implement a small microphone health watchdog with explicit `PROCESSING` state an
 - Sentence playback now has separate synthesis and playback workers. Kokoro prepares later queued sentences while the speaker plays the current one; a controlled test confirmed the second sentence is prepared before playback of the first begins.
 - Voice telemetry now reports transcription duration, first Codex delta, two-sentence readiness, generation completion, and first useful TTS audio latency as JSON events in the voice console.
 - The interrupt listener now catches transient PortAudio device-open failures and records `wake_listener_unavailable` instead of terminating its thread. The screenshot showed this failure while the main streaming reply continued normally.
+- The PC voice client now warms the Kokoro `/speech` path once at startup, so the first user response does not pay the model's cold-start cost in the critical path.
 
 ## Exact next step
 

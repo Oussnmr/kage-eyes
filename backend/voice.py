@@ -321,6 +321,23 @@ def speak(text):
     tts.runAndWait()
 
 
+def warm_up_tts():
+    """Initialize the local Kokoro request path before the first user turn."""
+    started = time.perf_counter()
+    try:
+        samples, _ = synthesize_speech("Okay.")
+        print(json.dumps({
+            "event": "tts_warmup",
+            "available": samples is not None,
+            "duration_ms": round((time.perf_counter() - started) * 1000, 1),
+        }, ensure_ascii=False))
+    except Exception as exc:
+        print(json.dumps({
+            "event": "tts_warmup_failed",
+            "error": str(exc),
+        }, ensure_ascii=False))
+
+
 class InterruptiblePlayback:
     def __init__(self):
         self._lock = threading.Lock()
@@ -851,6 +868,7 @@ def handle_utterance(wait_for_speech_seconds):
 
 def main():
     """Run one interactive voice loop in the primary Python process only."""
+    warm_up_tts()
     print("\nKage Voice prêt.")
 
     while True:
