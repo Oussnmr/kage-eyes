@@ -37,7 +37,7 @@ MAX_RECORD_SECONDS = 12
 PRE_ROLL_SECONDS = 0.30
 WAKE_WORD_ENABLED = os.getenv("KAGE_WAKE_WORD", "1").strip().lower() in {"1", "true", "yes", "on"}
 WAKE_KEYPHRASE = "wake up"
-INTERRUPT_KEYPHRASE = "cage"  # Keep Kage as the barge-in word during playback.
+INTERRUPT_KEYPHRASE = "cage cancel"  # Distinct two-word barge-in phrase.
 WAKE_THRESHOLD = float(os.getenv("KAGE_WAKE_THRESHOLD", "1e-18"))
 FOLLOW_UP_TIMEOUT_SECONDS = float(os.getenv("KAGE_FOLLOW_UP_TIMEOUT", "25"))
 

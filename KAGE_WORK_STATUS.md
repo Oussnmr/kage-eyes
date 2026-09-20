@@ -156,7 +156,7 @@ Implement a small microphone health watchdog with explicit `PROCESSING` state an
 ### Current interruption implementation (pending live test)
 
 - `voice.py` now plays conversational replies asynchronously and, while a reply is playing, listens locally only for the wake word.
-- Hearing `Kagé` stops PC audio immediately, says `Kagé is listening.`, and returns to the existing follow-up capture loop. The first supported use is: say `Kagé`, wait briefly for the interruption, then say `stop` or another request.
+- Hearing `Kagé, cancel` stops PC audio immediately, says `Kagé is listening.`, and returns to the existing follow-up capture loop. The main wake phrase remains `wake up`.
 - This reduces self-transcription during playback but is not full acoustic echo cancellation, does not yet cancel an already-completing Codex request, and needs a real microphone/speaker test.
 - Local `/speech` synthesis was validated: HTTP 200 and 37,546 bytes of PCM for a short test phrase.
 
