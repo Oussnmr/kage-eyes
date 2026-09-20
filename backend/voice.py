@@ -352,12 +352,13 @@ speech_playback = InterruptiblePlayback()
 
 
 class SentencePlayback:
-    """Queue complete sentences so synthesis and playback overlap with LLM output."""
+    """Pre-synthesize queued sentences while the previous audio is playing."""
 
     def __init__(self):
         self._lock = threading.Lock()
         self._generation = 0
         self._sentences = queue.Queue()
+        self._audio = queue.Queue()
         self.active = threading.Event()
 
     def start(self):
@@ -366,18 +367,35 @@ class SentencePlayback:
             self._generation += 1
             generation = self._generation
             self._sentences = queue.Queue()
+            self._audio = queue.Queue()
+            sentences = self._sentences
+            audio = self._audio
             self.active.set()
 
-        def play_sentences():
+        def synthesize_sentences():
+            while True:
+                sentence = sentences.get()
+                if sentence is None:
+                    audio.put(None)
+                    return
+                with self._lock:
+                    if generation != self._generation:
+                        return
+                samples, clean_text = synthesize_speech(sentence)
+                with self._lock:
+                    if generation != self._generation:
+                        return
+                # The playback worker can now read this audio while this
+                # worker immediately prepares the following sentence.
+                audio.put((samples, clean_text))
+
+        def play_prepared_audio():
             try:
                 while True:
-                    sentence = self._sentences.get()
-                    if sentence is None:
+                    prepared = audio.get()
+                    if prepared is None:
                         return
-                    with self._lock:
-                        if generation != self._generation:
-                            return
-                    samples, clean_text = synthesize_speech(sentence)
+                    samples, clean_text = prepared
                     with self._lock:
                         if generation != self._generation:
                             return
@@ -391,7 +409,8 @@ class SentencePlayback:
                     if generation == self._generation:
                         self.active.clear()
 
-        threading.Thread(target=play_sentences, name="kage-sentence-playback", daemon=True).start()
+        threading.Thread(target=synthesize_sentences, name="kage-sentence-synthesis", daemon=True).start()
+        threading.Thread(target=play_prepared_audio, name="kage-sentence-playback", daemon=True).start()
 
     def enqueue(self, text):
         if text and text.strip():
@@ -404,6 +423,11 @@ class SentencePlayback:
         with self._lock:
             self._generation += 1
             self.active.clear()
+            sentences = self._sentences
+            audio = self._audio
+        # Wake both workers when a reply is interrupted.
+        sentences.put(None)
+        audio.put(None)
         sd.stop()
         tts.stop()
 

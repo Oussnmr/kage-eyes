@@ -166,6 +166,7 @@ Implement a small microphone health watchdog with explicit `PROCESSING` state an
 - The PC client queues completed sentences for Kokoro while later text continues to arrive. This is intended to reduce first-audible-response latency without changing the displayed full reply.
 - The first live validation must check a multi-sentence Codex answer, sentence order, wake-word interruption during playback, and any gap between queued sentences.
 - The client now waits for two complete streamed sentences before starting the substantive reply. It tracks already queued stream text so the final complete response is never added a second time.
+- Sentence playback now has separate synthesis and playback workers. Kokoro prepares later queued sentences while the speaker plays the current one; a controlled test confirmed the second sentence is prepared before playback of the first begins.
 
 ## Exact next step
 
