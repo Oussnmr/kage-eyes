@@ -40,6 +40,9 @@ WAKE_KEYPHRASE = "wake up"
 INTERRUPT_KEYPHRASE = "cage cancel"  # Distinct two-word barge-in phrase.
 WAKE_THRESHOLD = float(os.getenv("KAGE_WAKE_THRESHOLD", "1e-18"))
 FOLLOW_UP_TIMEOUT_SECONDS = float(os.getenv("KAGE_FOLLOW_UP_TIMEOUT", "25"))
+WAITING_REPLIES_ENABLED = os.getenv("KAGE_WAITING_REPLIES", "1").strip().lower() in {
+    "1", "true", "yes", "on",
+}
 
 print("Chargement de Whisper...")
 
@@ -159,6 +162,8 @@ def is_end_session(text):
 
 def choose_waiting_reply(text):
     """Return None for short/simple requests where silence feels better."""
+    if not WAITING_REPLIES_ENABLED:
+        return None
     normalized = re.sub(r"\s+", " ", text.strip())
     word_count = len(normalized.split())
     if len(normalized) <= 14 or word_count <= 3:
@@ -527,6 +532,10 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
     playback.start(stream_started_at)
     if waiting_reply:
         playback.enqueue(waiting_reply)
+    print(json.dumps({
+        "event": "waiting_reply",
+        "used": bool(waiting_reply),
+    }, ensure_ascii=False))
 
     def listen_for_interrupt():
         if wait_for_wake_word(

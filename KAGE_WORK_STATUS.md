@@ -171,6 +171,7 @@ Implement a small microphone health watchdog with explicit `PROCESSING` state an
 - The interrupt listener now catches transient PortAudio device-open failures and records `wake_listener_unavailable` instead of terminating its thread. The screenshot showed this failure while the main streaming reply continued normally.
 - The PC voice client now warms the Kokoro `/speech` path once at startup, so the first user response does not pay the model's cold-start cost in the critical path.
 - The first substantive sentence is now synthesized as soon as it arrives but held from playback until the second sentence is ready. This preserves the two-sentence guard while overlapping the first TTS computation with Codex generation.
+- `KAGE_WAITING_REPLIES=0` now provides a reversible A/B mode with no spoken waiting phrase. It is intended to measure whether waiting-phrase synthesis is blocking the first substantive audio; telemetry records whether one was used.
 
 ## Exact next step
 
