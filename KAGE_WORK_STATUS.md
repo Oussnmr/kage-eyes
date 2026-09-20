@@ -160,6 +160,12 @@ Implement a small microphone health watchdog with explicit `PROCESSING` state an
 - This reduces self-transcription during playback but is not full acoustic echo cancellation, does not yet cancel an already-completing Codex request, and needs a real microphone/speaker test.
 - Local `/speech` synthesis was validated: HTTP 200 and 37,546 bytes of PCM for a short test phrase.
 
+### Progressive Codex to speech test
+
+- The backend now exposes authenticated `/ask/stream` as newline-delimited local events. Codex deltas are forwarded as they arrive; direct commands stay deterministic and Ollama remains a full-response fallback for now.
+- The PC client queues completed sentences for Kokoro while later text continues to arrive. This is intended to reduce first-audible-response latency without changing the displayed full reply.
+- The first live validation must check a multi-sentence Codex answer, sentence order, wake-word interruption during playback, and any gap between queued sentences.
+
 ## Exact next step
 
 Mirror and commit the PC voice interruption change, restart the visible voice client, and test it with a long spoken response. Then measure whether wake-word interruption cuts output reliably before adding same-utterance `Kagé stop`, streaming generation, or true echo handling.

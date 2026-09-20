@@ -12,6 +12,7 @@ from faster_whisper import WhisperModel
 import hmac
 import json
 import os
+import queue
 import re
 import tempfile
 import threading
@@ -393,6 +394,83 @@ idle, blink, sleep, angry, dizzy, none.
     }
 
 
+def stream_message_events(message: str):
+    """Yield newline-delimited local events while a Codex reply is generated.
+
+    Direct commands remain deterministic and instantaneous. Ollama keeps its
+    existing non-streaming fallback until its own streaming JSON protocol is
+    implemented.
+    """
+    message = normalize_kage_name(message.strip())
+    if not message:
+        raise HTTPException(status_code=400, detail="Message vide")
+
+    direct = route_direct_command(message)
+    if direct is not None:
+        yield {"type": "done", "result": direct}
+        return
+
+    web_context = None
+    if needs_web_search(message):
+        web_data = search_web(message)
+        web_context = format_web_context(web_data)
+        print(json.dumps({
+            "event": "web_search",
+            "results": len(web_data.get("results", [])),
+            "available": not bool(web_data.get("error")),
+        }, ensure_ascii=False))
+
+    backend = get_conversation_backend()
+    if backend != "codex":
+        result = process_message(message)
+        if result.get("reply"):
+            yield {"type": "delta", "text": result["reply"]}
+        yield {"type": "done", "result": result}
+        return
+
+    events: queue.Queue[dict] = queue.Queue()
+
+    def generate() -> None:
+        try:
+            codex = codex_bridge.ask(
+                message,
+                web_context=web_context,
+                on_delta=lambda text: events.put({"type": "delta", "text": text}),
+                timeout=60,
+            )
+            reply = codex["reply"] or "I could not form a response."
+            current = current_state()
+            result = {
+                "ok": True,
+                "heard": message,
+                "reply": reply,
+                "command": "none",
+                "sequence": current["sequence"],
+                "route": "codex",
+                "conversation_backend": backend,
+                "speak": True,
+            }
+            print(json.dumps({
+                "event": "codex_stream_completed",
+                "first_delta_ms": codex["first_delta_ms"],
+                "total_ms": codex["total_ms"],
+                "model": codex["model"],
+            }, ensure_ascii=False))
+            events.put({"type": "done", "result": result})
+        except CodexBridgeError as exc:
+            events.put({"type": "error", "detail": str(exc)})
+        except Exception as exc:
+            events.put({"type": "error", "detail": f"Streaming failed: {exc}"})
+
+    threading.Thread(target=generate, name="kage-codex-stream", daemon=True).start()
+    yield {"type": "meta", "route": "codex", "conversation_backend": backend}
+    while True:
+        event = events.get()
+        yield event
+        if event["type"] in {"done", "error"}:
+            return
+
+
 def transcribe_pcm(pcm: bytes) -> str:
     if not pcm:
         return ""
@@ -573,6 +651,22 @@ def latest_command(request: Request):
 def ask(body: AskRequest, request: Request):
     require_kage_key(request)
     return process_message(body.message)
+
+
+@app.post("/ask/stream")
+def ask_stream(body: AskRequest, request: Request):
+    """Stream local JSON-line events for progressive PC speech playback."""
+    require_kage_key(request)
+
+    def event_stream():
+        for event in stream_message_events(body.message):
+            yield json.dumps(event, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Kage-Stream": "text-delta-v1"},
+    )
 
 
 @app.post("/speech")

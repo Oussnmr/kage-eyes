@@ -7,6 +7,7 @@ import wave
 import os
 import sys
 import collections
+import queue
 import pyttsx3
 from concurrent.futures import ThreadPoolExecutor
 import re
@@ -350,6 +351,175 @@ class InterruptiblePlayback:
 speech_playback = InterruptiblePlayback()
 
 
+class SentencePlayback:
+    """Queue complete sentences so synthesis and playback overlap with LLM output."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._generation = 0
+        self._sentences = queue.Queue()
+        self.active = threading.Event()
+
+    def start(self):
+        self.stop()
+        with self._lock:
+            self._generation += 1
+            generation = self._generation
+            self._sentences = queue.Queue()
+            self.active.set()
+
+        def play_sentences():
+            try:
+                while True:
+                    sentence = self._sentences.get()
+                    if sentence is None:
+                        return
+                    with self._lock:
+                        if generation != self._generation:
+                            return
+                    samples, clean_text = synthesize_speech(sentence)
+                    with self._lock:
+                        if generation != self._generation:
+                            return
+                    if samples is not None:
+                        sd.play(samples, samplerate=16000, blocking=True)
+                    elif clean_text:
+                        tts.say(clean_text)
+                        tts.runAndWait()
+            finally:
+                with self._lock:
+                    if generation == self._generation:
+                        self.active.clear()
+
+        threading.Thread(target=play_sentences, name="kage-sentence-playback", daemon=True).start()
+
+    def enqueue(self, text):
+        if text and text.strip():
+            self._sentences.put(text.strip())
+
+    def finish(self):
+        self._sentences.put(None)
+
+    def stop(self):
+        with self._lock:
+            self._generation += 1
+            self.active.clear()
+        sd.stop()
+        tts.stop()
+
+
+def split_complete_sentences(buffer):
+    """Return sentence-sized chunks and the incomplete tail of an LLM stream."""
+    complete = []
+    while True:
+        match = re.search(r"[.!?](?=\s|$)", buffer)
+        if not match:
+            return complete, buffer
+        sentence = buffer[:match.end()].strip()
+        buffer = buffer[match.end():].lstrip()
+        if sentence:
+            complete.append(sentence)
+
+
+def stream_to_kage(text, events):
+    """Read the local newline-delimited response stream on a worker thread."""
+    payload = json.dumps({"message": text}, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        "http://127.0.0.1:8000/ask/stream",
+        data=payload,
+        headers={
+            "Content-Type": "application/json; charset=utf-8",
+            "X-Kage-Key": KAGE_API_KEY,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=75) as response:
+            for raw_line in response:
+                line = raw_line.decode("utf-8").strip()
+                if line:
+                    events.put(json.loads(line))
+    except Exception as exc:
+        events.put({"type": "error", "detail": str(exc)})
+
+
+def speak_streaming_reply_with_barge_in(text, waiting_reply=None):
+    """Speak sentence chunks while Codex is still generating the remaining reply."""
+    events = queue.Queue()
+    interrupted = threading.Event()
+    listener_stop = threading.Event()
+    playback = SentencePlayback()
+    playback.start()
+    if waiting_reply:
+        playback.enqueue(waiting_reply)
+
+    def listen_for_interrupt():
+        if wait_for_wake_word(
+            listener_stop,
+            announce=False,
+            keyphrase=INTERRUPT_KEYPHRASE,
+        ):
+            interrupted.set()
+
+    threading.Thread(
+        target=stream_to_kage,
+        args=(text, events),
+        name="kage-response-stream",
+        daemon=True,
+    ).start()
+    listener = threading.Thread(target=listen_for_interrupt, name="kage-stream-barge-in", daemon=True)
+    listener.start()
+
+    pending = ""
+    result = None
+    completed = False
+    while not completed:
+        if interrupted.is_set():
+            playback.stop()
+            listener_stop.set()
+            listener.join(timeout=1)
+            print("🛑 Streaming reply interrupted by wake word")
+            speak("Kagé is listening.")
+            return None, True
+        try:
+            event = events.get(timeout=0.05)
+        except queue.Empty:
+            continue
+        event_type = event.get("type")
+        if event_type == "delta":
+            pending += event.get("text", "")
+            sentences, pending = split_complete_sentences(pending)
+            for sentence in sentences:
+                playback.enqueue(sentence)
+        elif event_type == "done":
+            result = event.get("result", {})
+            if pending.strip():
+                playback.enqueue(pending)
+            elif result.get("speak", True) and result.get("reply"):
+                playback.enqueue(result["reply"])
+            playback.finish()
+            completed = True
+        elif event_type == "error":
+            playback.stop()
+            listener_stop.set()
+            listener.join(timeout=1)
+            raise RuntimeError(f"Streaming response failed: {event.get('detail', 'unknown error')}")
+
+    while playback.active.is_set():
+        if interrupted.is_set():
+            playback.stop()
+            listener_stop.set()
+            listener.join(timeout=1)
+            print("🛑 Streaming reply interrupted by wake word")
+            speak("Kagé is listening.")
+            return None, True
+        time.sleep(0.03)
+
+    listener_stop.set()
+    listener.join(timeout=1)
+    return result or {}, False
+
+
 def speak_reply_with_barge_in(text):
     """Speak a conversational reply while listening only for a local wake word."""
     listener_stop = threading.Event()
@@ -569,26 +739,18 @@ def handle_utterance(wait_for_speech_seconds):
             speak(random.choice(SESSION_END_REPLIES))
             return "end"
 
-        # Start the backend request immediately. While it runs, acknowledge
-        # conversational requests right after transcription; direct physical
-        # commands stay silent and return without an unnecessary phrase.
-        request_future = request_executor.submit(send_to_kage, text)
-        if not is_direct_command(text):
-            waiting_reply = choose_waiting_reply(text)
-            if waiting_reply:
-                speak(waiting_reply)
-        result = request_future.result(timeout=60.0)
+        # Codex sends text chunks as it generates them. Completed sentences
+        # are queued for Kokoro immediately, rather than waiting for the full
+        # response. Direct commands remain locally routed by the backend.
+        waiting_reply = None if is_direct_command(text) else choose_waiting_reply(text)
+        result, was_interrupted = speak_streaming_reply_with_barge_in(text, waiting_reply)
+        if was_interrupted:
+            return "interrupted"
 
         print(f"🤖 Kage : {result['reply']}")
         print(f"🎭 Commande : {result['command']}")
         print(f"🔢 Séquence : {result['sequence']}")
 
-        # Conversational replies can be interrupted by saying “Kage”.
-        if result.get("route") in {"codex", "ollama"}:
-            if speak_reply_with_barge_in(result["reply"]):
-                return "interrupted"
-        else:
-            speak(result["reply"])
         return True
 
     except Exception as e:
