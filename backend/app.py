@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from tts_service import kokoro_service
+from codex_bridge import CodexBridgeError, codex_bridge
 
 from faster_whisper import WhisperModel
 
@@ -35,6 +36,7 @@ app = FastAPI(title="Kage M920q Backend", docs_url=None, redoc_url=None, openapi
 VALID_COMMANDS = {"idle", "blink", "sleep", "angry", "dizzy"}
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 OLLAMA_MODEL = "qwen3:4b-instruct-2507-q4_K_M"
+CONVERSATION_BACKEND = os.getenv("KAGE_CONVERSATION_BACKEND", "ollama").strip().lower()
 KAGE_API_KEY = os.getenv("KAGE_API_KEY", "").strip()
 
 AUDIO_SAMPLE_RATE = 16000
@@ -184,6 +186,29 @@ def process_message(message: str) -> dict:
     direct = route_direct_command(message)
     if direct is not None:
         return direct
+
+    if CONVERSATION_BACKEND == "codex":
+        try:
+            codex = codex_bridge.ask(message, timeout=60)
+            reply = codex["reply"] or "I could not form a response."
+            current = current_state()
+            print(json.dumps({
+                "event": "codex_completed",
+                "first_delta_ms": codex["first_delta_ms"],
+                "total_ms": codex["total_ms"],
+                "model": codex["model"],
+            }, ensure_ascii=False))
+            return {
+                "ok": True,
+                "heard": message,
+                "reply": reply,
+                "command": "none",
+                "sequence": current["sequence"],
+                "route": "codex",
+                "speak": True,
+            }
+        except CodexBridgeError as exc:
+            print(json.dumps({"event": "codex_fallback", "reason": str(exc)}, ensure_ascii=False))
 
     prompt = f"""
     You are the assistant of a small desktop robot named Kage.
@@ -415,6 +440,8 @@ def get_status(request: Request):
         "online": True,
         "command": current["command"],
         "sequence": current["sequence"],
+        "conversation_backend": CONVERSATION_BACKEND,
+        "codex_model": os.getenv("KAGE_CODEX_MODEL", "gpt-5.6-luna"),
     }
 
 
