@@ -148,7 +148,7 @@ Implement a small microphone health watchdog with explicit `PROCESSING` state an
 
 - The primary live interaction path is now the PC microphone and PC speaker, rather than the Waveshare microphone upload. The ESP32 remains available for eyes and direct physical states.
 - Speech recognition uses local faster-whisper `small` in English; spoken replies use local Kokoro (`am_adam`) with Windows TTS fallback.
-- The PC client detects the local wake word as English phonetic `Kage` and speaks the name as `Kagé`. A wake session stays open for 25 seconds to allow natural follow-up turns.
+- The PC client uses `wake up` as its main local wake phrase to reduce false alerts. It keeps `Kagé` as the interruption phrase while speaking, and a wake session stays open for 25 seconds to allow natural follow-up turns.
 - Supported direct state commands, backend selection, waiting phrases, stop/closing phrases, and spoken-markup cleanup are implemented locally.
 - The persistent locally authenticated Codex app-server bridge is available for conversational turns. It uses the existing ChatGPT/Codex login and does not use a separately billed API key. Ollama remains the local fallback.
 - Explicit current-information questions can use public search, and the backend may read accessible result pages. This is limited to the web-search categories authorized by the user.

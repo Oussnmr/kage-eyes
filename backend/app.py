@@ -150,12 +150,14 @@ def route_direct_command(message: str):
     normalized = re.sub(r"\s+", " ", normalized).strip()
 
     local_backend_phrases = (
-        "switch to local", "use local", "go local", "use ollama",
-        "switch to ollama", "pass in local mode", "passe en local",
+        "switch to local", "use local", "go local", "local mode", "run locally",
+        "use ollama", "switch to ollama", "go back to local", "stay local",
+        "pass in local mode", "passe en local",
     )
     codex_backend_phrases = (
         "switch to chatgpt", "switch to codex", "use chatgpt", "use codex",
-        "go back to chatgpt", "repasse sur chatgpt",
+        "go back to chatgpt", "back to chatgpt", "use the cloud", "cloud mode",
+        "use the chatgpt backend", "repasse sur chatgpt",
     )
     if any(normalized == phrase or normalized.endswith(" " + phrase)
            for phrase in local_backend_phrases):
@@ -182,15 +184,22 @@ def route_direct_command(message: str):
 
     english_rules = (
         ("idle", ("stop", "be normal", "return to normal", "go back to normal", "calm down",
-                   "relax", "reset", "return to idle", "go idle", "normal mode", "back to idle",
+                   "relax", "reset", "reset yourself", "return to idle", "go idle", "normal mode",
+                   "back to idle", "come back to normal", "return back to normal", "stop here",
                    "stop listening", "stop talking", "stop the conversation", "end the conversation",
-                   "end chat", "end this chat", "cancel chat", "be quiet", "quiet", "enough",
-                   "that's enough", "that is enough", "no more", "stop now"),
+                   "end chat", "end this chat", "cancel chat", "be quiet", "quiet", "go quiet",
+                   "enough", "that's enough", "that is enough", "that's enough for now",
+                   "no more", "stop now", "you can stop here", "you can stop now", "please stop",
+                   "let's stop here", "let us stop here", "we can stop here"),
          "Okay, I am back to normal."),
-        ("blink", ("blink", "blink your eyes", "close and open your eyes", "blink twice"), "Sure."),
-        ("sleep", ("go to sleep", "sleep", "enter sleep mode", "take a nap", "rest", "sleep now"), "I am going to sleep."),
-        ("angry", ("be angry", "get angry", "act angry", "look angry", "show me angry", "angry mode"), "Okay."),
-        ("dizzy", ("spin", "spin around", "get dizzy", "act dizzy", "look dizzy", "dizzy mode"), "Oops."),
+        ("blink", ("blink", "blink your eyes", "make your eyes blink", "close and open your eyes",
+                    "blink twice", "blink two times", "give me a blink"), "Sure."),
+        ("sleep", ("go to sleep", "sleep", "enter sleep mode", "take a nap", "rest", "sleep now",
+                    "go into sleep mode", "take a rest", "you can sleep", "sleep for now"), "I am going to sleep."),
+        ("angry", ("be angry", "get angry", "act angry", "look angry", "show me angry", "angry mode",
+                    "make yourself angry", "become angry", "turn angry", "show an angry face"), "Okay."),
+        ("dizzy", ("spin", "spin around", "get dizzy", "act dizzy", "look dizzy", "dizzy mode",
+                    "make yourself dizzy", "become dizzy", "turn dizzy", "start spinning"), "Oops."),
     )
     for command, phrases, reply in english_rules:
         if any(normalized == phrase or normalized.endswith(" " + phrase) for phrase in phrases):

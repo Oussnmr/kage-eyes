@@ -35,7 +35,8 @@ SILENCE_AFTER_SPEECH = 0.7   # traite après 0,7 s de silence
 MAX_RECORD_SECONDS = 12
 PRE_ROLL_SECONDS = 0.30
 WAKE_WORD_ENABLED = os.getenv("KAGE_WAKE_WORD", "1").strip().lower() in {"1", "true", "yes", "on"}
-WAKE_KEYPHRASE = "cage"  # English pronunciation of Kage.
+WAKE_KEYPHRASE = "wake up"
+INTERRUPT_KEYPHRASE = "cage"  # Keep Kage as the barge-in word during playback.
 WAKE_THRESHOLD = float(os.getenv("KAGE_WAKE_THRESHOLD", "1e-18"))
 FOLLOW_UP_TIMEOUT_SECONDS = float(os.getenv("KAGE_FOLLOW_UP_TIMEOUT", "25"))
 
@@ -91,6 +92,16 @@ WAITING_REPLIES = (
     "I'm working on that.",
     "Hmm...",
     "Okay, I see.",
+    "Sure, let me check.",
+    "Right, I’m looking into it.",
+    "One moment while I work that out.",
+    "Let me find the best answer.",
+    "I’m checking that now.",
+    "Alright, I’m on it.",
+    "Just a moment while I look into this.",
+    "I’m putting that together now.",
+    "Let me work through that.",
+    "I’ll check that for you.",
 )
 SESSION_END_REPLIES = (
     "Kagé is here if you need me.",
@@ -99,6 +110,14 @@ SESSION_END_REPLIES = (
     "I’ll be here if you have another question.",
     "No problem. Just say Kagé when you need me.",
     "Alright. I’m listening whenever you’re ready.",
+    "I’ll be here when you need me.",
+    "All right, just call me if you need anything.",
+    "I’m standing by if another question comes up.",
+    "Whenever you’re ready, I’m here.",
+    "No worries. I’ll wait here.",
+    "Just say wake up when you want me again.",
+    "I’m ready whenever you are.",
+    "I’ll stay quiet until you call me.",
 )
 
 
@@ -107,10 +126,12 @@ def is_direct_command(text):
     normalized = re.sub(r"\s+", " ", normalized).strip()
     phrases = (
         "stop", "be normal", "return to normal", "go back to normal",
-        "calm down", "relax", "blink", "blink your eyes", "close your eyes",
-        "go to sleep", "sleep", "enter sleep mode", "take a nap", "be angry",
-        "get angry", "act angry", "angry", "be dizzy", "get dizzy", "spin",
-        "spin around", "dizzy",
+        "calm down", "relax", "reset yourself", "return to idle", "go idle",
+        "normal mode", "back to idle", "blink", "blink your eyes", "close your eyes",
+        "make your eyes blink", "blink twice", "go to sleep", "sleep", "sleep now",
+        "enter sleep mode", "take a nap", "rest", "be angry", "get angry",
+        "act angry", "look angry", "show me angry", "angry mode", "be dizzy",
+        "get dizzy", "spin", "spin around", "act dizzy", "look dizzy", "dizzy mode",
     )
     return any(normalized == phrase or normalized.endswith(" " + phrase)
                for phrase in phrases)
@@ -120,12 +141,16 @@ def is_end_session(text):
     normalized = re.sub(r"[^a-z0-9 ]", " ", text.lower())
     normalized = re.sub(r"\s+", " ", normalized).strip()
     phrases = (
-        "stop", "stop listening", "stop talking", "stop the conversation",
+        "stop", "you can stop here", "you can stop now", "stop listening", "stop talking",
+        "please stop", "stop for now", "let us stop here", "let's stop here",
+        "we can stop here", "that's enough for now", "you can be quiet",
+        "go quiet", "end the conversation",
         "end the conversation", "end chat", "end this chat", "cancel chat",
         "be quiet", "quiet", "enough", "that's enough", "that is enough",
         "no more", "stop now",
         "that's all", "that is all", "we are done", "we're done",
-        "goodbye", "go back to sleep", "go idle", "wait for kage",
+        "goodbye", "bye for now", "go back to sleep", "go idle", "wait for wake up",
+        "wait until I call you", "stop the chat", "finish the conversation",
     )
     return any(normalized == phrase or normalized.endswith(" " + phrase)
                for phrase in phrases)
@@ -141,12 +166,13 @@ def choose_waiting_reply(text):
     return random.choice(WAITING_REPLIES)
 
 
-def wait_for_wake_word(stop_event=None, announce=True):
-    """Block locally until the PC microphone hears Kage; no audio leaves the PC."""
+def wait_for_wake_word(stop_event=None, announce=True, keyphrase=None):
+    """Block locally until the selected local wake phrase is heard."""
+    keyphrase = keyphrase or WAKE_KEYPHRASE
     if announce:
-        print("\n🟣 Wake word active — say ‘Kage’.")
+        print(f"\n🟣 Wake word active — say ‘{keyphrase}’.")
     listener = LiveSpeech(
-        keyphrase=WAKE_KEYPHRASE,
+        keyphrase=keyphrase,
         kws_threshold=WAKE_THRESHOLD,
         sampling_rate=SAMPLE_RATE,
         audio_device=MIC_DEVICE,
@@ -330,7 +356,11 @@ def speak_reply_with_barge_in(text):
     interrupted = threading.Event()
 
     def listen_for_interrupt():
-        if wait_for_wake_word(listener_stop, announce=False):
+        if wait_for_wake_word(
+            listener_stop,
+            announce=False,
+            keyphrase=INTERRUPT_KEYPHRASE,
+        ):
             interrupted.set()
 
     speech_playback.start(text)
