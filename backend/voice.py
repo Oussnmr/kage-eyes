@@ -7,6 +7,7 @@ import wave
 import os
 import collections
 import pyttsx3
+from concurrent.futures import ThreadPoolExecutor
 
 SAMPLE_RATE = 16000
 MIC_DEVICE = None  # garde le numéro qui fonctionne actuellement chez toi
@@ -58,6 +59,9 @@ def choose_english_male_voice():
 
 
 choose_english_male_voice()
+
+request_executor = ThreadPoolExecutor(max_workers=1)
+WAITING_REPLY = "Let me think for a second."
 
 
 def speak(text):
@@ -270,7 +274,14 @@ while True:
 
         print(f"📝 Entendu : {text}")
 
-        result = send_to_kage(text)
+        # Keep listening for the backend response while allowing a short,
+        # natural acknowledgement if a conversational answer takes longer.
+        request_future = request_executor.submit(send_to_kage, text)
+        try:
+            result = request_future.result(timeout=3.0)
+        except TimeoutError:
+            speak(WAITING_REPLY)
+            result = request_future.result(timeout=60.0)
 
         print(f"🤖 Kage : {result['reply']}")
         print(f"🎭 Commande : {result['command']}")
