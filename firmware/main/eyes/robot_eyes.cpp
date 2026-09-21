@@ -33,6 +33,7 @@ constexpr uint32_t GREEN = 0x42F58D;
 constexpr uint32_t RED = 0xFF4057;
 constexpr uint32_t PURPLE = 0xB58CFF;
 constexpr uint32_t DIM = 0x3F5260;
+constexpr uint32_t ORANGE = 0xFF9D3D;
 
 static lv_obj_t *s_left_eye;
 static lv_obj_t *s_right_eye;
@@ -44,10 +45,12 @@ static lv_obj_t *s_angry_right;
 static lv_obj_t *s_angry_left_stripes[ANGRY_STRIPES];
 static lv_obj_t *s_angry_right_stripes[ANGRY_STRIPES];
 static lv_obj_t *s_charge_bolt;
+static lv_obj_t *s_voice_indicator;
 static lv_timer_t *s_timer;
 static bool s_active;
 static bool s_angry;
 static bool s_angry_visible;
+static std::atomic<bool> s_voice_active{false};
 static int s_tap_count;
 static int64_t s_last_tap_us;
 static int64_t s_last_frame_us;
@@ -137,6 +140,12 @@ static void touch_event(lv_event_t *) {
     if (now - s_last_tap_us > 520000) s_tap_count = 0;
     s_last_tap_us = now;
     ++s_tap_count;
+    if (s_tap_count == 2 && s_assistant_state.load() == ASSISTANT_THINKING) {
+        kage_bridge_interrupt_voice();
+        s_tap_count = 0;
+        robot_eyes_assistant_listening();
+        return;
+    }
     wake_up(true);
     if (s_tap_count >= 3) {
         // Three taps are deliberately easier to register than a long hold on
@@ -230,6 +239,16 @@ static void update_thinking_dots(int assistant_state) {
         lv_obj_set_style_bg_color(s_thinking_dots[i], lv_color_hex(s_angry ? RED : PURPLE), 0);
         lv_obj_set_style_opa(s_thinking_dots[i], LV_OPA_COVER, 0);
     }
+}
+
+static void update_voice_indicator() {
+    const bool active = s_voice_active.load();
+    if (!active) {
+        lv_obj_set_style_opa(s_voice_indicator, LV_OPA_TRANSP, 0);
+        return;
+    }
+    const float pulse = 0.35f + 0.65f * (0.5f + 0.5f * sinf(s_time * 4.0f));
+    lv_obj_set_style_opa(s_voice_indicator, static_cast<lv_opa_t>(pulse * 255.0f), 0);
 }
 
 static void animate(lv_timer_t *) {
@@ -448,6 +467,7 @@ static void animate(lv_timer_t *) {
     update_sleep_marks(static_cast<float>(center_y));
     update_thinking_dots(assistant_state);
     update_charge_bolt();
+    update_voice_indicator();
 }
 
 static lv_obj_t *create_eye(lv_obj_t *parent) {
@@ -521,6 +541,16 @@ void robot_eyes_begin(lv_obj_t *parent) {
     set_geometry(s_right_eye, SCREEN_W / 2 + EYE_OFFSET_X - EYE_W / 2, SCREEN_H / 2 - 2, EYE_W, 4);
     set_geometry(s_mouth, SCREEN_W / 2 - MOUTH_W / 2, MOUTH_Y, MOUTH_W, MOUTH_H);
 
+    s_voice_indicator = lv_obj_create(parent);
+    lv_obj_remove_style_all(s_voice_indicator);
+    lv_obj_set_style_bg_color(s_voice_indicator, lv_color_hex(ORANGE), 0);
+    lv_obj_set_style_bg_opa(s_voice_indicator, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(s_voice_indicator, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_size(s_voice_indicator, 12, 12);
+    lv_obj_set_pos(s_voice_indicator, 12, 12);
+    lv_obj_clear_flag(s_voice_indicator, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_opa(s_voice_indicator, LV_OPA_TRANSP, 0);
+
     s_charge_bolt = lv_label_create(parent);
     lv_label_set_text(s_charge_bolt, LV_SYMBOL_CHARGE);
     lv_obj_set_style_text_font(s_charge_bolt, &lv_font_montserrat_24, 0);
@@ -590,3 +620,4 @@ void robot_eyes_assistant_thinking() { s_assistant_state.store(ASSISTANT_THINKIN
 void robot_eyes_assistant_speaking() { s_assistant_state.store(ASSISTANT_SPEAKING); }
 void robot_eyes_assistant_error() { s_assistant_state.store(ASSISTANT_ERROR); }
 void robot_eyes_assistant_offline() { s_assistant_state.store(ASSISTANT_OFFLINE); }
+void robot_eyes_set_voice_active(bool active) { s_voice_active.store(active); }

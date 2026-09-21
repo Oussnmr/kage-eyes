@@ -19,6 +19,7 @@ namespace {
 constexpr const char *LOCAL_BACKEND_URL = "http://192.168.129.157:8000/command/latest";
 constexpr const char *REMOTE_BACKEND_URL = "https://m920q.tailbf4c85.ts.net:8443/command/latest";
 constexpr const char *LOCAL_TOGGLE_URL = "http://192.168.129.157:8000/voice/toggle";
+constexpr const char *LOCAL_INTERRUPT_URL = "http://192.168.129.157:8000/voice/interrupt";
 constexpr TickType_t LOCAL_POLL_DELAY = pdMS_TO_TICKS(500);
 constexpr TickType_t REMOTE_POLL_DELAY = pdMS_TO_TICKS(2500);
 
@@ -187,6 +188,25 @@ static void toggle_voice_task(void *) {
     vTaskDelete(nullptr);
 }
 
+static void interrupt_voice_task(void *) {
+    if (wifi_service_active_profile_index() != 0) { vTaskDelete(nullptr); return; }
+    SemaphoreHandle_t mutex = http_mutex();
+    if (!mutex || xSemaphoreTake(mutex, pdMS_TO_TICKS(1500)) != pdTRUE) { vTaskDelete(nullptr); return; }
+    esp_http_client_config_t config = {};
+    config.url = LOCAL_INTERRUPT_URL;
+    config.timeout_ms = 2500;
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client) {
+        esp_http_client_set_method(client, HTTP_METHOD_POST);
+        const char *api_key = wifi_service_api_key();
+        if (api_key && api_key[0]) esp_http_client_set_header(client, "X-Kage-Key", api_key);
+        esp_http_client_perform(client);
+        esp_http_client_cleanup(client);
+    }
+    xSemaphoreGive(mutex);
+    vTaskDelete(nullptr);
+}
+
 static void dispatch_assistant_state(const char *assistant_state) {
     if (!assistant_state) return;
     if (std::strcmp(assistant_state, "idle") == 0) robot_eyes_assistant_idle();
@@ -296,6 +316,7 @@ static void bridge_task(void *) {
         cJSON *sequence_item = root ? cJSON_GetObjectItem(root, "sequence") : nullptr;
         cJSON *assistant_state_item = root ? cJSON_GetObjectItem(root, "assistant_state") : nullptr;
         cJSON *assistant_sequence_item = root ? cJSON_GetObjectItem(root, "assistant_sequence") : nullptr;
+        cJSON *voice_active_item = root ? cJSON_GetObjectItem(root, "voice_active") : nullptr;
         if (!root || !cJSON_IsString(command_item) || !cJSON_IsNumber(sequence_item)) {
             if (root) cJSON_Delete(root);
             if (was_reachable) event_log_add("Backend response invalid");
@@ -321,6 +342,7 @@ static void bridge_task(void *) {
             apply_assistant_state(assistant_state_item->valuestring,
                                   static_cast<uint32_t>(assistant_sequence_item->valuedouble));
         }
+        robot_eyes_set_voice_active(cJSON_IsTrue(voice_active_item));
 
         cJSON_Delete(root);
         vTaskDelay(current_poll_delay());
@@ -343,6 +365,10 @@ void kage_bridge_begin(void) {
 void kage_bridge_toggle_voice(void) {
     if (!s_started) return;
     xTaskCreate(toggle_voice_task, "kage_voice_toggle", 4096, nullptr, 4, nullptr);
+}
+
+void kage_bridge_interrupt_voice(void) {
+    xTaskCreate(interrupt_voice_task, "kage_voice_interrupt", 4096, nullptr, 4, nullptr);
 }
 
 bool kage_bridge_voice_upload_begin(uint32_t timeout_ms) {

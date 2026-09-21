@@ -17,6 +17,7 @@ void kage_bridge_get_info(KageBridgeInfo *info);
 // Triggered by the robot face's three-tap gesture. It asks the PC backend to
 // start a direct listening session, or stop the existing Kage Voice process.
 void kage_bridge_toggle_voice(void);
+void kage_bridge_interrupt_voice(void);
 
 // Apply the command returned directly by /audio. This avoids waiting for the
 // next /command/latest polling cycle after a successful voice upload.

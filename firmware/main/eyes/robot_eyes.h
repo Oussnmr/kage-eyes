@@ -29,3 +29,4 @@ void robot_eyes_assistant_thinking();
 void robot_eyes_assistant_speaking();
 void robot_eyes_assistant_error();
 void robot_eyes_assistant_offline();
+void robot_eyes_set_voice_active(bool active);
