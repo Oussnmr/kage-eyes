@@ -210,40 +210,66 @@ static void interrupt_voice_task(void *) {
 }
 
 static void wake_voice_task(void *) {
-    if (wifi_service_active_profile_index() != 0) { vTaskDelete(nullptr); return; }
+    if (wifi_service_active_profile_index() != 0) {
+        event_log_add("Voice wake: local PC unavailable");
+        vTaskDelete(nullptr);
+        return;
+    }
     SemaphoreHandle_t mutex = http_mutex();
-    if (!mutex || xSemaphoreTake(mutex, pdMS_TO_TICKS(1500)) != pdTRUE) { vTaskDelete(nullptr); return; }
+    if (!mutex || xSemaphoreTake(mutex, pdMS_TO_TICKS(1500)) != pdTRUE) {
+        event_log_add("Voice wake: network busy");
+        vTaskDelete(nullptr);
+        return;
+    }
     esp_http_client_config_t config = {};
     config.url = LOCAL_WAKE_URL;
     config.timeout_ms = 2500;
     esp_http_client_handle_t client = esp_http_client_init(&config);
+    esp_err_t result = ESP_FAIL;
+    int status = 0;
     if (client) {
         esp_http_client_set_method(client, HTTP_METHOD_POST);
         const char *api_key = wifi_service_api_key();
         if (api_key && api_key[0]) esp_http_client_set_header(client, "X-Kage-Key", api_key);
-        esp_http_client_perform(client);
+        result = esp_http_client_perform(client);
+        status = result == ESP_OK ? esp_http_client_get_status_code(client) : 0;
         esp_http_client_cleanup(client);
     }
     xSemaphoreGive(mutex);
+    if (result == ESP_OK && status == 200) event_log_add("Voice wake from double tap");
+    else event_log_add("Voice wake failed: %d", status);
     vTaskDelete(nullptr);
 }
 
 static void sleep_voice_task(void *) {
-    if (wifi_service_active_profile_index() != 0) { vTaskDelete(nullptr); return; }
+    if (wifi_service_active_profile_index() != 0) {
+        event_log_add("Voice sleep: local PC unavailable");
+        vTaskDelete(nullptr);
+        return;
+    }
     SemaphoreHandle_t mutex = http_mutex();
-    if (!mutex || xSemaphoreTake(mutex, pdMS_TO_TICKS(1500)) != pdTRUE) { vTaskDelete(nullptr); return; }
+    if (!mutex || xSemaphoreTake(mutex, pdMS_TO_TICKS(1500)) != pdTRUE) {
+        event_log_add("Voice sleep: network busy");
+        vTaskDelete(nullptr);
+        return;
+    }
     esp_http_client_config_t config = {};
     config.url = LOCAL_SLEEP_URL;
     config.timeout_ms = 2500;
     esp_http_client_handle_t client = esp_http_client_init(&config);
+    esp_err_t result = ESP_FAIL;
+    int status = 0;
     if (client) {
         esp_http_client_set_method(client, HTTP_METHOD_POST);
         const char *api_key = wifi_service_api_key();
         if (api_key && api_key[0]) esp_http_client_set_header(client, "X-Kage-Key", api_key);
-        esp_http_client_perform(client);
+        result = esp_http_client_perform(client);
+        status = result == ESP_OK ? esp_http_client_get_status_code(client) : 0;
         esp_http_client_cleanup(client);
     }
     xSemaphoreGive(mutex);
+    if (result == ESP_OK && status == 200) event_log_add("Voice sleep from double tap");
+    else event_log_add("Voice sleep failed: %d", status);
     vTaskDelete(nullptr);
 }
 

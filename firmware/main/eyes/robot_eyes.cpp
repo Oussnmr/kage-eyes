@@ -93,6 +93,7 @@ static std::atomic<bool> s_shake_pending{false};
 static std::atomic<bool> s_charge_pending{false};
 static std::atomic<int> s_remote_command{REMOTE_NONE};
 static std::atomic<int> s_assistant_state{ASSISTANT_IDLE};
+static lv_timer_t *s_tap_timer;
 
 static float random_unit() {
     return static_cast<float>(esp_random()) / static_cast<float>(UINT32_MAX);
@@ -129,32 +130,53 @@ static void wake_up(bool blink_if_awake) {
     }
 }
 
+static void complete_tap_gesture(lv_timer_t *timer) {
+    if (timer == s_tap_timer) s_tap_timer = nullptr;
+    const int taps = s_tap_count;
+    s_tap_count = 0;
+    if (taps != 2) return;
+
+    const auto state = s_assistant_state.load();
+    if (state == ASSISTANT_IDLE) kage_bridge_wake_voice();
+    else if (state == ASSISTANT_LISTENING) kage_bridge_sleep_voice();
+    else if (state == ASSISTANT_THINKING || state == ASSISTANT_SPEAKING) kage_bridge_interrupt_voice();
+}
+
+static void cancel_tap_timer() {
+    if (!s_tap_timer) return;
+    lv_timer_delete(s_tap_timer);
+    s_tap_timer = nullptr;
+}
+
 static void touch_event(lv_event_t *) {
     const int64_t now = esp_timer_get_time();
     if (s_angry) {
         s_angry = false;
         s_tap_count = 0;
+        cancel_tap_timer();
         wake_up(false);
         return;
     }
-    if (now - s_last_tap_us > 520000) s_tap_count = 0;
+    if (now - s_last_tap_us > 520000) {
+        s_tap_count = 0;
+        cancel_tap_timer();
+    }
     s_last_tap_us = now;
     ++s_tap_count;
-    if (s_tap_count == 2) {
-        const auto state = s_assistant_state.load();
-        if (state == ASSISTANT_IDLE) kage_bridge_wake_voice();
-        else if (state == ASSISTANT_LISTENING) kage_bridge_sleep_voice();
-        else if (state == ASSISTANT_THINKING || state == ASSISTANT_SPEAKING) kage_bridge_interrupt_voice();
+    wake_up(true);
+    if (s_tap_count >= 3) {
+        // A third tap wins over the pending double-tap action.
+        cancel_tap_timer();
+        kage_bridge_toggle_voice();
         s_tap_count = 0;
         return;
     }
-    wake_up(true);
-    if (s_tap_count >= 3) {
-        // Three taps are deliberately easier to register than a long hold on
-        // this small touch panel. The PC toggles Kage Voice from this gesture.
-        kage_bridge_toggle_voice();
-        s_tap_count = 0;
-    }
+
+    // Defer the double-tap action long enough to let a third rapid tap arrive.
+    // Without this timer, tap two consumes the gesture and triple tap is impossible.
+    cancel_tap_timer();
+    s_tap_timer = lv_timer_create(complete_tap_gesture, 560, nullptr);
+    lv_timer_set_repeat_count(s_tap_timer, 1);
 }
 
 static void set_geometry(lv_obj_t *eye, int x, int y, int width, int height) {
