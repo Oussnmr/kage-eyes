@@ -220,10 +220,16 @@ static void update_thinking_dots(int assistant_state) {
             lv_obj_set_style_opa(s_thinking_dots[i], LV_OPA_TRANSP, 0);
             continue;
         }
-        const float phase = std::fmod(s_time * 3.0f - static_cast<float>(i) * 0.7f + 9.0f, 3.0f);
-        const float distance = std::fabs(phase - 1.5f);
-        const float pulse = 0.35f + 0.65f * (1.0f - std::min(1.0f, distance / 1.5f));
-        lv_obj_set_style_opa(s_thinking_dots[i], static_cast<lv_opa_t>(pulse * 255.0f), 0);
+        // Each dot grows and shrinks in sequence, with a tiny vertical hover.
+        const float phase = std::fmod(s_time * 2.4f - static_cast<float>(i) * 0.72f + 9.0f, 3.0f);
+        const float distance = std::fabs(phase - 1.5f) / 1.5f;
+        const float pulse = 1.0f - std::min(1.0f, distance);
+        const int diameter = 13 + static_cast<int>(pulse * 11.0f);
+        const int x = SCREEN_W / 2 - 42 + i * 42 - diameter / 2;
+        const int y = 72 - static_cast<int>(pulse * 4.0f) - diameter / 2;
+        lv_obj_set_size(s_thinking_dots[i], diameter, diameter);
+        lv_obj_set_pos(s_thinking_dots[i], x, y);
+        lv_obj_set_style_opa(s_thinking_dots[i], LV_OPA_COVER, 0);
     }
 }
 
@@ -498,12 +504,14 @@ void robot_eyes_begin(lv_obj_t *parent) {
     s_right_eye = create_eye(parent);
     s_mouth = create_mouth(parent);
     for (int i = 0; i < THINKING_DOT_COUNT; ++i) {
-        s_thinking_dots[i] = lv_label_create(parent);
-        lv_label_set_text(s_thinking_dots[i], ".");
-        lv_obj_set_style_text_font(s_thinking_dots[i], &lv_font_montserrat_24, 0);
-        lv_obj_set_style_text_color(s_thinking_dots[i], lv_color_hex(PURPLE), 0);
+        s_thinking_dots[i] = lv_obj_create(parent);
+        lv_obj_remove_style_all(s_thinking_dots[i]);
+        lv_obj_set_style_bg_color(s_thinking_dots[i], lv_color_hex(PURPLE), 0);
+        lv_obj_set_style_bg_opa(s_thinking_dots[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(s_thinking_dots[i], LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_opa(s_thinking_dots[i], LV_OPA_TRANSP, 0);
-        lv_obj_set_pos(s_thinking_dots[i], SCREEN_W / 2 - 36 + i * 24, MOUTH_Y - 34);
+        lv_obj_set_size(s_thinking_dots[i], 18, 18);
+        lv_obj_set_pos(s_thinking_dots[i], SCREEN_W / 2 - 51 + i * 42, 63);
         lv_obj_clear_flag(s_thinking_dots[i], LV_OBJ_FLAG_CLICKABLE);
     }
     s_angry_left = create_angry_eye(parent, s_angry_left_stripes);
