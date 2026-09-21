@@ -66,7 +66,9 @@ def main():
             sys.exit(f"missing: {src}")
 
     version = a.version or git_version()
-    date = datetime.date.today().isoformat()
+    # Keep the exact build timestamp visible on the public installer page.
+    # GitHub Actions runs in UTC, so label it explicitly to avoid ambiguity.
+    date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     out = a.out
     if os.path.isdir(out):
         shutil.rmtree(out)

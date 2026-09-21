@@ -20,6 +20,8 @@ constexpr const char *LOCAL_BACKEND_URL = "http://192.168.129.157:8000/command/l
 constexpr const char *REMOTE_BACKEND_URL = "https://m920q.tailbf4c85.ts.net:8443/command/latest";
 constexpr const char *LOCAL_TOGGLE_URL = "http://192.168.129.157:8000/voice/toggle";
 constexpr const char *LOCAL_INTERRUPT_URL = "http://192.168.129.157:8000/voice/interrupt";
+constexpr const char *LOCAL_WAKE_URL = "http://192.168.129.157:8000/voice/wake";
+constexpr const char *LOCAL_SLEEP_URL = "http://192.168.129.157:8000/voice/sleep";
 constexpr TickType_t LOCAL_POLL_DELAY = pdMS_TO_TICKS(500);
 constexpr TickType_t REMOTE_POLL_DELAY = pdMS_TO_TICKS(2500);
 
@@ -207,6 +209,44 @@ static void interrupt_voice_task(void *) {
     vTaskDelete(nullptr);
 }
 
+static void wake_voice_task(void *) {
+    if (wifi_service_active_profile_index() != 0) { vTaskDelete(nullptr); return; }
+    SemaphoreHandle_t mutex = http_mutex();
+    if (!mutex || xSemaphoreTake(mutex, pdMS_TO_TICKS(1500)) != pdTRUE) { vTaskDelete(nullptr); return; }
+    esp_http_client_config_t config = {};
+    config.url = LOCAL_WAKE_URL;
+    config.timeout_ms = 2500;
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client) {
+        esp_http_client_set_method(client, HTTP_METHOD_POST);
+        const char *api_key = wifi_service_api_key();
+        if (api_key && api_key[0]) esp_http_client_set_header(client, "X-Kage-Key", api_key);
+        esp_http_client_perform(client);
+        esp_http_client_cleanup(client);
+    }
+    xSemaphoreGive(mutex);
+    vTaskDelete(nullptr);
+}
+
+static void sleep_voice_task(void *) {
+    if (wifi_service_active_profile_index() != 0) { vTaskDelete(nullptr); return; }
+    SemaphoreHandle_t mutex = http_mutex();
+    if (!mutex || xSemaphoreTake(mutex, pdMS_TO_TICKS(1500)) != pdTRUE) { vTaskDelete(nullptr); return; }
+    esp_http_client_config_t config = {};
+    config.url = LOCAL_SLEEP_URL;
+    config.timeout_ms = 2500;
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client) {
+        esp_http_client_set_method(client, HTTP_METHOD_POST);
+        const char *api_key = wifi_service_api_key();
+        if (api_key && api_key[0]) esp_http_client_set_header(client, "X-Kage-Key", api_key);
+        esp_http_client_perform(client);
+        esp_http_client_cleanup(client);
+    }
+    xSemaphoreGive(mutex);
+    vTaskDelete(nullptr);
+}
+
 static void dispatch_assistant_state(const char *assistant_state) {
     if (!assistant_state) return;
     if (std::strcmp(assistant_state, "idle") == 0) robot_eyes_assistant_idle();
@@ -365,6 +405,16 @@ void kage_bridge_begin(void) {
 void kage_bridge_toggle_voice(void) {
     if (!s_started) return;
     xTaskCreate(toggle_voice_task, "kage_voice_toggle", 4096, nullptr, 4, nullptr);
+}
+
+void kage_bridge_wake_voice(void) {
+    if (!s_started) return;
+    xTaskCreate(wake_voice_task, "kage_wake", 4096, nullptr, 4, nullptr);
+}
+
+void kage_bridge_sleep_voice(void) {
+    if (!s_started) return;
+    xTaskCreate(sleep_voice_task, "kage_sleep", 4096, nullptr, 4, nullptr);
 }
 
 void kage_bridge_interrupt_voice(void) {

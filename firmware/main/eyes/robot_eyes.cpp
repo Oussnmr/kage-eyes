@@ -140,10 +140,12 @@ static void touch_event(lv_event_t *) {
     if (now - s_last_tap_us > 520000) s_tap_count = 0;
     s_last_tap_us = now;
     ++s_tap_count;
-    if (s_tap_count == 2 && s_assistant_state.load() == ASSISTANT_THINKING) {
-        kage_bridge_interrupt_voice();
+    if (s_tap_count == 2) {
+        const auto state = s_assistant_state.load();
+        if (state == ASSISTANT_IDLE) kage_bridge_wake_voice();
+        else if (state == ASSISTANT_LISTENING) kage_bridge_sleep_voice();
+        else if (state == ASSISTANT_THINKING || state == ASSISTANT_SPEAKING) kage_bridge_interrupt_voice();
         s_tap_count = 0;
-        robot_eyes_assistant_listening();
         return;
     }
     wake_up(true);
@@ -546,8 +548,8 @@ void robot_eyes_begin(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(s_voice_indicator, lv_color_hex(ORANGE), 0);
     lv_obj_set_style_bg_opa(s_voice_indicator, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(s_voice_indicator, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_size(s_voice_indicator, 12, 12);
-    lv_obj_set_pos(s_voice_indicator, 12, 12);
+    lv_obj_set_size(s_voice_indicator, 14, 14);
+    lv_obj_set_pos(s_voice_indicator, 24, 26);
     lv_obj_clear_flag(s_voice_indicator, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_opa(s_voice_indicator, LV_OPA_TRANSP, 0);
 
