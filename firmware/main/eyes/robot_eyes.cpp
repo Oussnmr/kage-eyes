@@ -7,6 +7,7 @@
 
 #include "esp_random.h"
 #include "esp_timer.h"
+#include "services/kage_bridge.h"
 
 namespace {
 constexpr int SCREEN_W = 448;
@@ -137,14 +138,11 @@ static void touch_event(lv_event_t *) {
     s_last_tap_us = now;
     ++s_tap_count;
     wake_up(true);
-    if (s_tap_count >= 5) {
-        s_angry = true;
+    if (s_tap_count >= 3) {
+        // Three taps are deliberately easier to register than a long hold on
+        // this small touch panel. The PC toggles Kage Voice from this gesture.
+        kage_bridge_toggle_voice();
         s_tap_count = 0;
-        s_blinks_left = 0;
-        s_blink_time = -1.0f;
-        s_expression = 0;
-        s_dizzy_until = s_time;
-        s_charge_until = s_time;
     }
 }
 
@@ -229,8 +227,7 @@ static void update_thinking_dots(int assistant_state) {
         const int y = 72 - static_cast<int>(pulse * 4.0f) - diameter / 2;
         lv_obj_set_size(s_thinking_dots[i], diameter, diameter);
         lv_obj_set_pos(s_thinking_dots[i], x, y);
-        lv_obj_set_style_bg_color(s_thinking_dots[i],
-                                  lv_color_hex(assistant_state == ASSISTANT_THINKING ? RED : PURPLE), 0);
+        lv_obj_set_style_bg_color(s_thinking_dots[i], lv_color_hex(s_angry ? RED : PURPLE), 0);
         lv_obj_set_style_opa(s_thinking_dots[i], LV_OPA_COVER, 0);
     }
 }
@@ -379,9 +376,10 @@ static void animate(lv_timer_t *) {
         right_height = std::max(30, static_cast<int>(right_height * 0.62f));
     }
     if (s_angry) {
-        // Compact, inward-slanting wedges like the reference face.
-        left_height = 46;
-        right_height = 46;
+        // Keep the angry eyes close to the normal face scale; only their
+        // inward slant changes.
+        left_height = std::max(86, left_height);
+        right_height = std::max(86, right_height);
     }
 
     if (s_time < s_dizzy_until) {

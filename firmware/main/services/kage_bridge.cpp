@@ -18,6 +18,7 @@
 namespace {
 constexpr const char *LOCAL_BACKEND_URL = "http://192.168.129.157:8000/command/latest";
 constexpr const char *REMOTE_BACKEND_URL = "https://m920q.tailbf4c85.ts.net:8443/command/latest";
+constexpr const char *LOCAL_TOGGLE_URL = "http://192.168.129.157:8000/voice/toggle";
 constexpr TickType_t LOCAL_POLL_DELAY = pdMS_TO_TICKS(500);
 constexpr TickType_t REMOTE_POLL_DELAY = pdMS_TO_TICKS(2500);
 
@@ -150,6 +151,40 @@ static void dispatch_command(const char *command) {
         ESP_LOGW("kage-bridge", "Unknown command: %s", command);
         event_log_add("Unknown command: %s", command);
     }
+}
+
+static void toggle_voice_task(void *) {
+    if (wifi_service_active_profile_index() != 0) {
+        event_log_add("Voice toggle: local PC unavailable");
+        vTaskDelete(nullptr);
+        return;
+    }
+    SemaphoreHandle_t mutex = http_mutex();
+    if (!mutex || xSemaphoreTake(mutex, pdMS_TO_TICKS(1500)) != pdTRUE) {
+        event_log_add("Voice toggle: network busy");
+        vTaskDelete(nullptr);
+        return;
+    }
+    esp_http_client_config_t config = {};
+    config.url = LOCAL_TOGGLE_URL;
+    config.timeout_ms = 2500;
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        xSemaphoreGive(mutex);
+        event_log_add("Voice toggle: HTTP init failed");
+        vTaskDelete(nullptr);
+        return;
+    }
+    esp_http_client_set_method(client, HTTP_METHOD_POST);
+    const char *api_key = wifi_service_api_key();
+    if (api_key && api_key[0]) esp_http_client_set_header(client, "X-Kage-Key", api_key);
+    const esp_err_t result = esp_http_client_perform(client);
+    const int status = result == ESP_OK ? esp_http_client_get_status_code(client) : 0;
+    esp_http_client_cleanup(client);
+    xSemaphoreGive(mutex);
+    if (result == ESP_OK && status == 200) event_log_add("Voice toggled from touch");
+    else event_log_add("Voice toggle failed: %d", status);
+    vTaskDelete(nullptr);
 }
 
 static void dispatch_assistant_state(const char *assistant_state) {
@@ -303,6 +338,11 @@ void kage_bridge_begin(void) {
     (void)http_mutex();
     event_log_add("Command bridge starting");
     xTaskCreate(bridge_task, "kage_bridge", 6144, nullptr, 4, nullptr);
+}
+
+void kage_bridge_toggle_voice(void) {
+    if (!s_started) return;
+    xTaskCreate(toggle_voice_task, "kage_voice_toggle", 4096, nullptr, 4, nullptr);
 }
 
 bool kage_bridge_voice_upload_begin(uint32_t timeout_ms) {
