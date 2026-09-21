@@ -214,7 +214,7 @@ static void update_sleep_marks(float center_y) {
 }
 
 static void update_thinking_dots(int assistant_state) {
-    const bool visible = assistant_state == ASSISTANT_THINKING && s_sleep_started < 0.0f;
+        const bool visible = assistant_state == ASSISTANT_THINKING && s_sleep_started < 0.0f;
     for (int i = 0; i < THINKING_DOT_COUNT; ++i) {
         if (!visible) {
             lv_obj_set_style_opa(s_thinking_dots[i], LV_OPA_TRANSP, 0);
@@ -229,6 +229,8 @@ static void update_thinking_dots(int assistant_state) {
         const int y = 72 - static_cast<int>(pulse * 4.0f) - diameter / 2;
         lv_obj_set_size(s_thinking_dots[i], diameter, diameter);
         lv_obj_set_pos(s_thinking_dots[i], x, y);
+        lv_obj_set_style_bg_color(s_thinking_dots[i],
+                                  lv_color_hex(assistant_state == ASSISTANT_THINKING ? RED : PURPLE), 0);
         lv_obj_set_style_opa(s_thinking_dots[i], LV_OPA_COVER, 0);
     }
 }
@@ -376,6 +378,11 @@ static void animate(lv_timer_t *) {
         left_height = std::max(30, static_cast<int>(left_height * 0.62f));
         right_height = std::max(30, static_cast<int>(right_height * 0.62f));
     }
+    if (s_angry) {
+        // Compact, inward-slanting wedges like the reference face.
+        left_height = 46;
+        right_height = 46;
+    }
 
     if (s_time < s_dizzy_until) {
         const float phase = (DIZZY_DURATION_S - (s_dizzy_until - s_time)) * 11.0f;
@@ -422,6 +429,11 @@ static void animate(lv_timer_t *) {
                            left_center_x, center_y, left_height);
         set_angry_geometry(s_angry_right, s_angry_right_stripes, true,
                            right_center_x, center_y, right_height);
+        lv_obj_set_style_transform_rotation(s_angry_left, -140, 0);
+        lv_obj_set_style_transform_rotation(s_angry_right, 140, 0);
+    } else {
+        lv_obj_set_style_transform_rotation(s_angry_left, 0, 0);
+        lv_obj_set_style_transform_rotation(s_angry_right, 0, 0);
     }
     int mouth_w = MOUTH_W + static_cast<int>(bob * 0.5f);
     int mouth_y = MOUTH_Y + static_cast<int>(bob);
@@ -438,7 +450,7 @@ static void animate(lv_timer_t *) {
         mouth_y += static_cast<int>(cosf(phase * 0.8f) * 4.0f);
         mouth_rotation = static_cast<int>(sinf(phase * 0.55f) * 120.0f);
     }
-    if (!s_angry && assistant_state == ASSISTANT_SPEAKING) {
+    if (assistant_state == ASSISTANT_SPEAKING) {
         const float voice_pulse = 0.35f + 0.65f * fabsf(sinf(s_time * 15.0f));
         set_geometry(s_mouth, mouth_x, mouth_y - static_cast<int>(voice_pulse * 11.0f),
                      mouth_w, MOUTH_H + static_cast<int>(voice_pulse * 22.0f));
