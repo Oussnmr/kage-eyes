@@ -53,6 +53,7 @@ static bool s_angry_visible;
 static std::atomic<bool> s_voice_active{false};
 static int s_tap_count;
 static bool s_hold_touch_active;
+static bool s_second_press_candidate;
 static int64_t s_last_tap_us;
 static int64_t s_last_frame_us;
 static float s_time;
@@ -151,24 +152,36 @@ static void cancel_tap_timer() {
 
 static void touch_event(lv_event_t *event) {
     const auto code = lv_event_get_code(event);
+    if (code == LV_EVENT_PRESSED) {
+        const int64_t now = esp_timer_get_time();
+        s_second_press_candidate = s_tap_count == 1 &&
+                                   now - s_last_tap_us <= 520000;
+        if (s_second_press_candidate) cancel_tap_timer();
+        return;
+    }
     if (code == LV_EVENT_LONG_PRESSED) {
-        s_tap_count = 0;
-        cancel_tap_timer();
-        if (s_assistant_state.load() == ASSISTANT_IDLE && s_voice_active.load()) {
+        if (s_second_press_candidate &&
+            s_assistant_state.load() == ASSISTANT_IDLE && s_voice_active.load()) {
+            s_tap_count = 0;
+            cancel_tap_timer();
             s_hold_touch_active = true;
             kage_bridge_hold_start();
             wake_up(true);
         }
+        s_second_press_candidate = false;
         return;
     }
     if (code == LV_EVENT_RELEASED) {
         if (s_hold_touch_active) {
             s_hold_touch_active = false;
+            s_tap_count = 0;
+            cancel_tap_timer();
             kage_bridge_hold_stop();
         }
         return;
     }
     if (code != LV_EVENT_SHORT_CLICKED) return;
+    s_second_press_candidate = false;
     const int64_t now = esp_timer_get_time();
     if (s_angry) {
         s_angry = false;
@@ -562,6 +575,7 @@ void robot_eyes_begin(lv_obj_t *parent) {
     lv_obj_clear_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(parent, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(parent, touch_event, LV_EVENT_SHORT_CLICKED, nullptr);
+    lv_obj_add_event_cb(parent, touch_event, LV_EVENT_PRESSED, nullptr);
     lv_obj_add_event_cb(parent, touch_event, LV_EVENT_LONG_PRESSED, nullptr);
     lv_obj_add_event_cb(parent, touch_event, LV_EVENT_RELEASED, nullptr);
 

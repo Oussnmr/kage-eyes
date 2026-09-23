@@ -41,6 +41,8 @@ static bool s_started;
 // in flight finishes before /audio starts, and that no new GET starts until the
 // upload has completed.
 static std::atomic<bool> s_voice_network_pending{false};
+static std::atomic<bool> s_touch_hold_requested{false};
+static std::atomic<bool> s_hold_worker_active{false};
 static SemaphoreHandle_t s_http_mutex;
 static StaticSemaphore_t s_http_mutex_storage;
 static portMUX_TYPE s_http_mutex_init_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -275,17 +277,14 @@ static void sleep_voice_task(void *) {
     vTaskDelete(nullptr);
 }
 
-static void hold_voice_task(void *context) {
-    const char *url = static_cast<const char *>(context);
+static void send_hold_request(const char *url) {
     if (wifi_service_active_profile_index() != 0) {
         event_log_add("Voice hold: local PC unavailable");
-        vTaskDelete(nullptr);
         return;
     }
     SemaphoreHandle_t mutex = http_mutex();
     if (!mutex || xSemaphoreTake(mutex, pdMS_TO_TICKS(1500)) != pdTRUE) {
         event_log_add("Voice hold: network busy");
-        vTaskDelete(nullptr);
         return;
     }
     esp_http_client_config_t config = {};
@@ -304,6 +303,21 @@ static void hold_voice_task(void *context) {
     }
     xSemaphoreGive(mutex);
     if (result != ESP_OK || status != 200) event_log_add("Voice hold failed: %d", status);
+}
+
+static void hold_voice_task(void *) {
+    // One worker preserves request order even if the user releases immediately.
+    while (true) {
+        send_hold_request(LOCAL_HOLD_START_URL);
+        while (s_touch_hold_requested.load(std::memory_order_acquire)) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+        send_hold_request(LOCAL_HOLD_STOP_URL);
+        s_hold_worker_active.store(false, std::memory_order_release);
+        if (!s_touch_hold_requested.load(std::memory_order_acquire)) break;
+        bool expected = false;
+        if (!s_hold_worker_active.compare_exchange_strong(expected, true)) break;
+    }
     vTaskDelete(nullptr);
 }
 
@@ -483,14 +497,19 @@ void kage_bridge_interrupt_voice(void) {
 
 void kage_bridge_hold_start(void) {
     if (!s_started) return;
-    xTaskCreate(hold_voice_task, "kage_hold_start", 4096,
-                const_cast<char *>(LOCAL_HOLD_START_URL), 4, nullptr);
+    s_touch_hold_requested.store(true, std::memory_order_release);
+    bool expected = false;
+    if (s_hold_worker_active.compare_exchange_strong(expected, true)) {
+        if (xTaskCreate(hold_voice_task, "kage_hold", 4096, nullptr, 4, nullptr) != pdPASS) {
+            s_hold_worker_active.store(false, std::memory_order_release);
+            s_touch_hold_requested.store(false, std::memory_order_release);
+            event_log_add("Voice hold: task unavailable");
+        }
+    }
 }
 
 void kage_bridge_hold_stop(void) {
-    if (!s_started) return;
-    xTaskCreate(hold_voice_task, "kage_hold_stop", 4096,
-                const_cast<char *>(LOCAL_HOLD_STOP_URL), 4, nullptr);
+    s_touch_hold_requested.store(false, std::memory_order_release);
 }
 
 bool kage_bridge_voice_upload_begin(uint32_t timeout_ms) {
