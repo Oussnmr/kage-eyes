@@ -20,6 +20,8 @@ void kage_bridge_toggle_voice(void);
 void kage_bridge_wake_voice(void);
 void kage_bridge_sleep_voice(void);
 void kage_bridge_interrupt_voice(void);
+void kage_bridge_hold_start(void);
+void kage_bridge_hold_stop(void);
 
 // Apply the command returned directly by /audio. This avoids waiting for the
 // next /command/latest polling cycle after a successful voice upload.
