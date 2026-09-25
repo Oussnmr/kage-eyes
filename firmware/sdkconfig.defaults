@@ -47,6 +47,9 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 # TLS buffers dynamic and place mbedTLS allocations in the board's 8 MB PSRAM
 # so certificate verification does not exhaust fragmented internal heap.
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# The hardware AES path needs internal DMA buffers even when mbedTLS uses
+# PSRAM. OTA's TLS handshake ran out of that memory on the live device.
+CONFIG_MBEDTLS_HARDWARE_AES=n
 CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN=y
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
