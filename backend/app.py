@@ -6,6 +6,7 @@ from starlette.concurrency import run_in_threadpool
 from tts_service import kokoro_service
 from codex_bridge import CodexBridgeError, codex_bridge
 from web_search import format_web_context, needs_web_search, search_web
+from kage_sounds import play_sound
 
 from faster_whisper import WhisperModel
 
@@ -14,16 +15,19 @@ import json
 import os
 import queue
 import re
+import subprocess
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import urllib.request
+import urllib.error
 import wave
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-KAGE_TTS_VOICE = os.getenv("KAGE_TTS_VOICE", "am_puck").strip() or "am_puck"
+KAGE_TTS_VOICE = os.getenv("KAGE_TTS_VOICE", "ff_siwis").strip() or "ff_siwis"
 
 try:
     import pyttsx3
@@ -52,6 +56,29 @@ AUDIO_SAMPLE_WIDTH = 2
 MAX_AUDIO_BYTES = AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH * 12
 TTS_ENABLED = os.getenv("KAGE_PC_TTS", "0").strip().lower() in {"1", "true", "yes", "on"}
 WHISPER_MODEL_NAME = os.getenv("KAGE_WHISPER_MODEL", "small").strip() or "small"
+DOCKER_CLI = Path(os.getenv(
+    "KAGE_DOCKER_CLI",
+    r"C:\Users\Oussama\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe",
+))
+HOME_BRIDGE_CONTAINER = os.getenv("KAGE_HOME_BRIDGE_CONTAINER", "home-assistant-homeassistant-1")
+HOME_BRIDGE_URL = os.getenv("KAGE_HOME_BRIDGE_URL", "http://127.0.0.1:8787").rstrip("/")
+HOME_DEVICES = {
+    "light": ("40400515e868e76da5da", "switch_led", ("light", "lights", "the light", "main light", "ceiling light", "ceiling", "plafonier", "plafonnier")),
+    "lamp": ("bf9a6b44c155f86cc6zyyl", "switch_1", ("lamp", "the lamp", "desk lamp", "bedside lamp", "lampe")),
+    "projector": ("bfe6d607527039a8e4wlik", "switch_1", ("projector", "the projector", "beamer", "projecteur")),
+    "leds": ("bf1db5280dc2ea5d5buhoy", "switch_1", ("led", "leds", "the leds", "led light", "led lights", "lumiere led", "lumières led")),
+    "desk": ("bfb8713df16202297exsnh", "switch_1", ("desk", "the desk", "desk power", "desk plug", "desk plugs", "power strip", "power strips", "multiprise", "multiprises")),
+}
+HOME_PROFILES = {
+    "nightshift": {
+        "aliases": ("nightshift", "night shift", "night mode"),
+        "actions": (("leds", True), ("desk", True), ("light", False), ("lamp", True)),
+    },
+    "rest": {
+        "aliases": ("rest mode", "restmode", "rest time"),
+        "actions": (("lamp", False), ("leds", False), ("light", False), ("desk", False)),
+    },
+}
 
 if not KAGE_API_KEY:
     print("ATTENTION: KAGE_API_KEY absent. Les endpoints protégés refuseront les requêtes.")
@@ -62,8 +89,141 @@ state = {
     "sequence": 0,
     "assistant_state": "idle",
     "assistant_sequence": 0,
+    "voice_active": False,
+    "voice_last_seen": 0.0,
 }
+VOICE_HEARTBEAT_TIMEOUT_SECONDS = 6.0
 backend_lock = threading.Lock()
+home_control_lock = threading.Lock()
+VOICE_INTERRUPT_FLAG = Path(r"C:\Kage\voice_interrupt.flag")
+VOICE_WAKE_FLAG = Path(r"C:\Kage\voice_wake.flag")
+VOICE_SLEEP_FLAG = Path(r"C:\Kage\voice_sleep.flag")
+VOICE_HOLD_ACTIVE_FLAG = Path(r"C:\Kage\voice_hold_active.flag")
+voice_control_lock = threading.Lock()
+
+
+def home_bridge_authorization() -> str:
+    """Read the existing bridge-only token without logging or persisting it."""
+    explicit = os.getenv("KAGE_HOME_BRIDGE_TOKEN", "").strip()
+    if explicit:
+        return explicit if explicit.lower().startswith("bearer ") else f"Bearer {explicit}"
+    if not DOCKER_CLI.is_file():
+        return ""
+    try:
+        result = subprocess.run(
+            [str(DOCKER_CLI), "exec", HOME_BRIDGE_CONTAINER, "sh", "-c",
+             "grep '^kage_bridge_authorization:' /config/secrets.yaml"],
+            capture_output=True, text=True, timeout=4,
+        )
+        match = re.search(r"kage_bridge_authorization:\s*[\"']?(Bearer\s+[^\"'\s]+)", result.stdout)
+        return match.group(1) if match else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def execute_home_action(name: str, value: bool, authorization: str) -> tuple[str, bool]:
+    """Send one device action and confirm it with the bridge polling contract."""
+    device_id, code, _ = HOME_DEVICES[name]
+    # TinyTuya persistent connections can retain stale receive data on plugs.
+    # Use the bridge's short-lived mode for plugs only; the ceiling light keeps
+    # its established persistent path.
+    transient_headers = {"X-Tuya-Transient": "1"} if name in {"lamp", "projector", "leds", "desk"} else {}
+    payload = json.dumps({"commands": [{"code": code, "value": value}]}).encode("utf-8")
+    command_request = urllib.request.Request(
+        f"{HOME_BRIDGE_URL}/device/{device_id}/commands", data=payload,
+        headers={"Authorization": authorization, "Content-Type": "application/json", **transient_headers}, method="POST",
+    )
+    status_request = urllib.request.Request(
+        f"{HOME_BRIDGE_URL}/device/{device_id}/status",
+        headers={"Authorization": authorization, **transient_headers}, method="GET",
+    )
+    for command_attempt in range(3):
+        try:
+            with urllib.request.urlopen(command_request, timeout=18) as response:
+                body = json.loads(response.read().decode("utf-8"))
+            accepted = 200 <= response.status < 300 and body.get("success") is True
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+            accepted = False
+        if accepted:
+            for _ in range(6):
+                time.sleep(0.4)
+                try:
+                    with urllib.request.urlopen(status_request, timeout=12) as response:
+                        status = json.loads(response.read().decode("utf-8"))
+                    returned = status.get("result", []) if isinstance(status, dict) else []
+                    if (200 <= response.status < 300 and status.get("success") is True
+                            and any(item.get("code") == code and item.get("value") == value
+                                    for item in returned if isinstance(item, dict))):
+                        return name, True
+                except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+                    pass
+        time.sleep(0.7 * (command_attempt + 1))
+    return name, False
+
+
+def apply_home_actions(message: str, actions, profile: str | None = None):
+    """Execute local home actions; profiles dispatch every device simultaneously."""
+    authorization = home_bridge_authorization()
+    if not authorization:
+        return {"ok": False, "reply": "Home control is not available right now.", "command": "none"}
+    # Start this cue before the action. It runs asynchronously and never gates
+    # the home bridge request.
+    play_sound("home_command")
+    with home_control_lock:
+        if profile:
+            # Each device has its own bridge lock, so the commands can leave at
+            # the same time while their confirmations remain independent.
+            with ThreadPoolExecutor(max_workers=len(actions)) as executor:
+                results = list(executor.map(lambda item: execute_home_action(*item, authorization), actions))
+        else:
+            results = [execute_home_action(name, value, authorization) for name, value in actions]
+    changed = [name for name, confirmed in results if confirmed]
+    failed = [name for name, confirmed in results if not confirmed]
+    if profile and changed:
+        reply = f"{profile.title()} is on."
+    elif changed:
+        reply = "I updated " + ", ".join(f"{name} {'on' if value else 'off'}" for name, value in actions if name in changed) + "."
+    else:
+        reply = "I could not reach the home devices."
+    if failed and changed:
+        reply += f" I could not change {', '.join(failed)}."
+    print(json.dumps({"event": "home_control", "profile": profile,
+                      "actions": list(actions), "devices": changed, "failed": failed}, ensure_ascii=False))
+    current = current_state()
+    # Home controls are intentionally silent. The voice client will return to
+    # its normal listening window after the local action completes.
+    return {"ok": bool(changed), "heard": normalize_kage_name(message), "reply": "",
+            "command": "none", "sequence": current["sequence"], "route": "home_control", "speak": False}
+
+
+def route_home_control(message: str):
+    """Route every recognized home-device request directly to the local Python bridge."""
+    normalized = re.sub(r"[^a-zA-ZÀ-ÿ0-9 ]", " ", message.lower())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    for profile_name, profile in HOME_PROFILES.items():
+        if any(alias in normalized for alias in profile["aliases"]):
+            return apply_home_actions(message, profile["actions"], profile_name)
+    turn_on = any(term in normalized for term in (
+        "allume", "allumer", "active", "active moi", "mets", "mettre", "ouvre", "ouvrir",
+        "turn on", "switch on", "power on", "put on", "enable", "start", "wake up",
+    ))
+    turn_off = any(term in normalized for term in (
+        "eteins", "éteins", "eteindre", "éteindre", "coupe", "couper", "arrete", "arrête",
+        "desactive", "désactive", "ferme", "fermer", "turn off", "switch off", "power off",
+        "turn of", "switch of", "power of", "shut off", "disable", "stop", "kill",
+    ))
+    words = set(normalized.split())
+    turn_on = turn_on or "on" in words
+    turn_off = turn_off or "off" in words
+    if turn_on == turn_off:
+        return None
+    targets = [name for name, (_, _, aliases) in HOME_DEVICES.items()
+               if any(alias in normalized for alias in aliases)]
+    if not targets and any(term in normalized for term in ("tout", "tous", "everything", "all devices", "all lights")):
+        targets = list(HOME_DEVICES)
+    if not targets:
+        return None
+    return apply_home_actions(message, tuple((name, turn_on) for name in dict.fromkeys(targets)))
 
 
 def load_conversation_backend() -> str:
@@ -153,8 +313,24 @@ def set_assistant_state(assistant_state: str) -> int:
         return state["assistant_sequence"]
 
 
+def set_voice_active(active: bool) -> bool:
+    with state_lock:
+        state["voice_active"] = bool(active)
+        state["voice_last_seen"] = time.monotonic() if active else 0.0
+        return state["voice_active"]
+
+
 def current_state() -> dict:
     with state_lock:
+        # Closing the PowerShell host can terminate voice.py before atexit has
+        # time to publish its shutdown. A stale heartbeat is authoritative.
+        if (state["voice_active"] and state["voice_last_seen"]
+                and time.monotonic() - state["voice_last_seen"] > VOICE_HEARTBEAT_TIMEOUT_SECONDS):
+            state["voice_active"] = False
+            state["voice_last_seen"] = 0.0
+            if state["assistant_state"] != "idle":
+                state["assistant_state"] = "idle"
+                state["assistant_sequence"] += 1
         return dict(state)
 
 
@@ -285,6 +461,10 @@ def process_message(message: str) -> dict:
     if direct is not None:
         return direct
 
+    home_control = route_home_control(message)
+    if home_control is not None:
+        return home_control
+
     web_context = None
     if needs_web_search(message):
         web_data = search_web(message)
@@ -299,7 +479,7 @@ def process_message(message: str) -> dict:
     if backend == "codex":
         try:
             codex = codex_bridge.ask(message, web_context=web_context, timeout=60)
-            reply = codex["reply"] or "I could not form a response."
+            reply = codex["reply"] or "Je n'ai pas réussi à formuler une réponse."
             current = current_state()
             print(json.dumps({
                 "event": "codex_completed",
@@ -321,22 +501,24 @@ def process_message(message: str) -> dict:
             print(json.dumps({"event": "codex_fallback", "reason": str(exc)}, ensure_ascii=False))
 
     prompt = f"""
-    You are the assistant of a small desktop robot named Kage.
-    You answer in English, briefly and naturally.
+    Tu es l'assistant d'un petit robot de bureau nommé Kagé.
+    Réponds toujours en français, brièvement et naturellement, même si une source ou un terme est en anglais.
+    Pour les prix, coûts ou montants, utilise les euros (EUR/€) par défaut.
+    N'utilise une autre monnaie que si l'utilisateur le demande explicitement.
 
 Tu peux demander UNE réaction physique parmi:
 idle, blink, sleep, angry, dizzy, none.
 
-    Choose a reaction only when it is relevant to the request.
-    Never claim to have executed an action that does not exist.
+    Choisis une réaction seulement lorsqu'elle est pertinente.
+    Ne prétends jamais avoir exécuté une action qui n'existe pas.
 
-    User request:
+    Demande de l'utilisateur :
 {message}
 
-    {web_context or "No web search was requested. Do not invent current facts."}
+    {web_context or "Réponds utilement à partir de tes connaissances générales."}
 
-    Reply only with a JSON object in exactly this form:
-    {{"command":"none","reply":"your short answer in English"}}
+    Réponds uniquement avec un objet JSON exactement sous cette forme :
+    {{"command":"none","reply":"ta réponse courte en français"}}
 """.strip()
 
     payload = json.dumps(
@@ -423,6 +605,13 @@ def stream_message_events(message: str):
         yield {"type": "done", "result": direct}
         return
 
+    home_control = route_home_control(message)
+    if home_control is not None:
+        if home_control.get("reply"):
+            yield {"type": "delta", "text": home_control["reply"]}
+        yield {"type": "done", "result": home_control}
+        return
+
     web_context = None
     if needs_web_search(message):
         web_data = search_web(message)
@@ -506,15 +695,15 @@ def transcribe_pcm(pcm: bytes) -> str:
 
         segments, _ = whisper_model.transcribe(
             wav_path,
-            language="en",
+            language="fr",
             task="transcribe",
             vad_filter=True,
             beam_size=5,
             condition_on_previous_text=False,
             initial_prompt=(
-                "This is an English conversation. "
-                "The robot is named Kage; keep the name pronounced Kage. "
-                "The user speaks English."
+                "Ceci est une conversation en français. "
+                "Le robot s'appelle Kagé ; conserve correctement son nom. "
+                "L'utilisateur parle français."
             ),
         )
 
@@ -634,6 +823,7 @@ def get_status(request: Request):
         "assistant_state": current["assistant_state"],
         "assistant_sequence": current["assistant_sequence"],
         "conversation_backend": get_conversation_backend(),
+        "voice_active": current["voice_active"],
         "codex_model": os.getenv("KAGE_CODEX_MODEL", "gpt-5.6-luna"),
     }
 
@@ -667,6 +857,173 @@ def update_assistant_state(assistant_state: str, request: Request):
     print(json.dumps({"event": "assistant_state", "state": assistant_state,
                       "sequence": sequence}, ensure_ascii=False))
     return {"ok": True, "assistant_state": assistant_state, "assistant_sequence": sequence}
+
+
+@app.post("/voice/toggle")
+def toggle_voice_from_waveshare(request: Request):
+    """Three taps on Kage's face start direct listening, or stop Voice."""
+    require_kage_key(request)
+    if _voice_process_count() or current_state()["voice_active"]:
+        closed = _close_voice_processes()
+        play_sound("triple_close")
+        action = "stopped"
+    else:
+        _launch_voice_direct()
+        play_sound("triple_open")
+        action = "started"
+    sequence = set_assistant_state("idle")
+    print(json.dumps({"event": "voice_toggle", "action": action,
+                      "assistant_sequence": sequence}, ensure_ascii=False))
+    return {"ok": True, "action": action, "assistant_sequence": sequence}
+
+
+def _launch_voice_direct() -> bool:
+    """Open a visible console and return promptly, even while models load."""
+    with voice_control_lock:
+        if current_state()["voice_active"] or _voice_process_count():
+            return False
+        script = ("$host.UI.RawUI.WindowTitle='Kage Voice'; "
+                  "$env:KAGE_START_LISTENING='1'; "
+                  "& 'C:\\Kage\\venv\\Scripts\\python.exe' 'C:\\Kage\\voice.py'")
+        subprocess.Popen([
+            "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-Command", script,
+        ], creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
+        return True
+
+
+def _voice_process_count() -> int:
+    script = ("@(Get-CimInstance Win32_Process | Where-Object { "
+              "$_.Name -eq 'python.exe' -and $_.CommandLine -and "
+              "$_.CommandLine -like '*Kage*voice.py*' "
+              "}).Count")
+    result = subprocess.run(["powershell.exe", "-NoProfile", "-Command", script],
+                            capture_output=True, text=True, timeout=5, check=True)
+    return int(result.stdout.strip().splitlines()[-1])
+
+
+def _close_voice_processes() -> int:
+    with voice_control_lock:
+        VOICE_HOLD_ACTIVE_FLAG.unlink(missing_ok=True)
+        script = ("$voice = @(Get-CimInstance Win32_Process | Where-Object { "
+                  "$_.Name -eq 'python.exe' -and $_.CommandLine -and "
+                  "$_.CommandLine -like '*Kage*voice.py*' "
+                  "}); $voice | ForEach-Object { Stop-Process -Id $_.ProcessId -Force "
+                  "-ErrorAction SilentlyContinue }; $voice.Count")
+        result = subprocess.run(["powershell.exe", "-NoProfile", "-Command", script],
+                                capture_output=True, text=True, timeout=8, check=True)
+        closed = int(result.stdout.strip().splitlines()[-1])
+        set_voice_active(False)
+        set_assistant_state("idle")
+        return closed
+
+
+@app.post("/voice/start-direct")
+def start_voice_direct(request: Request):
+    require_kage_key(request)
+    current = current_state()
+    if not current["voice_active"]:
+        started = _launch_voice_direct()
+        if started:
+            play_sound("triple_open")
+        return {"ok": True, "action": "started" if started else "starting"}
+    if current["assistant_state"] == "idle":
+        wake_voice_from_waveshare(request)
+        action = "wake"
+    elif current["assistant_state"] == "listening":
+        sleep_voice_from_waveshare(request)
+        action = "sleep"
+    else:
+        interrupt_voice_from_waveshare(request)
+        action = "interrupt"
+    return {"ok": True, "action": action}
+
+
+@app.post("/voice/hold/start")
+def start_voice_hold(request: Request):
+    require_kage_key(request)
+    VOICE_HOLD_ACTIVE_FLAG.write_text(str(time.time()), encoding="ascii")
+    current = current_state()
+    if not current["voice_active"]:
+        started = _launch_voice_direct()
+        if started:
+            play_sound("triple_open")
+    elif current["assistant_state"] == "idle":
+        play_sound("wake_listening")
+        started = False
+    elif current["assistant_state"] in {"thinking", "speaking"}:
+        interrupt_voice_from_waveshare(request)
+        started = False
+    else:
+        started = False
+    return {"ok": True, "hold_active": True, "started": started}
+
+
+@app.post("/voice/hold/stop")
+def stop_voice_hold(request: Request):
+    require_kage_key(request)
+    VOICE_HOLD_ACTIVE_FLAG.unlink(missing_ok=True)
+    return {"ok": True, "hold_active": False}
+
+
+@app.post("/voice/close-all")
+def close_all_voice(request: Request):
+    require_kage_key(request)
+    try:
+        closed = _close_voice_processes()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Voice close failed") from exc
+    if closed:
+        play_sound("triple_close")
+    sequence = set_assistant_state("idle")
+    return {"ok": True, "closed": closed, "voice_active": False, "assistant_sequence": sequence}
+
+
+@app.post("/voice/interrupt")
+def interrupt_voice_from_waveshare(request: Request):
+    require_kage_key(request)
+    assistant_state = current_state()["assistant_state"]
+    play_sound("cancel_thinking" if assistant_state == "thinking" else "stop_speaking")
+    try:
+        VOICE_INTERRUPT_FLAG.write_text(str(time.time()), encoding="ascii")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Voice interrupt failed") from exc
+    # An interrupted reply exits the conversation and waits for the wake word.
+    sequence = set_assistant_state("idle")
+    return {"ok": True, "assistant_sequence": sequence}
+
+
+@app.post("/voice/wake")
+def wake_voice_from_waveshare(request: Request):
+    require_kage_key(request)
+    play_sound("wake_listening")
+    try:
+        VOICE_WAKE_FLAG.write_text(str(time.time()), encoding="ascii")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Voice wake failed") from exc
+    return {"ok": True}
+
+
+@app.post("/voice/sleep")
+def sleep_voice_from_waveshare(request: Request):
+    require_kage_key(request)
+    play_sound("sleep_listening")
+    try:
+        VOICE_SLEEP_FLAG.write_text(str(time.time()), encoding="ascii")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Voice sleep failed") from exc
+    sequence = set_assistant_state("idle")
+    set_command("sleep")
+    return {"ok": True, "assistant_sequence": sequence}
+
+
+@app.post("/voice-session/{active}")
+def update_voice_session(active: bool, request: Request):
+    """Voice.py publishes this once after its model is ready, then clears it on exit."""
+    require_kage_key(request)
+    value = set_voice_active(active)
+    print(json.dumps({"event": "voice_session", "active": value}, ensure_ascii=False))
+    return {"ok": True, "voice_active": value}
 
 
 @app.get("/command/latest")

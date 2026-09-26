@@ -524,6 +524,20 @@ def warm_up_tts():
         }, ensure_ascii=False))
 
 
+def transcript_rejection_reason(text):
+    """Reject obvious STT loops without penalizing ordinary short repetitions."""
+    words = re.findall(r"[0-9a-zà-öø-ÿ']+", (text or "").lower())
+    if len(words) < 12:
+        return None
+    counts = collections.Counter(words)
+    dominant_count = counts.most_common(1)[0][1]
+    if dominant_count / len(words) >= 0.60:
+        return "dominant_word_loop"
+    if len(set(words)) / len(words) <= 0.20:
+        return "low_vocabulary_loop"
+    return None
+
+
 class SentencePlayback:
     """Pre-synthesize queued sentences while the previous audio is playing."""
 
@@ -994,9 +1008,14 @@ def handle_utterance(wait_for_speech_seconds):
             ),
         }, ensure_ascii=False))
 
-        if not text:
+        rejection_reason = transcript_rejection_reason(text)
+        if not text or rejection_reason:
             print("❌ Je n'ai pas compris.")
-            print(json.dumps({"event": "transcription_rejected", "transcription_ms": transcription_ms}))
+            print(json.dumps({
+                "event": "transcription_rejected",
+                "transcription_ms": transcription_ms,
+                "reason": rejection_reason or "empty",
+            }, ensure_ascii=False))
             publish_assistant_state("listening")
             return True
 
