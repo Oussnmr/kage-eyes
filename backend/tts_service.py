@@ -12,7 +12,22 @@ except ImportError:
 MODEL_PATH = os.getenv("KAGE_KOKORO_MODEL", r"C:\Kage\models\kokoro\kokoro-v1.0.onnx")
 VOICES_PATH = os.getenv("KAGE_KOKORO_VOICES", r"C:\Kage\models\kokoro\voices-v1.0.bin")
 TARGET_RATE = 16000
-DEFAULT_VOICE = os.getenv("KAGE_TTS_VOICE", "am_puck").strip() or "am_puck"
+DEFAULT_VOICE = os.getenv("KAGE_TTS_VOICE", "ff_siwis").strip() or "ff_siwis"
+
+
+def language_for_voice(voice: str) -> str:
+    """Map Kokoro's voice prefix to its phonemizer language."""
+    prefix = voice.lower().split("_", 1)[0]
+    return {
+        "ff": "fr-fr",
+        "af": "en-us", "am": "en-us",
+        "bf": "en-gb", "bm": "en-gb",
+        "ef": "es", "em": "es",
+        "if": "it", "im": "it",
+        "pf": "pt-br", "pm": "pt-br",
+        "jf": "ja", "jm": "ja",
+        "zf": "cmn", "zm": "cmn",
+    }.get(prefix, "en-us")
 
 
 class KokoroService:
@@ -29,7 +44,7 @@ class KokoroService:
         if self.engine is None:
             raise RuntimeError("Kokoro TTS indisponible")
         async for samples, sample_rate in self.engine.create_stream(
-            text, voice=voice, lang="en-us"
+            text, voice=voice, lang=language_for_voice(voice)
         ):
             audio = np.asarray(samples, dtype=np.float32).reshape(-1)
             if sample_rate != TARGET_RATE:
