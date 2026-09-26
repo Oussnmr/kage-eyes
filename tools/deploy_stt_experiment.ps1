@@ -36,7 +36,13 @@ $manifest = [ordered]@{
 }
 $manifest | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $diagDir "rollback_manifest.json")
 
-# Stop only the PC voice client; the FastAPI backend is left untouched.
+# Prepare the new runtime first. Until this succeeds, the current live voice
+# client is left untouched and keeps running.
+& $python -m pip install --disable-pip-version-check requests
+powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "setup_nemotron_stt.ps1")
+
+# Only after Nemotron is installed and /ready succeeded do we switch the live
+# client. The FastAPI backend is left untouched.
 Get-CimInstance Win32_Process |
     Where-Object {
         $_.Name -match "^python" -and
@@ -46,10 +52,6 @@ Get-CimInstance Win32_Process |
 
 Copy-Item $repoVoice $liveVoice -Force
 Copy-Item $repoStt $liveStt -Force
-
-& $python -m pip install --disable-pip-version-check requests
-
-powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "setup_nemotron_stt.ps1")
 
 [Environment]::SetEnvironmentVariable("KAGE_STT_ENGINE", "auto", "User")
 [Environment]::SetEnvironmentVariable("KAGE_STT_LANGUAGE", "fr", "User")
