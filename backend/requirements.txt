@@ -9,3 +9,4 @@ sounddevice
 kokoro-onnx
 pocketsphinx==5.0.4
 ddgs==9.16.0
+requests
