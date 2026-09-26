@@ -55,6 +55,12 @@ class KageSTT:
             if item.strip()
         ]
 
+        # Preserve the old production startup behaviour when rollback forces
+        # Whisper: load it before the first utterance instead of adding a cold
+        # model-load penalty to the first request.
+        if self.engine == "whisper":
+            self._load_whisper()
+
     def describe(self):
         return {
             "engine": self.engine,
