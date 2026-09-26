@@ -1,4 +1,3 @@
-from faster_whisper import WhisperModel
 import sounddevice as sd
 import numpy as np
 import urllib.request
@@ -15,6 +14,7 @@ import random
 import threading
 import time
 from pocketsphinx import LiveSpeech
+from stt_engine import KageSTT
 
 # A detached PowerShell window can default to a legacy Windows code page.
 # Keep status messages from terminating the assistant when they contain accents
@@ -33,7 +33,7 @@ KAGE_TTS_VOICE = os.getenv("KAGE_TTS_VOICE", "am_puck").strip() or "am_puck"
 
 # Détection de voix
 BLOCK_MS = 50
-SILENCE_AFTER_SPEECH = 0.7   # traite après 0,7 s de silence
+SILENCE_AFTER_SPEECH = float(os.getenv("KAGE_SILENCE_AFTER_SPEECH", "0.55"))
 MAX_RECORD_SECONDS = 12
 PRE_ROLL_SECONDS = 0.30
 WAKE_WORD_ENABLED = os.getenv("KAGE_WAKE_WORD", "1").strip().lower() in {"1", "true", "yes", "on"}
@@ -45,15 +45,8 @@ WAITING_REPLIES_ENABLED = os.getenv("KAGE_WAITING_REPLIES", "1").strip().lower()
     "1", "true", "yes", "on",
 }
 
-print("Chargement de Whisper...")
-
-model = WhisperModel(
-    "small",
-    device="cpu",
-    compute_type="int8",
-)
-
-print("Whisper prêt.")
+stt = KageSTT()
+print(json.dumps({"event": "stt_config", **stt.describe()}, ensure_ascii=False))
 
 
 # ---------- VOIX DE KAGE ----------
@@ -856,24 +849,9 @@ def normalize_kage_name(text):
 
 
 def transcribe():
-    segments, _ = model.transcribe(
-        WAV_FILE,
-            language="en",
-        vad_filter=True,
-        beam_size=3,
-        condition_on_previous_text=False,
-        initial_prompt=(
-            "The robot is named Kage. Keep the name pronounced Kage. "
-            "The user speaks English."
-        ),
-    )
-
-    text = " ".join(
-        segment.text.strip()
-        for segment in segments
-    ).strip()
-
-    return normalize_kage_name(text)
+    result = stt.transcribe(WAV_FILE)
+    result.text = normalize_kage_name(result.text)
+    return result
 
 
 # ---------- QWEN / KAGE ----------
@@ -917,9 +895,13 @@ def handle_utterance(wait_for_speech_seconds):
             return False
 
         publish_assistant_state("thinking")
-        transcription_started = time.perf_counter()
-        text = transcribe()
-        transcription_ms = round((time.perf_counter() - transcription_started) * 1000, 1)
+        stt_result = transcribe()
+        text = stt_result.text
+        transcription_ms = round(stt_result.duration_ms, 1)
+        print(json.dumps({
+            "event": "stt_timing",
+            **stt_result.log_payload(),
+        }, ensure_ascii=False))
 
         if not text:
             print("❌ Je n'ai pas compris.")
