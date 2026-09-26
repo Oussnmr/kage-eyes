@@ -242,11 +242,11 @@ static void open_app(AppId app) {
     lv_screen_load_anim(screen_for(app), LV_SCR_LOAD_ANIM_FADE_IN, 180, 0, false);
 }
 
-static void show_home() {
+static void show_home(lv_screen_load_anim_t animation = LV_SCR_LOAD_ANIM_MOVE_BOTTOM) {
     s_pending_open = -1;
     set_app_activity(static_cast<AppId>(-1));
     select_bubble(static_cast<int>(s_current));
-    lv_screen_load_anim(s_home, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 220, 0, false);
+    lv_screen_load_anim(s_home, animation, 220, 0, false);
 }
 
 static void gesture_event(lv_event_t *) {
@@ -256,7 +256,13 @@ static void gesture_event(lv_event_t *) {
     if (lv_screen_active() == s_home) {
         if (direction == LV_DIR_LEFT) select_bubble(s_selected + 1);
         else if (direction == LV_DIR_RIGHT) select_bubble(s_selected - 1);
-    } else if (direction == LV_DIR_TOP) {
+    } else if (direction == LV_DIR_RIGHT) {
+        if (lv_screen_active() == s_wifi_logs) {
+            lv_screen_load_anim(s_wifi, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 180, 0, false);
+        } else {
+            show_home(LV_SCR_LOAD_ANIM_MOVE_RIGHT);
+        }
+    } else if (direction == LV_DIR_TOP || direction == LV_DIR_BOTTOM) {
         show_home();
     }
 }
