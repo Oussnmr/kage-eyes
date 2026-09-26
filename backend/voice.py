@@ -13,7 +13,10 @@ import re
 import random
 import threading
 import time
+import hashlib
+import atexit
 from pocketsphinx import LiveSpeech
+from kage_sounds import play_sound
 from stt_engine import KageSTT
 
 # A detached PowerShell window can default to a legacy Windows code page.
@@ -26,27 +29,63 @@ except (AttributeError, OSError):
     pass
 
 SAMPLE_RATE = 16000
-MIC_DEVICE = None  # garde le numéro qui fonctionne actuellement chez toi
+
+
+def resolve_mic_device():
+    configured = os.getenv("KAGE_MIC_DEVICE", "").strip()
+    if configured:
+        try:
+            return int(configured)
+        except ValueError:
+            pass
+    try:
+        default_input = sd.default.device[0]
+        if isinstance(default_input, int) and default_input >= 0:
+            info = sd.query_devices(default_input)
+            if info.get("max_input_channels", 0) > 0:
+                return default_input
+        candidates = [
+            (index, info) for index, info in enumerate(sd.query_devices())
+            if info.get("max_input_channels", 0) > 0
+        ]
+        # Prefer a real microphone over loopback/stereo-mix inputs.
+        for index, info in candidates:
+            name = str(info.get("name", "")).lower()
+            if "micro" in name or "mikrofon" in name or "usb" in name:
+                return index
+        return candidates[0][0] if candidates else None
+    except Exception:
+        return None
+
+
+MIC_DEVICE = resolve_mic_device()
 WAV_FILE = r"C:\Kage\voice_temp.wav"
 KAGE_API_KEY = os.getenv("KAGE_API_KEY", "").strip()
 KAGE_TTS_VOICE = os.getenv("KAGE_TTS_VOICE", "am_puck").strip() or "am_puck"
+WAITING_AUDIO_DIR = r"C:\Kage\waiting_audio"
+VOICE_INTERRUPT_FLAG = r"C:\Kage\voice_interrupt.flag"
+VOICE_WAKE_FLAG = r"C:\Kage\voice_wake.flag"
+VOICE_SLEEP_FLAG = r"C:\Kage\voice_sleep.flag"
+VOICE_HOLD_ACTIVE_FLAG = r"C:\Kage\voice_hold_active.flag"
 
 # Détection de voix
 BLOCK_MS = 50
-SILENCE_AFTER_SPEECH = float(os.getenv("KAGE_SILENCE_AFTER_SPEECH", "0.55"))
+SILENCE_AFTER_SPEECH = float(os.getenv("KAGE_SILENCE_AFTER_SPEECH", "0.7"))
 MAX_RECORD_SECONDS = 12
 PRE_ROLL_SECONDS = 0.30
 WAKE_WORD_ENABLED = os.getenv("KAGE_WAKE_WORD", "1").strip().lower() in {"1", "true", "yes", "on"}
 WAKE_KEYPHRASE = "wake up"
-INTERRUPT_KEYPHRASE = "cage cancel"  # Distinct two-word barge-in phrase.
+START_LISTENING_ON_LAUNCH = os.getenv("KAGE_START_LISTENING", "0").strip().lower() in {"1", "true", "yes"}
 WAKE_THRESHOLD = float(os.getenv("KAGE_WAKE_THRESHOLD", "1e-18"))
 FOLLOW_UP_TIMEOUT_SECONDS = float(os.getenv("KAGE_FOLLOW_UP_TIMEOUT", "25"))
 WAITING_REPLIES_ENABLED = os.getenv("KAGE_WAITING_REPLIES", "1").strip().lower() in {
     "1", "true", "yes", "on",
 }
 
+print("Chargement du moteur STT...")
 stt = KageSTT()
 print(json.dumps({"event": "stt_config", **stt.describe()}, ensure_ascii=False))
+print("Moteur STT prêt.")
 
 
 # ---------- VOIX DE KAGE ----------
@@ -79,6 +118,7 @@ def choose_english_male_voice():
 choose_english_male_voice()
 
 request_executor = ThreadPoolExecutor(max_workers=1)
+state_executor = ThreadPoolExecutor(max_workers=1)
 assistant_state_lock = threading.Lock()
 last_assistant_state = None
 
@@ -104,29 +144,99 @@ def publish_assistant_state(state):
             print(json.dumps({"event": "assistant_state_unavailable", "state": state,
                               "error": str(exc)}, ensure_ascii=False))
 
-    threading.Thread(target=publish, name=f"kage-state-{state}", daemon=True).start()
+    state_executor.submit(publish)
+
+
+def publish_voice_session(active, wait=False):
+    """Publish persistent readiness once Whisper and audio are ready; no process polling."""
+    def publish():
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:8000/voice-session/{str(bool(active)).lower()}",
+                headers={"X-Kage-Key": KAGE_API_KEY}, method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=0.75):
+                pass
+        except Exception as exc:
+            print(json.dumps({"event": "voice_session_unavailable", "active": active,
+                              "error": str(exc)}, ensure_ascii=False))
+    if wait:
+        publish()
+    else:
+        state_executor.submit(publish)
+
+
+def start_voice_session_heartbeat():
+    """Keep the UI readiness state accurate even if PowerShell is closed abruptly."""
+    def heartbeat():
+        while True:
+            publish_voice_session(True)
+            time.sleep(2.0)
+
+    threading.Thread(target=heartbeat, name="kage-voice-heartbeat", daemon=True).start()
+
+
+def consume_control_flag(path):
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            return True
+    except OSError:
+        pass
+    return False
+
+
+def consume_interrupt_request():
+    return consume_control_flag(VOICE_INTERRUPT_FLAG)
+
+
+def hold_is_active():
+    return os.path.exists(VOICE_HOLD_ACTIVE_FLAG)
+
+
+def reset_visual_state_on_exit():
+    """Best-effort reset so closing the console cannot leave purple/green eyes."""
+    try:
+        publish_voice_session(False, wait=True)
+        request = urllib.request.Request(
+            "http://127.0.0.1:8000/assistant-state/idle",
+            headers={"X-Kage-Key": KAGE_API_KEY},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=0.5):
+            pass
+    except Exception:
+        pass
+
+
+atexit.register(reset_visual_state_on_exit)
 WAITING_REPLIES = (
-    "Okay, one second.",
-    "I'm thinking.",
-    "Let me think.",
-    "Hmm, let me see.",
-    "Alright, one moment.",
-    "Give me a second.",
-    "Just a second.",
-    "I'm working on that.",
-    "Hmm...",
-    "Okay, I see.",
-    "Sure, let me check.",
-    "Right, I’m looking into it.",
-    "One moment while I work that out.",
-    "Let me find the best answer.",
-    "I’m checking that now.",
-    "Alright, I’m on it.",
-    "Just a moment while I look into this.",
-    "I’m putting that together now.",
-    "Let me work through that.",
-    "I’ll check that for you.",
+    "Let me see...",
+    "Give me a moment...",
+    "Hold on a second...",
+    "Let me check...",
+    "Let me think about that...",
+    "I am looking into that right now...",
+    "Let me check that for you...",
+    "Let me process that...",
+    "Sure thing.",
+    "One second...",
 )
+
+_waiting_audio = {}
+
+def load_waiting_audio():
+    _waiting_audio.clear()
+    for phrase in WAITING_REPLIES:
+        path = os.path.join(WAITING_AUDIO_DIR, f"{hashlib.sha1(phrase.encode()).hexdigest()}.wav")
+        try:
+            with wave.open(path, "rb") as wav:
+                if wav.getnchannels() == 1 and wav.getsampwidth() == 2 and wav.getframerate() == 16000:
+                    _waiting_audio[clean_speech_text(phrase)] = np.frombuffer(
+                        wav.readframes(wav.getnframes()), dtype=np.int16
+                    ).copy()
+        except (OSError, EOFError):
+            continue
 SESSION_END_REPLIES = (
     "Kagé is here if you need me.",
     "I’m here whenever you need me.",
@@ -157,8 +267,24 @@ def is_direct_command(text):
         "act angry", "look angry", "show me angry", "angry mode", "be dizzy",
         "get dizzy", "spin", "spin around", "act dizzy", "look dizzy", "dizzy mode",
     )
-    return any(normalized == phrase or normalized.endswith(" " + phrase)
-               for phrase in phrases)
+    if any(normalized == phrase or normalized.endswith(" " + phrase)
+           for phrase in phrases) or "sleep" in normalized:
+        return True
+
+    # Connected-device actions are handled by the local Python home bridge,
+    # not by GPT. Mark them direct so no waiting phrase is played while the
+    # bridge executes the action.
+    device_terms = ("light", "lamp", "led", "leds", "desk", "projector",
+                    "ceiling", "plafonnier", "plafond", "multiprise",
+                    "nightshift", "night shift", "rest mode", "restmode")
+    action_terms = ("turn on", "turn off", "switch on", "switch off", "power on",
+                    "power off", "put on", "shut off", "enable", "disable",
+                    "allume", "allumer", "eteins", "éteins", "éteindre",
+                    "active", "désactive", "desactive", "nightshift", "night shift",
+                    "rest mode", "restmode")
+    return any(term in normalized for term in device_terms) and any(
+        term in normalized for term in action_terms
+    )
 
 
 def is_end_session(text):
@@ -175,6 +301,7 @@ def is_end_session(text):
         "that's all", "that is all", "we are done", "we're done",
         "goodbye", "bye for now", "go back to sleep", "go idle", "wait for wake up",
         "wait until I call you", "stop the chat", "finish the conversation",
+        "close everything", "close the shop", "close everything down",
     )
     return any(normalized == phrase or normalized.endswith(" " + phrase)
                for phrase in phrases)
@@ -205,35 +332,34 @@ def wait_for_wake_word(stop_event=None, announce=True, keyphrase=None):
             sampling_rate=SAMPLE_RATE,
             audio_device=MIC_DEVICE,
         )
-        with listener.ad:
-            while stop_event is None or not stop_event.is_set():
-                audio, _ = listener.ad.read(listener.buffer_size // 2)
-                speech = listener.ep.process(audio)
-                if speech is None:
-                    continue
-                if not listener.in_speech:
-                    listener.start_utt()
-                listener.process_raw(speech)
-                if listener.hyp():
-                    hypothesis = listener.hyp()
-                    listener.end_utt()
-                    hypothesis_text = getattr(hypothesis, "hypstr", str(hypothesis))
-                    best_score = getattr(hypothesis, "best_score", None)
-                    print(json.dumps({
-                        "event": "wake_detection_candidate",
-                        "keyphrase": keyphrase,
-                        "hypothesis": hypothesis_text,
-                        "best_score": best_score,
-                    }, ensure_ascii=False))
-                    if keyphrase == INTERRUPT_KEYPHRASE:
-                        print(json.dumps({
-                            "event": "interruption_triggered",
-                            "keyphrase": keyphrase,
-                            "hypothesis": hypothesis_text,
-                        }, ensure_ascii=False))
-                    else:
-                        print("🟣 Kage detected")
-                    return True
+        listener.ad.start()
+        while stop_event is None or not stop_event.is_set():
+            if hold_is_active():
+                print("🟣 Kage woke for push-to-talk")
+                return "hold"
+            if consume_control_flag(VOICE_WAKE_FLAG):
+                print("🟣 Kage woke from touch")
+                return "touch"
+            audio, _ = listener.ad.read(listener.buffer_size // 2)
+            speech = listener.ep.process(audio)
+            if speech is None:
+                continue
+            if not listener.in_speech:
+                listener.start_utt()
+            listener.process_raw(speech)
+            if listener.hyp():
+                hypothesis = listener.hyp()
+                listener.end_utt()
+                hypothesis_text = getattr(hypothesis, "hypstr", str(hypothesis))
+                best_score = getattr(hypothesis, "best_score", None)
+                print(json.dumps({
+                    "event": "wake_detection_candidate",
+                    "keyphrase": keyphrase,
+                    "hypothesis": hypothesis_text,
+                    "best_score": best_score,
+                }, ensure_ascii=False))
+                print("🟣 Kage detected")
+                return "wake_word"
         return False
     except sd.PortAudioError as exc:
         # A second sounddevice stream can briefly fail while the PC audio
@@ -342,6 +468,9 @@ def synthesize_speech(text):
     text = clean_speech_text(text)
     if not text:
         return None, ""
+    cached = _waiting_audio.get(text)
+    if cached is not None:
+        return cached, text
     payload = json.dumps({"text": text, "voice": KAGE_TTS_VOICE}, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         "http://127.0.0.1:8000/speech",
@@ -391,48 +520,6 @@ def warm_up_tts():
         }, ensure_ascii=False))
 
 
-class InterruptiblePlayback:
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._generation = 0
-        self.active = threading.Event()
-
-    def start(self, text):
-        self.stop()
-        with self._lock:
-            self._generation += 1
-            generation = self._generation
-            self.active.set()
-
-        def play():
-            try:
-                samples, clean_text = synthesize_speech(text)
-                with self._lock:
-                    if generation != self._generation:
-                        return
-                if samples is not None:
-                    sd.play(samples, samplerate=16000, blocking=True)
-                elif clean_text:
-                    tts.say(clean_text)
-                    tts.runAndWait()
-            finally:
-                with self._lock:
-                    if generation == self._generation:
-                        self.active.clear()
-
-        threading.Thread(target=play, name="kage-playback", daemon=True).start()
-
-    def stop(self):
-        with self._lock:
-            self._generation += 1
-            self.active.clear()
-        sd.stop()
-        tts.stop()
-
-
-speech_playback = InterruptiblePlayback()
-
-
 class SentencePlayback:
     """Pre-synthesize queued sentences while the previous audio is playing."""
 
@@ -442,6 +529,7 @@ class SentencePlayback:
         self._sentences = queue.Queue()
         self._audio = queue.Queue()
         self._release_useful = threading.Event()
+        self._play_thread = None
         self.active = threading.Event()
 
     def start(self, started_at=None):
@@ -508,8 +596,13 @@ class SentencePlayback:
                     if generation == self._generation:
                         self.active.clear()
 
+        playback_thread = threading.Thread(
+            target=play_prepared_audio, name="kage-sentence-playback", daemon=True
+        )
+        with self._lock:
+            self._play_thread = playback_thread
         threading.Thread(target=synthesize_sentences, name="kage-sentence-synthesis", daemon=True).start()
-        threading.Thread(target=play_prepared_audio, name="kage-sentence-playback", daemon=True).start()
+        playback_thread.start()
 
     def enqueue(self, text, useful=False):
         if text and text.strip():
@@ -528,12 +621,20 @@ class SentencePlayback:
             sentences = self._sentences
             audio = self._audio
             release_useful = self._release_useful
+            playback_thread = self._play_thread
+            self._play_thread = None
         # Wake both workers when a reply is interrupted.
         release_useful.set()
         sentences.put(None)
         audio.put(None)
         sd.stop()
         tts.stop()
+        # The next wake-word listener must not open the microphone while the
+        # interrupted output worker is still releasing PortAudio/Windows TTS.
+        if playback_thread is not None and playback_thread is not threading.current_thread():
+            playback_thread.join(timeout=3)
+            if playback_thread.is_alive():
+                print(json.dumps({"event": "playback_worker_still_active_after_stop"}))
 
 
 def split_complete_sentences(buffer):
@@ -585,8 +686,6 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
     """Speak sentence chunks while Codex is still generating the remaining reply."""
     stream_started_at = time.perf_counter()
     events = queue.Queue()
-    interrupted = threading.Event()
-    listener_stop = threading.Event()
     playback = SentencePlayback()
     playback.start(stream_started_at)
     if waiting_reply:
@@ -596,23 +695,12 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
         "used": bool(waiting_reply),
     }, ensure_ascii=False))
 
-    def listen_for_interrupt():
-        if wait_for_wake_word(
-            listener_stop,
-            announce=False,
-            keyphrase=INTERRUPT_KEYPHRASE,
-        ):
-            interrupted.set()
-
     threading.Thread(
         target=stream_to_kage,
         args=(text, events),
         name="kage-response-stream",
         daemon=True,
     ).start()
-    listener = threading.Thread(target=listen_for_interrupt, name="kage-stream-barge-in", daemon=True)
-    listener.start()
-
     pending = ""
     complete_sentence_count = 0
     streamed_text_received = False
@@ -624,12 +712,8 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
     result = None
     completed = False
     while not completed:
-        if interrupted.is_set():
+        if consume_interrupt_request():
             playback.stop()
-            listener_stop.set()
-            listener.join(timeout=1)
-            print("🛑 Streaming reply interrupted by wake word")
-            speak("Kagé is listening.")
             return None, True
         try:
             event = events.get(timeout=0.05)
@@ -675,22 +759,14 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
             completed = True
         elif event_type == "error":
             playback.stop()
-            listener_stop.set()
-            listener.join(timeout=1)
             raise RuntimeError(f"Streaming response failed: {event.get('detail', 'unknown error')}")
 
     while playback.active.is_set():
-        if interrupted.is_set():
+        if consume_interrupt_request():
             playback.stop()
-            listener_stop.set()
-            listener.join(timeout=1)
-            print("🛑 Streaming reply interrupted by wake word")
-            speak("Kagé is listening.")
             return None, True
         time.sleep(0.03)
 
-    listener_stop.set()
-    listener.join(timeout=1)
     print(json.dumps({
         "event": "streaming_timing",
         "transcription_ms": transcription_ms,
@@ -702,45 +778,18 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
     return result or {}, False
 
 
-def speak_reply_with_barge_in(text):
-    """Speak a conversational reply while listening only for a local wake word."""
-    listener_stop = threading.Event()
-    interrupted = threading.Event()
-
-    def listen_for_interrupt():
-        if wait_for_wake_word(
-            listener_stop,
-            announce=False,
-            keyphrase=INTERRUPT_KEYPHRASE,
-        ):
-            interrupted.set()
-
-    speech_playback.start(text)
-    listener = threading.Thread(target=listen_for_interrupt, name="kage-barge-in", daemon=True)
-    listener.start()
-
-    while speech_playback.active.is_set():
-        if interrupted.is_set():
-            speech_playback.stop()
-            listener_stop.set()
-            listener.join(timeout=1)
-            print("🛑 Reply interrupted by wake word")
-            speak("Kagé is listening.")
-            return True
-        time.sleep(0.03)
-
-    listener_stop.set()
-    listener.join(timeout=1)
-    return False
-
-
 # ---------- MICRO ----------
 
 def rms(block):
     return float(np.sqrt(np.mean(np.square(block))))
 
 
+_last_record_metrics = {}
+
+
 def record_until_silence(wait_for_speech_seconds=MAX_RECORD_SECONDS):
+    global _last_record_metrics
+    capture_started = time.perf_counter()
     block_size = int(SAMPLE_RATE * BLOCK_MS / 1000)
     pre_roll_blocks = max(1, int(PRE_ROLL_SECONDS * 1000 / BLOCK_MS))
     pre_roll = collections.deque(maxlen=pre_roll_blocks)
@@ -758,23 +807,41 @@ def record_until_silence(wait_for_speech_seconds=MAX_RECORD_SECONDS):
         blocksize=block_size,
     ) as stream:
 
+        calibration_blocks = []
         for _ in range(10):
             block, _ = stream.read(block_size)
             noise_values.append(rms(block))
+            calibration_blocks.append(block.copy())
 
         noise_floor = max(sum(noise_values) / len(noise_values), 0.002)
         speech_threshold = max(noise_floor * 3.0, 0.012)
 
-        frames = []
+        hold_mode = hold_is_active()
+        frames = calibration_blocks.copy() if hold_mode else []
         speech_started = False
         silent_time = 0.0
         waited_for_speech = 0.0
         utterance_time = 0.0
 
         while True:
+            if hold_mode and not hold_is_active():
+                print("🔵 Push-to-talk released — transcribing")
+                break
+            if consume_control_flag(VOICE_SLEEP_FLAG):
+                print("⚪ Kage sleeping from touch")
+                return "touch_sleep"
             block, overflowed = stream.read(block_size)
 
             level = rms(block)
+            if hold_is_active():
+                if not hold_mode:
+                    hold_mode = True
+                    frames.extend(list(pre_roll))
+                frames.append(block.copy())
+                continue
+            if hold_mode:
+                print("🔵 Push-to-talk released — transcribing")
+                break
 
             if not speech_started:
                 waited_for_speech += BLOCK_MS / 1000
@@ -806,7 +873,9 @@ def record_until_silence(wait_for_speech_seconds=MAX_RECORD_SECONDS):
                     print("🔵 Fin de phrase détectée")
                     break
 
-    if not speech_started:
+    if not speech_started and not hold_mode:
+        return False
+    if hold_mode and len(frames) < 3:
         return False
 
     audio = np.concatenate(frames, axis=0)
@@ -822,6 +891,14 @@ def record_until_silence(wait_for_speech_seconds=MAX_RECORD_SECONDS):
         wav.setsampwidth(2)
         wav.setframerate(SAMPLE_RATE)
         wav.writeframes(audio_int16.tobytes())
+
+    _last_record_metrics = {
+        "audio_duration_ms": round(len(audio_int16) * 1000 / SAMPLE_RATE, 1),
+        "endpoint_silence_ms": round(silent_time * 1000, 1),
+        "capture_total_ms": round((time.perf_counter() - capture_started) * 1000, 1),
+        "hold_mode": hold_mode,
+        "silence_setting_ms": round(SILENCE_AFTER_SPEECH * 1000, 1),
+    }
 
     return True
 
@@ -891,26 +968,52 @@ def handle_utterance(wait_for_speech_seconds):
         publish_assistant_state("listening")
         recorded = record_until_silence(wait_for_speech_seconds)
 
+        if recorded == "touch_sleep":
+            return recorded
         if not recorded:
             return False
 
-        publish_assistant_state("thinking")
+        # RMS only detects sound energy, not intelligible speech. Whisper's
+        # VAD/transcript is the first trustworthy gate: do not play a cue for
+        # an empty result, or the cue can perpetuate a false-trigger loop.
         stt_result = transcribe()
         text = stt_result.text
         transcription_ms = round(stt_result.duration_ms, 1)
         print(json.dumps({
-            "event": "stt_timing",
-            **stt_result.log_payload(),
+            "event": "speech_to_transcript_timing",
+            **_last_record_metrics,
+            "stt_ms": transcription_ms,
+            "endpoint_plus_stt_ms": round(
+                _last_record_metrics.get("endpoint_silence_ms", 0) + transcription_ms, 1
+            ),
         }, ensure_ascii=False))
 
         if not text:
             print("❌ Je n'ai pas compris.")
+            print(json.dumps({"event": "transcription_rejected", "transcription_ms": transcription_ms}))
             publish_assistant_state("listening")
             return True
 
         print(f"📝 Entendu : {text}")
+        print(json.dumps({"event": "stt_result", **stt_result.log_payload()}, ensure_ascii=False))
+
+        # The cue is the first sound only for a real conversational request.
+        # Local actions and session closure have their own feedback sounds.
+        direct_command = is_direct_command(text)
+        if not direct_command and not is_end_session(text):
+            play_sound("thinking")
+        publish_assistant_state("thinking")
 
         if is_end_session(text):
+            normalized_end = re.sub(r"[^a-z0-9 ]", " ", text.lower())
+            if any(phrase in normalized_end for phrase in
+                   ("close everything", "close the shop", "close everything down")):
+                # Queue the closure cue before notifying the backend and
+                # exiting. Playback remains independent from shutdown.
+                play_sound("triple_close")
+                publish_voice_session(False, wait=True)
+                publish_assistant_state("idle")
+                return "shutdown"
             request_executor.submit(send_to_kage, text)
             publish_assistant_state("speaking")
             speak(random.choice(SESSION_END_REPLIES))
@@ -920,21 +1023,24 @@ def handle_utterance(wait_for_speech_seconds):
         # Codex sends text chunks as it generates them. Completed sentences
         # are queued for Kokoro immediately, rather than waiting for the full
         # response. Direct commands remain locally routed by the backend.
-        waiting_reply = None if is_direct_command(text) else choose_waiting_reply(text)
+        waiting_reply = None if direct_command else choose_waiting_reply(text)
         result, was_interrupted = speak_streaming_reply_with_barge_in(
             text,
             waiting_reply,
             transcription_ms=transcription_ms,
         )
         if was_interrupted:
-            publish_assistant_state("listening")
+            # Do not reopen the microphone after stopping speech: otherwise
+            # Kage can transcribe its own last spoken audio/echo.
+            publish_assistant_state("idle")
             return "interrupted"
 
         print(f"🤖 Kage : {result['reply']}")
         print(f"🎭 Commande : {result['command']}")
         print(f"🔢 Séquence : {result['sequence']}")
+        # A normal response keeps the existing short follow-up conversation
+        # window. Only a touch interruption exits back to the wake word.
         publish_assistant_state("listening")
-
         return True
 
     except Exception as e:
@@ -944,34 +1050,58 @@ def handle_utterance(wait_for_speech_seconds):
 
 def main():
     """Run one interactive voice loop in the primary Python process only."""
+    load_waiting_audio()
+    print(json.dumps({"event": "waiting_audio", "loaded": len(_waiting_audio)}, ensure_ascii=False))
     warm_up_tts()
+    publish_voice_session(True)
+    start_voice_session_heartbeat()
     print("\nKage Voice prêt.")
 
+    start_direct = START_LISTENING_ON_LAUNCH
     while True:
-        if WAKE_WORD_ENABLED:
+        if hold_is_active():
+            start_direct = True
+        if WAKE_WORD_ENABLED and not start_direct:
             try:
-                wait_for_wake_word()
+                wake_source = wait_for_wake_word()
             except KeyboardInterrupt:
                 break
-            speak("Kagé is listening.")
+            # Touch already emitted its confirmation cue in the backend.
+            if wake_source == "wake_word":
+                play_sound("wake_listening")
+            if wake_source != "hold" and not hold_is_active():
+                speak("Kagé is listening.")
             wait_time = FOLLOW_UP_TIMEOUT_SECONDS
         else:
-            choice = input("\nEntrée = parler | q = quitter : ")
-            if choice.lower() == "q":
-                break
-            wait_time = MAX_RECORD_SECONDS
+            start_direct = False
+            if WAKE_WORD_ENABLED:
+                if not hold_is_active():
+                    speak("Kagé is listening.")
+                wait_time = FOLLOW_UP_TIMEOUT_SECONDS
+                # Do not fall through to the keyboard-only branch.
+            else:
+                choice = input("\nEntrée = parler | q = quitter : ")
+                if choice.lower() == "q":
+                    break
+                wait_time = MAX_RECORD_SECONDS
 
         while True:
             outcome = handle_utterance(wait_time)
-            if not outcome or outcome == "end":
+            if not outcome or outcome in {"end", "shutdown", "interrupted", "touch_sleep"}:
                 break
             if not WAKE_WORD_ENABLED:
                 break
             print(f"🟣 Conversation active — listening for {int(FOLLOW_UP_TIMEOUT_SECONDS)} more seconds.")
 
         if WAKE_WORD_ENABLED:
+            # The physical double-tap and interruption cues are already more
+            # specific than a generic sleep cue, so do not stack sounds.
+            if outcome not in {"shutdown", "interrupted", "touch_sleep"}:
+                play_sound("sleep_listening")
             publish_assistant_state("idle")
             print("⚪ Conversation ended — returning to wake word.")
+        if outcome == "shutdown":
+            break
 
     if os.path.exists(WAV_FILE):
         os.remove(WAV_FILE)
