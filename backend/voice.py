@@ -61,7 +61,7 @@ def resolve_mic_device():
 MIC_DEVICE = resolve_mic_device()
 WAV_FILE = r"C:\Kage\voice_temp.wav"
 KAGE_API_KEY = os.getenv("KAGE_API_KEY", "").strip()
-KAGE_TTS_VOICE = os.getenv("KAGE_TTS_VOICE", "am_puck").strip() or "am_puck"
+KAGE_TTS_VOICE = os.getenv("KAGE_TTS_VOICE", "ff_siwis").strip() or "ff_siwis"
 WAITING_AUDIO_DIR = r"C:\Kage\waiting_audio"
 VOICE_INTERRUPT_FLAG = r"C:\Kage\voice_interrupt.flag"
 VOICE_WAKE_FLAG = r"C:\Kage\voice_wake.flag"
@@ -95,7 +95,7 @@ tts.setProperty("rate", 185)
 tts.setProperty("volume", 1.0)
 
 
-def choose_english_male_voice():
+def choose_french_voice():
     voices = tts.getProperty("voices")
 
     for voice in voices:
@@ -105,17 +105,18 @@ def choose_english_male_voice():
             + str(getattr(voice, "languages", ""))
         ).lower()
 
-        if (("english" in info or "en-us" in info or "en_us" in info or
-              "en-gb" in info or "en_gb" in info) and
-                not any(marker in info for marker in ("zira", "hazel", "female", "woman"))):
+        if any(marker in info for marker in (
+            "french", "fr-fr", "fr_fr", "france", "hortense", "denise",
+        )):
             tts.setProperty("voice", voice.id)
-            print(f"Voix Kage : {voice.name}")
-            return
+            print(f"Voix Windows française de secours : {voice.name}")
+            return True
 
-    print("Aucune voix masculine anglaise spécifique trouvée, voix Windows par défaut utilisée.")
+    print("Aucune voix Windows française trouvée : secours Windows désactivé.")
+    return False
 
 
-choose_english_male_voice()
+WINDOWS_FRENCH_VOICE_AVAILABLE = choose_french_voice()
 
 request_executor = ThreadPoolExecutor(max_workers=1)
 state_executor = ThreadPoolExecutor(max_workers=1)
@@ -211,16 +212,16 @@ def reset_visual_state_on_exit():
 
 atexit.register(reset_visual_state_on_exit)
 WAITING_REPLIES = (
-    "Let me see...",
-    "Give me a moment...",
-    "Hold on a second...",
-    "Let me check...",
-    "Let me think about that...",
-    "I am looking into that right now...",
-    "Let me check that for you...",
-    "Let me process that...",
-    "Sure thing.",
-    "One second...",
+    "Voyons voir...",
+    "Donne-moi un instant...",
+    "Un petit instant...",
+    "Je vérifie...",
+    "Laisse-moi réfléchir...",
+    "Je regarde cela tout de suite...",
+    "Je vérifie ça pour toi...",
+    "Je traite ta demande...",
+    "Bien sûr.",
+    "Une seconde...",
 )
 
 _waiting_audio = {}
@@ -499,15 +500,18 @@ def speak(text):
     if samples is not None:
         sd.play(samples, samplerate=16000, blocking=True)
         return
-    tts.say(text)
-    tts.runAndWait()
+    if WINDOWS_FRENCH_VOICE_AVAILABLE:
+        tts.say(text)
+        tts.runAndWait()
+    else:
+        print(json.dumps({"event": "tts_skipped", "reason": "no_french_voice"}, ensure_ascii=False))
 
 
 def warm_up_tts():
     """Initialize the local Kokoro request path before the first user turn."""
     started = time.perf_counter()
     try:
-        samples, _ = synthesize_speech("Okay.")
+        samples, _ = synthesize_speech("D'accord.")
         print(json.dumps({
             "event": "tts_warmup",
             "available": samples is not None,
@@ -588,9 +592,11 @@ class SentencePlayback:
                         publish_assistant_state("speaking")
                     if samples is not None:
                         sd.play(samples, samplerate=16000, blocking=True)
-                    elif clean_text:
+                    elif clean_text and WINDOWS_FRENCH_VOICE_AVAILABLE:
                         tts.say(clean_text)
                         tts.runAndWait()
+                    elif clean_text:
+                        print(json.dumps({"event": "tts_skipped", "reason": "no_french_voice"}, ensure_ascii=False))
             finally:
                 with self._lock:
                     if generation == self._generation:
