@@ -71,6 +71,7 @@ VOICE_HOLD_ACTIVE_FLAG = r"C:\Kage\voice_hold_active.flag"
 # Détection de voix
 BLOCK_MS = 50
 SILENCE_AFTER_SPEECH = float(os.getenv("KAGE_SILENCE_AFTER_SPEECH", "0.7"))
+MIN_AUDIO_DURATION_MS = float(os.getenv("KAGE_MIN_AUDIO_DURATION_MS", "1200"))
 MAX_RECORD_SECONDS = 12
 PRE_ROLL_SECONDS = 0.30
 WAKE_WORD_ENABLED = os.getenv("KAGE_WAKE_WORD", "1").strip().lower() in {"1", "true", "yes", "on"}
@@ -992,6 +993,18 @@ def handle_utterance(wait_for_speech_seconds):
             return recorded
         if not recorded:
             return False
+
+        audio_duration_ms = float(_last_record_metrics.get("audio_duration_ms", 0.0))
+        if audio_duration_ms < MIN_AUDIO_DURATION_MS:
+            print(json.dumps({
+                "event": "transcription_rejected",
+                "transcription_ms": 0.0,
+                "reason": "audio_too_short",
+                "audio_duration_ms": round(audio_duration_ms, 1),
+                "min_audio_duration_ms": MIN_AUDIO_DURATION_MS,
+            }, ensure_ascii=False))
+            publish_assistant_state("listening")
+            return True
 
         # RMS only detects sound energy, not intelligible speech. Whisper's
         # VAD/transcript is the first trustworthy gate: do not play a cue for
