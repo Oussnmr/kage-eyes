@@ -1204,6 +1204,15 @@ def main():
     start_voice_session_heartbeat()
     print("\nKage Voice prêt.")
 
+    # Keep the optional text box visible alongside the normal audio console.
+    # Audio remains the default; the box only injects text when submitted.
+    if not os.path.exists(VOICE_TEXT_MODE_FLAG):
+        try:
+            open(VOICE_TEXT_MODE_FLAG, "w", encoding="ascii").close()
+        except OSError:
+            pass
+    _start_text_window_if_requested()
+
     text_mode = TEXT_MODE_ON_START
     if text_mode:
         print("⌨️ Mode écriture actif — tape une phrase puis Entrée. /micro revient au micro, /q quitte.")
