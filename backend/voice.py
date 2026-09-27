@@ -584,14 +584,15 @@ class SentencePlayback:
                 time.sleep(0.32)
 
             try:
-                # Conversational sequence requested by the user:
-                # end-of-speech -> cue -> cached opening -> streamed reply.
-                # The synthesis worker runs in parallel, so complete reply
-                # sentences keep filling the queue while these sounds play.
+                # The end-of-speech cue is played by handle_utterance as soon
+                # as capture ends, before STT validation. Keep the optional
+                # flag for compatibility, but do not delay the cached opening
+                # waiting reply behind the cue here.
                 if thinking_cue:
                     play_thinking_cue()
-                    play_waiting_reply()
+                if thinking_cue or waiting_reply:
                     recording_loop = start_loop("recording_loop")
+                play_waiting_reply()
                 while True:
                     prepared = audio.get()
                     if prepared is None:
@@ -621,7 +622,7 @@ class SentencePlayback:
                         print(json.dumps({"event": "tts_skipped", "reason": "no_french_voice"}, ensure_ascii=False))
             finally:
                 stop_loop(recording_loop)
-                if thinking_cue:
+                if thinking_cue or waiting_reply:
                     print(json.dumps({"event": "waiting_reply", "used": waiting_used}, ensure_ascii=False))
                 with self._lock:
                     if generation == self._generation:
@@ -1011,9 +1012,15 @@ def handle_utterance(wait_for_speech_seconds):
             publish_assistant_state("listening")
             return True
 
+        # Give immediate feedback at the actual end of speech. STT and the
+        # backend can now run after this cue instead of making the user wait
+        # for transcription before hearing anything.
+        play_sound("thinking")
+
         # RMS only detects sound energy, not intelligible speech. Whisper's
-        # VAD/transcript is the first trustworthy gate: do not play a cue for
-        # an empty result, or the cue can perpetuate a false-trigger loop.
+        # VAD/transcript remains the first trustworthy gate for processing;
+        # the short end-of-speech cue has already been played as immediate UX
+        # feedback and is intentionally not replayed for rejected transcripts.
         stt_result = transcribe()
         text = stt_result.text
         transcription_ms = round(stt_result.duration_ms, 1)
@@ -1068,7 +1075,9 @@ def handle_utterance(wait_for_speech_seconds):
             text,
             waiting_reply,
             transcription_ms=transcription_ms,
-            thinking_cue=not direct_command,
+            # The cue was already played immediately after capture. This call
+            # is responsible only for the cached opening and streamed answer.
+            thinking_cue=False,
         )
         if was_interrupted:
             # Do not reopen the microphone after stopping speech: otherwise
