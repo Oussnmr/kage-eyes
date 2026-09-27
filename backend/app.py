@@ -7,6 +7,7 @@ from tts_service import kokoro_service
 from codex_bridge import CodexBridgeError, codex_bridge
 from web_search import format_web_context, needs_web_search, search_web
 from kage_sounds import play_sound
+from command_intents import direct_intent, home_intent
 
 from faster_whisper import WhisperModel
 
@@ -198,32 +199,14 @@ def apply_home_actions(message: str, actions, profile: str | None = None):
 
 def route_home_control(message: str):
     """Route every recognized home-device request directly to the local Python bridge."""
-    normalized = re.sub(r"[^a-zA-ZÀ-ÿ0-9 ]", " ", message.lower())
-    normalized = re.sub(r"\s+", " ", normalized).strip()
-    for profile_name, profile in HOME_PROFILES.items():
-        if any(alias in normalized for alias in profile["aliases"]):
-            return apply_home_actions(message, profile["actions"], profile_name)
-    turn_on = any(term in normalized for term in (
-        "allume", "allumer", "active", "active moi", "mets", "mettre", "ouvre", "ouvrir",
-        "turn on", "switch on", "power on", "put on", "enable", "start", "wake up",
-    ))
-    turn_off = any(term in normalized for term in (
-        "eteins", "éteins", "eteindre", "éteindre", "coupe", "couper", "arrete", "arrête",
-        "desactive", "désactive", "ferme", "fermer", "turn off", "switch off", "power off",
-        "turn of", "switch of", "power of", "shut off", "disable", "stop", "kill",
-    ))
-    words = set(normalized.split())
-    turn_on = turn_on or "on" in words
-    turn_off = turn_off or "off" in words
-    if turn_on == turn_off:
+    intent = home_intent(message)
+    if intent is None:
         return None
-    targets = [name for name, (_, _, aliases) in HOME_DEVICES.items()
-               if any(alias in normalized for alias in aliases)]
-    if not targets and any(term in normalized for term in ("tout", "tous", "everything", "all devices", "all lights")):
-        targets = list(HOME_DEVICES)
-    if not targets:
-        return None
-    return apply_home_actions(message, tuple((name, turn_on) for name in dict.fromkeys(targets)))
+    if intent[0] == "profile":
+        profile_name = intent[1]
+        return apply_home_actions(message, HOME_PROFILES[profile_name]["actions"], profile_name)
+    _, targets, turn_on = intent
+    return apply_home_actions(message, tuple((name, turn_on) for name in targets))
 
 
 def load_conversation_backend() -> str:
@@ -336,120 +319,26 @@ def current_state() -> dict:
 
 def route_direct_command(message: str):
     """Return a local command result for unambiguous, supported intents."""
-    normalized = re.sub(r"[^a-zA-ZÀ-ÿ0-9 ]", " ", message.lower())
-    normalized = re.sub(r"\s+", " ", normalized).strip()
-
-    local_backend_phrases = (
-        "switch to local", "use local", "go local", "local mode", "run locally",
-        "use ollama", "switch to ollama", "go back to local", "stay local",
-        "pass in local mode", "passe en local",
-    )
-    codex_backend_phrases = (
-        "switch to chatgpt", "switch to codex", "use chatgpt", "use codex",
-        "go back to chatgpt", "back to chatgpt", "use the cloud", "cloud mode",
-        "use the chatgpt backend", "repasse sur chatgpt",
-    )
-    if any(normalized == phrase or normalized.endswith(" " + phrase)
-           for phrase in local_backend_phrases):
-        backend = set_conversation_backend("ollama")
+    intent = direct_intent(message)
+    if intent is None:
+        return None
+    kind, value = intent
+    if kind == "backend":
+        backend = set_conversation_backend(value)
         print(json.dumps({"event": "backend_switched", "backend": backend}, ensure_ascii=False))
         current = current_state()
+        reply = "D'accord, je passe sur ChatGPT." if backend == "codex" else "D'accord, je passe en mode local."
         return {
-            "ok": True, "heard": normalize_kage_name(message),
-            "reply": "Okay. I will use local mode.", "command": "none",
-            "sequence": current["sequence"], "route": "direct", "speak": True,
-            "conversation_backend": backend,
+            "ok": True, "heard": normalize_kage_name(message), "reply": reply,
+            "command": "none", "sequence": current["sequence"], "route": "direct",
+            "speak": True, "conversation_backend": backend,
         }
-    if any(normalized == phrase or normalized.endswith(" " + phrase)
-           for phrase in codex_backend_phrases):
-        backend = set_conversation_backend("codex")
-        print(json.dumps({"event": "backend_switched", "backend": backend}, ensure_ascii=False))
-        current = current_state()
-        return {
-            "ok": True, "heard": normalize_kage_name(message),
-            "reply": "Okay. I will use ChatGPT.", "command": "none",
-            "sequence": current["sequence"], "route": "direct", "speak": True,
-            "conversation_backend": backend,
-        }
-
-    english_rules = (
-        ("idle", ("stop", "be normal", "return to normal", "go back to normal", "calm down",
-                   "relax", "reset", "reset yourself", "return to idle", "go idle", "normal mode",
-                   "back to idle", "come back to normal", "return back to normal", "stop here",
-                   "stop listening", "stop talking", "stop the conversation", "end the conversation",
-                   "end chat", "end this chat", "cancel chat", "be quiet", "quiet", "go quiet",
-                   "enough", "that's enough", "that is enough", "that's enough for now",
-                   "no more", "stop now", "you can stop here", "you can stop now", "please stop",
-                   "let's stop here", "let us stop here", "we can stop here"),
-         "Okay, I am back to normal."),
-        ("blink", ("blink", "blink your eyes", "make your eyes blink", "close and open your eyes",
-                    "blink twice", "blink two times", "give me a blink"), "Sure."),
-        ("sleep", ("go to sleep", "sleep", "enter sleep mode", "take a nap", "rest", "sleep now",
-                    "go into sleep mode", "take a rest", "you can sleep", "sleep for now"), "I am going to sleep."),
-        ("angry", ("be angry", "get angry", "act angry", "look angry", "show me angry", "angry mode",
-                    "make yourself angry", "become angry", "turn angry", "show an angry face"), "Okay."),
-        ("dizzy", ("spin", "spin around", "get dizzy", "act dizzy", "look dizzy", "dizzy mode",
-                    "make yourself dizzy", "become dizzy", "turn dizzy", "start spinning"), "Oops."),
-    )
-    for command, phrases, reply in english_rules:
-        if any(normalized == phrase or normalized.endswith(" " + phrase) for phrase in phrases):
-            sequence = set_command(command)
-            print(json.dumps({"event": "direct_route", "route": command, "latency_ms": 0}, ensure_ascii=False))
-            return {"ok": True, "heard": normalize_kage_name(message), "reply": reply,
-                    "command": command, "sequence": sequence, "route": "direct", "speak": False}
-    rules = (
-        ("idle", ("stop", "arrête", "arrete", "tais toi", "au repos",
-                   "reviens à la normale", "revient à la normale", "reviens a la normale",
-                   "revient a la normale", "revient la normale", "retourne à la normale",
-                   "retourne a la normale", "redeviens normal", "redeviens normale"),
-         "D'accord, je reviens à la normale."),
-        ("blink", ("cligne", "clignote"), "Voilà."),
-        ("sleep", ("endors toi", "mets toi en veille", "mise en veille"), "Je passe en veille."),
-        ("angry", ("sois en colère", "sois en colere", "en colère", "en colere"), "Très bien."),
-        ("dizzy", ("tourne sur toi même", "tourne sur toi meme", "étourdis", "etourdis"), "Oups."),
-    )
-    for command, phrases, reply in rules:
-        if any(normalized == phrase or normalized.endswith(" " + phrase) for phrase in phrases):
-            sequence = set_command(command)
-            print(json.dumps({"event": "direct_route", "route": command,
-                              "latency_ms": 0}, ensure_ascii=False))
-            return {
-                "ok": True,
-                "heard": normalize_kage_name(message),
-                "reply": "" if command == "idle" else reply,
-                "command": command,
-                "sequence": sequence,
-                "route": "direct",
-                "speak": False,
-            }
-    if "colere" in normalized or "colère" in normalized:
-        if any(word in normalized for word in ("met", "mets", "mettre", "sois")):
-            sequence = set_command("angry")
-            print(json.dumps({"event": "direct_route", "route": "angry",
-                              "latency_ms": 0}, ensure_ascii=False))
-            return {
-                "ok": True,
-                "heard": normalize_kage_name(message),
-                "reply": "Très bien.",
-                "command": "angry",
-                "sequence": sequence,
-                "route": "direct",
-                "speak": False,
-            }
-    if "angry" in normalized and any(word in normalized for word in ("can", "please", "make", "become", "be")):
-        sequence = set_command("angry")
-        print(json.dumps({"event": "direct_route", "route": "angry", "latency_ms": 0}, ensure_ascii=False))
-        return {
-            "ok": True,
-            "heard": normalize_kage_name(message),
-            "reply": "Okay.",
-            "command": "angry",
-            "sequence": sequence,
-            "route": "direct",
-            "speak": False,
-        }
-    return None
-
+    sequence = set_command(value)
+    print(json.dumps({"event": "direct_route", "route": value, "latency_ms": 0}, ensure_ascii=False))
+    return {
+        "ok": True, "heard": normalize_kage_name(message), "reply": "",
+        "command": value, "sequence": sequence, "route": "direct", "speak": False,
+    }
 
 def process_message(message: str) -> dict:
     llm_started = time.perf_counter()

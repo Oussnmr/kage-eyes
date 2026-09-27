@@ -18,6 +18,7 @@ import atexit
 from pocketsphinx import LiveSpeech
 from kage_sounds import play_sound
 from stt_engine import KageSTT
+from command_intents import is_direct, session_intent
 
 # A detached PowerShell window can default to a legacy Windows code page.
 # Keep status messages from terminating the assistant when they contain accents
@@ -240,84 +241,25 @@ def load_waiting_audio():
         except (OSError, EOFError):
             continue
 SESSION_END_REPLIES = (
-    "Kagé is here if you need me.",
-    "I’m here whenever you need me.",
-    "Feel free to ask me anything.",
-    "I’ll be here if you have another question.",
-    "No problem. Just say Kagé when you need me.",
-    "Alright. I’m listening whenever you’re ready.",
-    "I’ll be here when you need me.",
-    "All right, just call me if you need anything.",
-    "I’m standing by if another question comes up.",
-    "Whenever you’re ready, I’m here.",
-    "No worries. I’ll wait here.",
-    "Just say wake up when you want me again.",
-    "I’m ready whenever you are.",
-    "I’ll stay quiet until you call me.",
+    "D'accord, je reste disponible.",
+    "Je suis là si tu as besoin de moi.",
+    "À tout à l'heure.",
+    "Je me mets en veille. Rappelle-moi quand tu veux.",
 )
 
 
 def is_direct_command(text):
-    normalized = re.sub(r"[^a-z0-9 ]", " ", text.lower())
-    normalized = re.sub(r"\s+", " ", normalized).strip()
-    phrases = (
-        "stop", "be normal", "return to normal", "go back to normal",
-        "calm down", "relax", "reset yourself", "return to idle", "go idle",
-        "normal mode", "back to idle", "blink", "blink your eyes", "close your eyes",
-        "make your eyes blink", "blink twice", "go to sleep", "sleep", "sleep now",
-        "enter sleep mode", "take a nap", "rest", "be angry", "get angry",
-        "act angry", "look angry", "show me angry", "angry mode", "be dizzy",
-        "get dizzy", "spin", "spin around", "act dizzy", "look dizzy", "dizzy mode",
-    )
-    if any(normalized == phrase or normalized.endswith(" " + phrase)
-           for phrase in phrases) or "sleep" in normalized:
-        return True
-
-    # Connected-device actions are handled by the local Python home bridge,
-    # not by GPT. Mark them direct so no waiting phrase is played while the
-    # bridge executes the action.
-    device_terms = ("light", "lamp", "led", "leds", "desk", "projector",
-                    "ceiling", "plafonnier", "plafond", "multiprise",
-                    "nightshift", "night shift", "rest mode", "restmode")
-    action_terms = ("turn on", "turn off", "switch on", "switch off", "power on",
-                    "power off", "put on", "shut off", "enable", "disable",
-                    "allume", "allumer", "eteins", "éteins", "éteindre",
-                    "active", "désactive", "desactive", "nightshift", "night shift",
-                    "rest mode", "restmode")
-    return any(term in normalized for term in device_terms) and any(
-        term in normalized for term in action_terms
-    )
+    return is_direct(text)
 
 
 def is_end_session(text):
-    normalized = re.sub(r"[^a-z0-9 ]", " ", text.lower())
-    normalized = re.sub(r"\s+", " ", normalized).strip()
-    phrases = (
-        "stop", "you can stop here", "you can stop now", "stop listening", "stop talking",
-        "please stop", "stop for now", "let us stop here", "let's stop here",
-        "we can stop here", "that's enough for now", "you can be quiet",
-        "go quiet", "end the conversation",
-        "end the conversation", "end chat", "end this chat", "cancel chat",
-        "be quiet", "quiet", "enough", "that's enough", "that is enough",
-        "no more", "stop now",
-        "that's all", "that is all", "we are done", "we're done",
-        "goodbye", "bye for now", "go back to sleep", "go idle", "wait for wake up",
-        "wait until I call you", "stop the chat", "finish the conversation",
-        "close everything", "close the shop", "close everything down",
-    )
-    return any(normalized == phrase or normalized.endswith(" " + phrase)
-               for phrase in phrases)
+    return session_intent(text) is not None
 
 
 def choose_waiting_reply(text):
-    """Return None for short/simple requests where silence feels better."""
+    """Choose an opening only if the conversational reply takes at least 3 s."""
     if not WAITING_REPLIES_ENABLED:
         return None
-    normalized = re.sub(r"\s+", " ", text.strip())
-    word_count = len(normalized.split())
-    if len(normalized) <= 14 or word_count <= 3:
-        if random.random() < 0.70:
-            return None
     return random.choice(WAITING_REPLIES)
 
 
@@ -551,7 +493,7 @@ class SentencePlayback:
         self._play_thread = None
         self.active = threading.Event()
 
-    def start(self, started_at=None):
+    def start(self, started_at=None, waiting_reply=None, thinking_cue=False):
         self.stop()
         with self._lock:
             self._generation += 1
@@ -586,9 +528,47 @@ class SentencePlayback:
 
         def play_prepared_audio():
             nonlocal first_useful_audio_logged
+            opening_done = not thinking_cue
+            waiting_used = False
+
+            def play_waiting_reply():
+                nonlocal waiting_used
+                if not waiting_reply:
+                    return
+                samples, clean_text = synthesize_speech(waiting_reply)
+                with self._lock:
+                    if generation != self._generation:
+                        return
+                if samples is not None:
+                    publish_assistant_state("speaking")
+                    sd.play(samples, samplerate=16000, blocking=True)
+                    waiting_used = True
+                elif clean_text and WINDOWS_FRENCH_VOICE_AVAILABLE:
+                    publish_assistant_state("speaking")
+                    tts.say(clean_text)
+                    tts.runAndWait()
+                    waiting_used = True
+
+            def play_thinking_cue():
+                play_sound("thinking")
+                # The cue lasts about 300 ms. Keep it before, not over, speech.
+                time.sleep(0.32)
+
             try:
                 while True:
-                    prepared = audio.get()
+                    if not opening_done and stream_started_at:
+                        remaining = 3.0 - (time.perf_counter() - stream_started_at)
+                        try:
+                            prepared = audio.get(timeout=max(0.0, remaining))
+                        except queue.Empty:
+                            # No useful sentence by 3 s: the pre-recorded
+                            # opening precedes the thinking cue.
+                            play_waiting_reply()
+                            play_thinking_cue()
+                            opening_done = True
+                            continue
+                    else:
+                        prepared = audio.get()
                     if prepared is None:
                         return
                     samples, clean_text, useful = prepared
@@ -597,6 +577,11 @@ class SentencePlayback:
                             return
                     if useful and not release_useful.wait(timeout=None):
                         return
+                    if useful and not opening_done:
+                        if time.perf_counter() - stream_started_at >= 3.0:
+                            play_waiting_reply()
+                        play_thinking_cue()
+                        opening_done = True
                     if useful and not first_useful_audio_logged:
                         print(json.dumps({
                             "event": "tts_first_useful_audio",
@@ -613,6 +598,8 @@ class SentencePlayback:
                     elif clean_text:
                         print(json.dumps({"event": "tts_skipped", "reason": "no_french_voice"}, ensure_ascii=False))
             finally:
+                if thinking_cue:
+                    print(json.dumps({"event": "waiting_reply", "used": waiting_used}, ensure_ascii=False))
                 with self._lock:
                     if generation == self._generation:
                         self.active.clear()
@@ -703,18 +690,13 @@ def stream_to_kage(text, events):
         events.put({"type": "error", "detail": str(exc)})
 
 
-def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_ms=None):
+def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_ms=None,
+                                       thinking_cue=True):
     """Speak sentence chunks while Codex is still generating the remaining reply."""
     stream_started_at = time.perf_counter()
     events = queue.Queue()
     playback = SentencePlayback()
-    playback.start(stream_started_at)
-    if waiting_reply:
-        playback.enqueue(waiting_reply)
-    print(json.dumps({
-        "event": "waiting_reply",
-        "used": bool(waiting_reply),
-    }, ensure_ascii=False))
+    playback.start(stream_started_at, waiting_reply=waiting_reply, thinking_cue=thinking_cue)
 
     threading.Thread(
         target=stream_to_kage,
@@ -1035,17 +1017,14 @@ def handle_utterance(wait_for_speech_seconds):
         print(f"📝 Entendu : {text}")
         print(json.dumps({"event": "stt_result", **stt_result.log_payload()}, ensure_ascii=False))
 
-        # The cue is the first sound only for a real conversational request.
         # Local actions and session closure have their own feedback sounds.
+        # Conversational feedback is scheduled against real first-audio time.
         direct_command = is_direct_command(text)
-        if not direct_command and not is_end_session(text):
-            play_sound("thinking")
         publish_assistant_state("thinking")
 
-        if is_end_session(text):
-            normalized_end = re.sub(r"[^a-z0-9 ]", " ", text.lower())
-            if any(phrase in normalized_end for phrase in
-                   ("close everything", "close the shop", "close everything down")):
+        ending = session_intent(text)
+        if ending:
+            if ending == "shutdown":
                 # Queue the closure cue before notifying the backend and
                 # exiting. Playback remains independent from shutdown.
                 play_sound("triple_close")
@@ -1066,6 +1045,7 @@ def handle_utterance(wait_for_speech_seconds):
             text,
             waiting_reply,
             transcription_ms=transcription_ms,
+            thinking_cue=not direct_command,
         )
         if was_interrupted:
             # Do not reopen the microphone after stopping speech: otherwise
@@ -1108,13 +1088,13 @@ def main():
             if wake_source == "wake_word":
                 play_sound("wake_listening")
             if wake_source != "hold" and not hold_is_active():
-                speak("Kagé is listening.")
+                speak("Kagé t'écoute.")
             wait_time = FOLLOW_UP_TIMEOUT_SECONDS
         else:
             start_direct = False
             if WAKE_WORD_ENABLED:
                 if not hold_is_active():
-                    speak("Kagé is listening.")
+                    speak("Kagé t'écoute.")
                 wait_time = FOLLOW_UP_TIMEOUT_SECONDS
                 # Do not fall through to the keyboard-only branch.
             else:
