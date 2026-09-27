@@ -566,11 +566,9 @@ class SentencePlayback:
                     if generation != self._generation:
                         return
                 if samples is not None:
-                    publish_assistant_state("speaking")
                     sd.play(samples, samplerate=16000, blocking=True)
                     waiting_used = True
                 elif clean_text and WINDOWS_FRENCH_VOICE_AVAILABLE:
-                    publish_assistant_state("speaking")
                     tts.say(clean_text)
                     tts.runAndWait()
                     waiting_used = True
