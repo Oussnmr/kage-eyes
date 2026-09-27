@@ -9,7 +9,7 @@ Start-Sleep -Milliseconds 500
 $host.UI.RawUI.WindowTitle = 'Kage Voice'
 $env:KAGE_TTS_VOICE = 'ff_siwis'
 $env:KAGE_NEMO_URL = 'http://127.0.0.1:18080'
-$env:KAGE_SILENCE_AFTER_SPEECH = '1.0'
+$env:KAGE_SILENCE_AFTER_SPEECH = '2.0'
 $kageSitePackages = 'C:\Kage\venv\Lib\site-packages'
 $env:PYTHONPATH = "$kageSitePackages;$kageSitePackages\win32;$kageSitePackages\win32\lib;$kageSitePackages\pywin32_system32;C:\Kage"
 $env:PATH = "$kageSitePackages\pywin32_system32;$env:PATH"
