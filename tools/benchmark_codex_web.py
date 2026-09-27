@@ -45,13 +45,14 @@ def main() -> int:
                 result = bridge.ask(prompt, web_context=web_context, timeout=90)
                 result["pipeline"] = "legacy-ddgs"
             else:
+                explicit_web = needs_web_search(prompt)
                 result = bridge.ask(
                     prompt,
                     response_language="fr",
-                    web_search_requested=needs_web_search(prompt),
+                    web_search_requested=explicit_web,
                     timeout=90,
                 )
-                result["pipeline"] = "web-native-v2"
+                result["pipeline"] = "web-progressive-v3"
             print(json.dumps({"prompt": prompt, **result}, ensure_ascii=False))
     finally:
         bridge.close()

@@ -5,8 +5,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$version = 'web-native-v2'
-$files = @('app.py', 'codex_bridge.py')
+$version = 'web-progressive-v3'
+$files = @('app.py', 'codex_bridge.py', 'voice.py', 'web_search.py')
 $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $backupDir = Join-Path $RollbackRoot "${version}_$stamp"
 New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
@@ -84,7 +84,15 @@ try {
         }
     }
     if (-not $ready) { throw 'Kage backend did not become ready on port 8000' }
-    Write-Output "Deployed $version; rollback snapshot: $backupDir"
+
+    # voice.py is part of this deployment. Use the existing guarded launcher:
+    # it terminates only Kagé voice.py instances and leaves NeMo/backend alone
+    # when their ports are already available.
+    Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass',
+        '-File', 'C:\Kage\restart_kage.ps1'
+    ) -WorkingDirectory 'C:\Kage'
+    Write-Output "Deployed $version and restarted Kage Voice; rollback snapshot: $backupDir"
 } catch {
     Write-Error "Deployment failed: $_"
     Write-Error "Restore with tools/rollback_web_pipeline.ps1 -BackupDirectory '$backupDir'"

@@ -669,12 +669,35 @@ class SentencePlayback:
                 print(json.dumps({"event": "playback_worker_still_active_after_stop"}))
 
 
-def split_complete_sentences(buffer):
+MAX_SPOKEN_SENTENCES = 3
+FIRST_SPOKEN_CHUNK_WORDS = 5
+
+
+def split_complete_sentences(buffer, max_words=None):
     """Return sentence-sized chunks and the incomplete tail of an LLM stream."""
     complete = []
     while True:
         match = re.search(r"[.!?](?=\s|$)", buffer)
         clause_match = re.search(r"[;:](?=\s)", buffer)
+
+        # The first spoken unit is intentionally tiny. This bounds Kokoro's
+        # time-to-first-audio even if the model ignores the short-first-sentence
+        # instruction. Wait for a following character so a still-streaming
+        # fifth word is never cut in half.
+        if max_words:
+            words = list(re.finditer(r"[0-9A-Za-zÀ-ÖØ-öø-ÿ]+(?:['’][0-9A-Za-zÀ-ÖØ-öø-ÿ]+)?", buffer))
+            if len(words) >= max_words:
+                cut = words[max_words - 1].end()
+                if len(buffer) > cut:
+                    while cut < len(buffer) and buffer[cut] in ",;:!?":
+                        cut += 1
+                    if not match or cut < match.end():
+                        phrase = buffer[:cut].strip()
+                        buffer = buffer[cut:].lstrip(" ,;:-")
+                        if phrase:
+                            complete.append(phrase)
+                        max_words = None
+                        continue
 
         # A long clause can be synthesized while the model writes the rest of
         # the sentence.  Keep very short clauses buffered to avoid choppy speech
@@ -754,8 +777,13 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
                 if first_delta_ms is None:
                     first_delta_ms = round((time.perf_counter() - stream_started_at) * 1000, 1)
             pending += delta
-            sentences, pending = split_complete_sentences(pending)
+            sentences, pending = split_complete_sentences(
+                pending,
+                max_words=FIRST_SPOKEN_CHUNK_WORDS if complete_sentence_count == 0 else None,
+            )
             for sentence in sentences:
+                if complete_sentence_count >= MAX_SPOKEN_SENTENCES:
+                    continue
                 playback.enqueue(sentence, useful=True)
                 streamed_audio_queued = True
                 complete_sentence_count += 1
@@ -768,7 +796,7 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
         elif event_type == "done":
             completed_ms = round((time.perf_counter() - stream_started_at) * 1000, 1)
             result = event.get("result", {})
-            if pending.strip():
+            if pending.strip() and complete_sentence_count < MAX_SPOKEN_SENTENCES:
                 playback.enqueue(pending, useful=True)
                 streamed_audio_queued = True
                 complete_sentence_count += 1

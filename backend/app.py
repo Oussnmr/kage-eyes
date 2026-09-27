@@ -5,7 +5,12 @@ from starlette.concurrency import run_in_threadpool
 
 from tts_service import kokoro_service
 from codex_bridge import CodexBridgeError, codex_bridge
-from web_search import format_web_context, needs_web_search, search_web
+from web_search import (
+    format_web_context,
+    is_web_continuation,
+    needs_web_search,
+    search_web,
+)
 from kage_sounds import play_sound
 from command_intents import direct_intent, home_intent, looks_like_home_command
 
@@ -50,7 +55,8 @@ OLLAMA_MODEL = "qwen3:4b-instruct-2507-q4_K_M"
 DEFAULT_CONVERSATION_BACKEND = os.getenv("KAGE_CONVERSATION_BACKEND", "ollama").strip().lower()
 SETTINGS_PATH = Path(os.getenv("KAGE_SETTINGS_PATH", r"C:\Kage\kage_settings.json"))
 KAGE_API_KEY = os.getenv("KAGE_API_KEY", "").strip()
-WEB_PIPELINE_VERSION = "web-native-v2"
+WEB_PIPELINE_VERSION = "web-progressive-v3"
+RESEARCH_MEMORY_TTL_SECONDS = 15 * 60
 
 AUDIO_SAMPLE_RATE = 16000
 AUDIO_CHANNELS = 1
@@ -102,6 +108,105 @@ VOICE_WAKE_FLAG = Path(r"C:\Kage\voice_wake.flag")
 VOICE_SLEEP_FLAG = Path(r"C:\Kage\voice_sleep.flag")
 VOICE_HOLD_ACTIVE_FLAG = Path(r"C:\Kage\voice_hold_active.flag")
 voice_control_lock = threading.Lock()
+research_memory_lock = threading.Lock()
+research_memory = {
+    "generation": 0,
+    "query": None,
+    "data": None,
+    "status": "empty",
+    "updated_at": 0.0,
+    "ready": None,
+    "continuations": 0,
+}
+
+
+def start_background_research(message: str) -> None:
+    """Enrich the latest Web query without blocking the spoken response."""
+    ready = threading.Event()
+    with research_memory_lock:
+        generation = int(research_memory["generation"]) + 1
+        research_memory.update({
+            "generation": generation,
+            "query": message,
+            "data": None,
+            "status": "running",
+            "updated_at": time.monotonic(),
+            "ready": ready,
+            "continuations": 0,
+        })
+
+    def research() -> None:
+        started = time.perf_counter()
+        data = search_web(message)
+        with research_memory_lock:
+            if generation != research_memory["generation"]:
+                ready.set()
+                return
+            research_memory.update({
+                "data": data,
+                "status": "ready" if data.get("results") else "unavailable",
+                "updated_at": time.monotonic(),
+            })
+            ready.set()
+        print(json.dumps({
+            "event": "background_research_completed",
+            "duration_ms": round((time.perf_counter() - started) * 1000, 1),
+            "results": len(data.get("results", [])),
+            "available": bool(data.get("results")),
+        }, ensure_ascii=False))
+
+    threading.Thread(target=research, name="kage-background-research", daemon=True).start()
+
+
+def latest_research(wait_seconds: float = 0.0) -> dict | None:
+    """Return fresh completed research, optionally waiting briefly for it."""
+    with research_memory_lock:
+        if (not research_memory["query"] or
+                time.monotonic() - float(research_memory["updated_at"]) > RESEARCH_MEMORY_TTL_SECONDS):
+            return None
+        ready = research_memory["ready"]
+    if ready is not None and wait_seconds > 0:
+        ready.wait(timeout=wait_seconds)
+    with research_memory_lock:
+        if research_memory["status"] != "ready" or not research_memory["data"]:
+            return None
+        research_memory["continuations"] = int(research_memory["continuations"]) + 1
+        return {
+            "query": research_memory["query"],
+            "data": research_memory["data"],
+            "continuations": research_memory["continuations"],
+        }
+
+
+def research_status() -> str:
+    with research_memory_lock:
+        return str(research_memory["status"])
+
+
+def prepare_codex_web_request(message: str) -> tuple[str, str | None, bool, bool]:
+    """Choose quick foreground context or the cached background continuation."""
+    if is_web_continuation(message):
+        cached = latest_research(wait_seconds=1.5)
+        if cached:
+            follow_up = (
+                f"L'utilisateur demande de continuer la recherche précédente sur : {cached['query']}. "
+                "Donne uniquement des faits complémentaires que tu n'as pas encore mentionnés."
+            )
+            print(json.dumps({
+                "event": "background_research_reused",
+                "continuation": cached["continuations"],
+                "results": len(cached["data"].get("results", [])),
+            }, ensure_ascii=False))
+            return follow_up, format_web_context(cached["data"]), False, False
+
+    explicit_web_request = needs_web_search(message)
+    if not explicit_web_request:
+        return message, None, False, False
+
+    # The foreground turn gets one focused native search. A broader DDGS pass
+    # starts on its first text delta and is retained only for a later
+    # "continue" request. This avoids putting two searches on the critical path.
+    return message, None, explicit_web_request, True
 
 
 def home_bridge_authorization() -> str:
@@ -431,12 +536,16 @@ def process_message(message: str) -> dict:
     language = get_response_language()
     if backend == "codex":
         try:
+            codex_message, web_context, explicit_web_request, enrich_after = prepare_codex_web_request(message)
             codex = codex_bridge.ask(
-                message,
+                codex_message,
+                web_context=web_context,
                 response_language=language,
                 web_search_requested=explicit_web_request,
                 timeout=75,
             )
+            if enrich_after:
+                start_background_research(message)
             reply = codex["reply"] or "Je n'ai pas réussi à formuler une réponse."
             current = current_state()
             print(json.dumps({
@@ -599,18 +708,30 @@ def stream_message_events(message: str):
         yield {"type": "done", "result": result}
         return
 
+    codex_message, web_context, explicit_web_request, enrich_after = prepare_codex_web_request(message)
     events: queue.Queue[dict] = queue.Queue()
 
     def generate() -> None:
+        enrichment_started = False
+
+        def stream_delta(text: str) -> None:
+            nonlocal enrichment_started
+            if enrich_after and not enrichment_started:
+                enrichment_started = True
+                start_background_research(message)
+            events.put({"type": "delta", "text": text})
+
         try:
             codex = codex_bridge.ask(
-                message,
+                codex_message,
                 web_context=web_context,
                 response_language=language,
                 web_search_requested=explicit_web_request,
-                on_delta=lambda text: events.put({"type": "delta", "text": text}),
+                on_delta=stream_delta,
                 timeout=75,
             )
+            if enrich_after and not enrichment_started:
+                start_background_research(message)
             reply = codex["reply"] or "I could not form a response."
             current = current_state()
             result = {
@@ -802,6 +923,7 @@ def get_status(request: Request):
         "web_pipeline": WEB_PIPELINE_VERSION,
         "codex_web_search": os.getenv("KAGE_CODEX_WEB_SEARCH", "live"),
         "codex_web_context": os.getenv("KAGE_CODEX_WEB_CONTEXT", "low"),
+        "background_research": research_status(),
     }
 
 

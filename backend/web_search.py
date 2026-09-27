@@ -44,6 +44,14 @@ SEARCH_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 
+WEB_CONTINUATION_RE = re.compile(
+    r"^(?:continue|continuer|continue la recherche|continue de chercher|"
+    r"donne moi plus d informations?|donne moi plus d infos?|plus d informations?|"
+    r"plus d infos?|dis m en plus|vas y continue|tell me more|go on|"
+    r"continue the search|keep searching)$",
+    re.IGNORECASE,
+)
+
 _CACHE_TTL_SECONDS = 120.0
 _search_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _cache_lock = threading.Lock()
@@ -103,26 +111,33 @@ def needs_web_search(message: str) -> bool:
     return bool(WEB_TRIGGER_RE.search(_search_normalized(message)))
 
 
+def is_web_continuation(message: str) -> bool:
+    """Recognize a short request to continue the latest background research."""
+    normalized = " ".join(re.findall(r"[a-z0-9]+", _search_normalized(message)))
+    return bool(WEB_CONTINUATION_RE.fullmatch(normalized))
+
+
 def search_query(message: str) -> str:
     normalized = _search_normalized(message)
     query = SEARCH_PREFIX_RE.sub("", normalized).lstrip(":, ").strip(" .?!")
     return query if len(query) >= 5 else message
 
 
-def search_web(message: str) -> dict[str, Any]:
-    """Return compact search results; never raises into the voice pipeline."""
+def _search_web(message: str, *, max_results: int, fetched_pages: int,
+                cache: dict[str, tuple[float, dict[str, Any]]]) -> dict[str, Any]:
+    """Return bounded search results; never raises into the voice pipeline."""
     if DDGS is None:
         return {"query": message, "results": [], "error": "search dependency unavailable"}
     query = search_query(message)
     cache_key = query.casefold()
     with _cache_lock:
-        cached = _search_cache.get(cache_key)
+        cached = cache.get(cache_key)
         if cached and time.monotonic() - cached[0] < _CACHE_TTL_SECONDS:
             result = dict(cached[1])
             result["cached"] = True
             return result
     try:
-        rows = DDGS(timeout=5).text(query, max_results=5)
+        rows = DDGS(timeout=5).text(query, max_results=max_results)
         results = []
         for row in rows or []:
             title = str(row.get("title", "")).strip()
@@ -133,7 +148,7 @@ def search_web(message: str) -> dict[str, Any]:
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="kage-web") as pool:
             futures = {
                 pool.submit(fetch_page_text, result["url"]): result
-                for result in results[:2]
+                for result in results[:fetched_pages]
             }
             for future in as_completed(futures):
                 result = futures[future]
@@ -143,10 +158,20 @@ def search_web(message: str) -> dict[str, Any]:
                     result["page_text"] = ""
         payload = {"query": message, "results": results}
         with _cache_lock:
-            _search_cache[cache_key] = (time.monotonic(), payload)
+            cache[cache_key] = (time.monotonic(), payload)
         return payload
     except Exception as exc:
         return {"query": message, "results": [], "error": type(exc).__name__}
+
+
+def search_web(message: str) -> dict[str, Any]:
+    """Deeper background pass with more results and selected page text."""
+    return _search_web(
+        message,
+        max_results=5,
+        fetched_pages=2,
+        cache=_search_cache,
+    )
 
 
 def format_web_context(data: dict[str, Any]) -> str:
