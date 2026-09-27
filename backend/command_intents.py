@@ -79,6 +79,19 @@ BACKEND_PHRASES = {
     ),
 }
 
+LANGUAGE_PHRASES = {
+    "en": (
+        "reponds en anglais", "repond en anglais", "parle en anglais", "parle anglais",
+        "passe en anglais", "mode anglais", "answer in english", "reply in english",
+        "speak english", "switch to english", "english mode",
+    ),
+    "fr": (
+        "reponds en francais", "repond en francais", "parle en francais", "parle francais",
+        "passe en francais", "mode francais", "answer in french", "reply in french",
+        "speak french", "switch to french", "french mode",
+    ),
+}
+
 SESSION_END_PHRASES = (
     "stop listening", "stop talking", "end the conversation", "end chat",
     "be quiet", "that s all", "goodbye", "bye for now", "go back to sleep",
@@ -143,6 +156,9 @@ def session_intent(text):
 
 def direct_intent(text):
     text = clean_request(text)
+    for language, phrases in LANGUAGE_PHRASES.items():
+        if _complete_match(text, phrases):
+            return "language", language
     for backend, phrases in BACKEND_PHRASES.items():
         if _complete_match(text, phrases):
             return "backend", backend

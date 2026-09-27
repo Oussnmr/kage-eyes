@@ -170,6 +170,7 @@ class CodexBridge:
                           "model": MODEL, "disabled_plugins": len(self._disabled_plugin_ids)}))
 
     def ask(self, message: str, web_context: str | None = None,
+            response_language: str = "fr",
             on_delta: Callable[[str], None] | None = None, timeout: float = 60) -> dict[str, Any]:
         """Return a concise reply and first-token/total timings. Never gives Codex tools."""
         with self._lock:
@@ -177,9 +178,14 @@ class CodexBridge:
             assert self._thread_id
             self._request_id += 1
             request_id = self._request_id
+            language_instruction = (
+                "Answer only in English, concisely and naturally, even if the user speaks French. "
+                if response_language == "en" else
+                "Réponds toujours en français, de manière concise et naturelle, même si une source ou un terme est en anglais. "
+            )
             prompt = (
-                "Tu es Kagé, un assistant vocal de bureau. Réponds toujours en français, "
-                "de manière concise et naturelle, même si une source ou un terme est en anglais. "
+                "Tu es Kagé, un assistant vocal de bureau. "
+                + language_instruction +
                 "Pour les prix, coûts ou montants, utilise les euros (EUR/€) par défaut. "
                 "N'utilise une autre monnaie que si l'utilisateur le demande explicitement. "
                 "Pour une question factuelle, commence directement par une phrase courte, puis ajoute "

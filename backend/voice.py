@@ -63,6 +63,7 @@ MIC_DEVICE = resolve_mic_device()
 WAV_FILE = r"C:\Kage\voice_temp.wav"
 KAGE_API_KEY = os.getenv("KAGE_API_KEY", "").strip()
 KAGE_TTS_VOICE = os.getenv("KAGE_TTS_VOICE", "ff_siwis").strip() or "ff_siwis"
+SETTINGS_PATH = r"C:\Kage\kage_settings.json"
 WAITING_AUDIO_DIR = r"C:\Kage\waiting_audio"
 VOICE_INTERRUPT_FLAG = r"C:\Kage\voice_interrupt.flag"
 VOICE_WAKE_FLAG = r"C:\Kage\voice_wake.flag"
@@ -225,8 +226,31 @@ WAITING_REPLIES = (
     "Bien sûr.",
     "Une seconde...",
 )
+WAITING_REPLIES_EN = (
+    "Let me check...",
+    "Give me a moment...",
+    "One moment...",
+    "I'm checking...",
+    "Let me think...",
+)
 
 _waiting_audio = {}
+
+
+def current_voice_settings():
+    try:
+        saved = json.loads(open(SETTINGS_PATH, "r", encoding="utf-8").read())
+    except (OSError, json.JSONDecodeError):
+        saved = {}
+    language = saved.get("response_language", "fr")
+    if language not in {"fr", "en"}:
+        language = "fr"
+    expected_voice = "am_puck" if language == "en" else "ff_siwis"
+    return language, saved.get("tts_voice", expected_voice) or expected_voice
+
+
+def current_response_language():
+    return current_voice_settings()[0]
 
 def load_waiting_audio():
     _waiting_audio.clear()
@@ -260,7 +284,9 @@ def choose_waiting_reply(text):
     """Choose an opening only if the conversational reply takes at least 3 s."""
     if not WAITING_REPLIES_ENABLED:
         return None
-    return random.choice(WAITING_REPLIES)
+    return random.choice(
+        WAITING_REPLIES_EN if current_response_language() == "en" else WAITING_REPLIES
+    )
 
 
 def wait_for_wake_word(stop_event=None, announce=True, keyphrase=None):
@@ -415,7 +441,8 @@ def synthesize_speech(text):
     cached = _waiting_audio.get(text)
     if cached is not None:
         return cached, text
-    payload = json.dumps({"text": text, "voice": KAGE_TTS_VOICE}, ensure_ascii=False).encode("utf-8")
+    _, selected_voice = current_voice_settings()
+    payload = json.dumps({"text": text, "voice": selected_voice}, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         "http://127.0.0.1:8000/speech",
         data=payload,

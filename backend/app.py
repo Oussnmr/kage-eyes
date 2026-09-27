@@ -232,6 +232,27 @@ def load_conversation_backend() -> str:
 
 
 conversation_backend = load_conversation_backend()
+response_language = "fr"
+try:
+    _saved_settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+    if _saved_settings.get("response_language") in {"fr", "en"}:
+        response_language = _saved_settings["response_language"]
+except (OSError, json.JSONDecodeError):
+    pass
+
+
+def _save_settings(**updates) -> None:
+    try:
+        saved = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        if not isinstance(saved, dict):
+            saved = {}
+    except (OSError, json.JSONDecodeError):
+        saved = {}
+    saved.update(updates)
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = SETTINGS_PATH.with_suffix(".tmp")
+    temporary_path.write_text(json.dumps(saved, indent=2) + "\n", encoding="utf-8")
+    temporary_path.replace(SETTINGS_PATH)
 
 
 def get_conversation_backend() -> str:
@@ -244,15 +265,27 @@ def set_conversation_backend(backend: str) -> str:
         raise ValueError(f"Unsupported conversation backend: {backend}")
     with backend_lock:
         global conversation_backend
-        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path = SETTINGS_PATH.with_suffix(".tmp")
-        temporary_path.write_text(
-            json.dumps({"conversation_backend": backend}, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        temporary_path.replace(SETTINGS_PATH)
+        _save_settings(conversation_backend=backend)
         conversation_backend = backend
         return conversation_backend
+
+
+def get_response_language() -> str:
+    with backend_lock:
+        return response_language
+
+
+def set_response_language(language: str) -> str:
+    if language not in {"fr", "en"}:
+        raise ValueError(f"Unsupported response language: {language}")
+    with backend_lock:
+        global response_language
+        _save_settings(
+            response_language=language,
+            tts_voice="am_puck" if language == "en" else "ff_siwis",
+        )
+        response_language = language
+        return response_language
 
 print(f"Chargement de Whisper {WHISPER_MODEL_NAME}...")
 whisper_model = WhisperModel(
@@ -334,6 +367,21 @@ def route_direct_command(message: str):
     if intent is None:
         return None
     kind, value = intent
+    if kind == "language":
+        language = set_response_language(value)
+        current = current_state()
+        reply = "I will answer in English." if language == "en" else "Je répondrai en français."
+        print(json.dumps({
+            "event": "response_language_switched",
+            "language": language,
+            "voice": "am_puck" if language == "en" else "ff_siwis",
+        }, ensure_ascii=False))
+        return {
+            "ok": True, "heard": normalize_kage_name(message), "reply": reply,
+            "command": "none", "sequence": current["sequence"], "route": "direct",
+            "speak": True, "response_language": language,
+            "tts_voice": "am_puck" if language == "en" else "ff_siwis",
+        }
     if kind == "backend":
         backend = set_conversation_backend(value)
         print(json.dumps({"event": "backend_switched", "backend": backend}, ensure_ascii=False))
@@ -376,9 +424,12 @@ def process_message(message: str) -> dict:
         }, ensure_ascii=False))
 
     backend = get_conversation_backend()
+    language = get_response_language()
     if backend == "codex":
         try:
-            codex = codex_bridge.ask(message, web_context=web_context, timeout=60)
+            codex = codex_bridge.ask(
+                message, web_context=web_context, response_language=language, timeout=60
+            )
             reply = codex["reply"] or "Je n'ai pas réussi à formuler une réponse."
             current = current_state()
             print(json.dumps({
@@ -400,9 +451,15 @@ def process_message(message: str) -> dict:
         except CodexBridgeError as exc:
             print(json.dumps({"event": "codex_fallback", "reason": str(exc)}, ensure_ascii=False))
 
+    language_instruction = (
+        "Answer only in English, briefly and naturally, even when the user speaks French."
+        if language == "en" else
+        "Réponds toujours en français, brièvement et naturellement, même si une source ou un terme est en anglais."
+    )
+    reply_example = "your short answer in English" if language == "en" else "ta réponse courte en français"
     prompt = f"""
     Tu es l'assistant d'un petit robot de bureau nommé Kagé.
-    Réponds toujours en français, brièvement et naturellement, même si une source ou un terme est en anglais.
+    {language_instruction}
     Pour les prix, coûts ou montants, utilise les euros (EUR/€) par défaut.
     N'utilise une autre monnaie que si l'utilisateur le demande explicitement.
 
@@ -418,7 +475,7 @@ idle, blink, sleep, angry, dizzy, none.
     {web_context or "Réponds utilement à partir de tes connaissances générales."}
 
     Réponds uniquement avec un objet JSON exactement sous cette forme :
-    {{"command":"none","reply":"ta réponse courte en français"}}
+    {{"command":"none","reply":"{reply_example}"}}
 """.strip()
 
     payload = json.dumps(
@@ -523,6 +580,7 @@ def stream_message_events(message: str):
         }, ensure_ascii=False))
 
     backend = get_conversation_backend()
+    language = get_response_language()
     if backend != "codex":
         result = process_message(message)
         if result.get("reply"):
@@ -537,6 +595,7 @@ def stream_message_events(message: str):
             codex = codex_bridge.ask(
                 message,
                 web_context=web_context,
+                response_language=language,
                 on_delta=lambda text: events.put({"type": "delta", "text": text}),
                 timeout=60,
             )

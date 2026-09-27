@@ -28,6 +28,12 @@ class CommandIntentTests(unittest.TestCase):
         for phrase in ("Passe en local", "Use Ollama"):
             self.assertEqual(direct_intent(phrase), ("backend", "ollama"))
 
+    def test_response_language_switch(self):
+        for phrase in ("Réponds en anglais", "Parle anglais", "Answer in English"):
+            self.assertEqual(direct_intent(phrase), ("language", "en"))
+        for phrase in ("Réponds en français", "Parle français", "Answer in French"):
+            self.assertEqual(direct_intent(phrase), ("language", "fr"))
+
     def test_home_in_french_and_english(self):
         cases = {
             "Allume la lumière du bureau": ("devices", ("light",), True),
