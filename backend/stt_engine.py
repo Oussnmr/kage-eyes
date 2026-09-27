@@ -52,7 +52,9 @@ class KageSTT:
         # 1.0, so it must not drive fallback decisions by default.
         self.confidence_usable = _env_bool("KAGE_NEMO_CONFIDENCE_USABLE", False)
         self.min_confidence = float(os.getenv("KAGE_STT_MIN_CONFIDENCE", "0.72"))
-        self.nemo_url = os.getenv("KAGE_NEMO_URL", "http://127.0.0.1:8080").rstrip("/")
+        # Docker Desktop occupies 8080 on the M920q; NeMo-Speech uses the
+        # dedicated local port 18080 instead.
+        self.nemo_url = os.getenv("KAGE_NEMO_URL", "http://127.0.0.1:18080").rstrip("/")
         self.nemo_read_timeout = float(os.getenv("KAGE_NEMO_READ_TIMEOUT", "20"))
         self._whisper_model = None
         default_terms = "Kagé,Kage,ChatGPT,Qwen,Nextcloud,Angry,Dizzy,plafonnier,luminosité,calendrier"
