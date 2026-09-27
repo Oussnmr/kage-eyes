@@ -23,6 +23,7 @@ SOUNDS = {
     "home_command": ("confirmation-002.mp3", 0.30),
     "sleep_listening": ("minimize-004.mp3", 0.30),
     "recording_loop": ("zen-recording.ogg", 1.00),
+    "speech_finished": ("minimize-002.mp3", 0.30),
 }
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="kage-sfx")

@@ -376,6 +376,12 @@ def clean_speech_text(text):
     text = text.replace("«", "").replace("»", "")
     text = text.replace("\u201c", "").replace("\u201d", "")
 
+    # In French, spell the name phonetically so Kokoro says "cagué" rather
+    # than the English-style "Kage". Keep the visible transcript untouched
+    # and preserve the English pronunciation in English mode.
+    if current_response_language() == "fr":
+        text = re.sub(r"\bKagé\b|\bKage\b", "cagué", text, flags=re.IGNORECASE)
+
     # Make euro prices sound natural. Do ranges first so `€100-€300` is not
     # read as three separate symbols/numbers by the speech engine.
     # Allow thousands separators plus an optional decimal part, e.g. 1,000.50.
@@ -473,10 +479,12 @@ def speak(text):
         return
     if samples is not None:
         sd.play(samples, samplerate=16000, blocking=True)
+        play_sound("speech_finished")
         return
     if WINDOWS_FRENCH_VOICE_AVAILABLE:
         tts.say(text)
         tts.runAndWait()
+        play_sound("speech_finished")
     else:
         print(json.dumps({"event": "tts_skipped", "reason": "no_french_voice"}, ensure_ascii=False))
 
@@ -561,6 +569,7 @@ class SentencePlayback:
             nonlocal first_useful_audio_logged
             waiting_used = False
             recording_loop = None
+            normal_completion = False
 
             def play_waiting_reply():
                 nonlocal waiting_used
@@ -584,10 +593,9 @@ class SentencePlayback:
                 time.sleep(0.32)
 
             try:
-                # The end-of-speech cue is played by handle_utterance as soon
-                # as capture ends, before STT validation. Keep the optional
-                # flag for compatibility, but do not delay the cached opening
-                # waiting reply behind the cue here.
+                # The thinking cue is intentionally emitted only after STT
+                # validation in handle_utterance. Keep this optional flag for
+                # compatibility, but do not delay the opening reply here.
                 if thinking_cue:
                     play_thinking_cue()
                 if thinking_cue or waiting_reply:
@@ -596,6 +604,7 @@ class SentencePlayback:
                 while True:
                     prepared = audio.get()
                     if prepared is None:
+                        normal_completion = True
                         return
                     samples, clean_text, useful = prepared
                     with self._lock:
@@ -622,6 +631,8 @@ class SentencePlayback:
                         print(json.dumps({"event": "tts_skipped", "reason": "no_french_voice"}, ensure_ascii=False))
             finally:
                 stop_loop(recording_loop)
+                if normal_completion:
+                    play_sound("speech_finished")
                 if thinking_cue or waiting_reply:
                     print(json.dumps({"event": "waiting_reply", "used": waiting_used}, ensure_ascii=False))
                 with self._lock:
