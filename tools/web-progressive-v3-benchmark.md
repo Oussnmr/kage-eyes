@@ -37,9 +37,9 @@ about 2.2 seconds lower and its answer contained stronger direct citations.
 
 The v3 prompt requires a five-word first sentence and the voice client also
 enforces a five-word first chunk. Spoken output is capped at three sentences.
-The expected first useful Web audio is therefore around 11 seconds under the
-measured load, versus 15.7 seconds in the supplied baseline log. Actual live
-microphone timing must still be confirmed after deployment.
+The expected first useful Web audio is therefore around 11 to 14 seconds under
+the measured load, versus 15.7 seconds in the supplied baseline log. Actual
+live microphone timing must still be confirmed after deployment.
 
 ## Background enrichment
 
@@ -48,3 +48,15 @@ results and fetches up to two pages. It does not speak this research. The most
 recent result is cached for 15 minutes and reused when the user says a short
 continuation such as `continue`, `donne-moi plus d'informations`, or
 `tell me more`.
+
+## Live endpoint smoke test after deployment
+
+The same iPhone request reached its first text delta in 11,205 ms and completed
+in 12,409 ms. The background state then became `ready`. A following `Continue`
+used additional cached sources, reached its first text delta in 3,184 ms and
+completed in 4,343 ms.
+
+On the warm live Kokoro endpoint, response headers arrived in 140 ms but the
+first audio bytes arrived in 1,962 ms and the full five-word audio in 1,971 ms.
+Kokoro therefore emits this short unit almost all at once; changing the client
+to stream those bytes would not provide a meaningful additional gain.
