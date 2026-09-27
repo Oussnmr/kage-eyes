@@ -1041,15 +1041,9 @@ def handle_utterance(wait_for_speech_seconds):
             publish_assistant_state("listening")
             return True
 
-        # Give immediate feedback at the actual end of speech. STT and the
-        # backend can now run after this cue instead of making the user wait
-        # for transcription before hearing anything.
-        play_sound("thinking")
-
-        # RMS only detects sound energy, not intelligible speech. Whisper's
-        # VAD/transcript remains the first trustworthy gate for processing;
-        # the short end-of-speech cue has already been played as immediate UX
-        # feedback and is intentionally not replayed for rejected transcripts.
+        # RMS only detects sound energy, not intelligible speech. Wait for the
+        # transcript gate before playing the end-of-transcription cue, so a
+        # noise-only false alert does not produce a misleading thinking sound.
         stt_result = transcribe()
         text = stt_result.text
         transcription_ms = round(stt_result.duration_ms, 1)
@@ -1075,6 +1069,10 @@ def handle_utterance(wait_for_speech_seconds):
 
         print(f"📝 Entendu : {text}")
         print(json.dumps({"event": "stt_result", **stt_result.log_payload()}, ensure_ascii=False))
+
+        # The cue now means that Kagé accepted intelligible speech and is
+        # starting to process it. Rejected/empty transcripts remain silent.
+        play_sound("thinking")
 
         # Local actions and session closure have their own feedback sounds.
         # Conversational feedback is scheduled against real first-audio time.
