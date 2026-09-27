@@ -1,6 +1,6 @@
 {
-  "version": "web-progressive-v3.5",
-  "description": "Topic-bound progressive research with noise-safe transcription, speech completion cue, and French Kage pronunciation.",
+  "version": "web-progressive-v3.6",
+  "description": "Topic-bound progressive research with text-mode transcription simulation, speech completion cue, and French Kage pronunciation.",
   "codex_web_search": "live",
   "codex_web_context": "low",
   "local_search_fallback": "DuckDuckGo background cache and Ollama fallback",

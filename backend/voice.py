@@ -77,6 +77,7 @@ MIN_AUDIO_DURATION_MS = float(os.getenv("KAGE_MIN_AUDIO_DURATION_MS", "1200"))
 MAX_RECORD_SECONDS = 12
 PRE_ROLL_SECONDS = 0.30
 WAKE_WORD_ENABLED = os.getenv("KAGE_WAKE_WORD", "1").strip().lower() in {"1", "true", "yes", "on"}
+TEXT_MODE_ON_START = os.getenv("KAGE_TEXT_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
 WAKE_KEYPHRASE = "wake up"
 START_LISTENING_ON_LAUNCH = os.getenv("KAGE_START_LISTENING", "0").strip().lower() in {"1", "true", "yes"}
 WAKE_THRESHOLD = float(os.getenv("KAGE_WAKE_THRESHOLD", "1e-18"))
@@ -1030,10 +1031,10 @@ def send_to_kage(text):
 
 # ---------- BOUCLE ----------
 
-def handle_utterance(wait_for_speech_seconds):
+def handle_utterance(wait_for_speech_seconds, simulated_text=None):
     try:
         publish_assistant_state("listening")
-        recorded = record_until_silence(wait_for_speech_seconds)
+        recorded = True if simulated_text is not None else record_until_silence(wait_for_speech_seconds)
 
         if recorded == "touch_sleep":
             return recorded
@@ -1041,7 +1042,7 @@ def handle_utterance(wait_for_speech_seconds):
             return False
 
         audio_duration_ms = float(_last_record_metrics.get("audio_duration_ms", 0.0))
-        if audio_duration_ms < MIN_AUDIO_DURATION_MS:
+        if simulated_text is None and audio_duration_ms < MIN_AUDIO_DURATION_MS:
             print(json.dumps({
                 "event": "transcription_rejected",
                 "transcription_ms": 0.0,
@@ -1055,17 +1056,22 @@ def handle_utterance(wait_for_speech_seconds):
         # RMS only detects sound energy, not intelligible speech. Wait for the
         # transcript gate before playing the end-of-transcription cue, so a
         # noise-only false alert does not produce a misleading thinking sound.
-        stt_result = transcribe()
-        text = stt_result.text
-        transcription_ms = round(stt_result.duration_ms, 1)
-        print(json.dumps({
-            "event": "speech_to_transcript_timing",
-            **_last_record_metrics,
-            "stt_ms": transcription_ms,
-            "endpoint_plus_stt_ms": round(
-                _last_record_metrics.get("endpoint_silence_ms", 0) + transcription_ms, 1
-            ),
-        }, ensure_ascii=False))
+        if simulated_text is not None:
+            text = simulated_text.strip()
+            transcription_ms = 0.0
+            print(json.dumps({"event": "text_mode_transcript", "text": text}, ensure_ascii=False))
+        else:
+            stt_result = transcribe()
+            text = stt_result.text
+            transcription_ms = round(stt_result.duration_ms, 1)
+            print(json.dumps({
+                "event": "speech_to_transcript_timing",
+                **_last_record_metrics,
+                "stt_ms": transcription_ms,
+                "endpoint_plus_stt_ms": round(
+                    _last_record_metrics.get("endpoint_silence_ms", 0) + transcription_ms, 1
+                ),
+            }, ensure_ascii=False))
 
         rejection_reason = transcript_rejection_reason(text)
         if not text or rejection_reason:
@@ -1145,8 +1151,28 @@ def main():
     start_voice_session_heartbeat()
     print("\nKage Voice prêt.")
 
-    start_direct = START_LISTENING_ON_LAUNCH
+    text_mode = TEXT_MODE_ON_START
+    if text_mode:
+        print("⌨️ Mode écriture actif — tape une phrase puis Entrée. /micro revient au micro, /q quitte.")
+    start_direct = START_LISTENING_ON_LAUNCH or text_mode
     while True:
+        if text_mode:
+            try:
+                choice = input("\n⌨️ Texte (/micro = microphone, /q = quitter) : ").strip()
+            except (EOFError, KeyboardInterrupt):
+                break
+            if choice.lower() in {"/q", "q", "quit", "quitter"}:
+                break
+            if choice.lower() in {"/micro", "micro", "m"}:
+                text_mode = False
+                print("🎤 Mode microphone actif.")
+                continue
+            if not choice:
+                continue
+            outcome = handle_utterance(MAX_RECORD_SECONDS, simulated_text=choice)
+            if outcome == "shutdown":
+                break
+            continue
         if hold_is_active():
             start_direct = True
         if WAKE_WORD_ENABLED and not start_direct:
@@ -1168,9 +1194,13 @@ def main():
                 wait_time = FOLLOW_UP_TIMEOUT_SECONDS
                 # Do not fall through to the keyboard-only branch.
             else:
-                choice = input("\nEntrée = parler | q = quitter : ")
+                choice = input("\nEntrée = parler | t = mode écriture | q = quitter : ")
                 if choice.lower() == "q":
                     break
+                if choice.lower() in {"t", "texte", "/texte"}:
+                    text_mode = True
+                    print("⌨️ Mode écriture actif — tape une phrase puis Entrée. /micro revient au micro.")
+                    continue
                 wait_time = MAX_RECORD_SECONDS
 
         while True:
