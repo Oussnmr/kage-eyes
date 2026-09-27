@@ -528,7 +528,6 @@ class SentencePlayback:
 
         def play_prepared_audio():
             nonlocal first_useful_audio_logged
-            opening_done = not thinking_cue
             waiting_used = False
 
             def play_waiting_reply():
@@ -555,20 +554,15 @@ class SentencePlayback:
                 time.sleep(0.32)
 
             try:
+                # Conversational sequence requested by the user:
+                # end-of-speech -> cue -> cached opening -> streamed reply.
+                # The synthesis worker runs in parallel, so complete reply
+                # sentences keep filling the queue while these sounds play.
+                if thinking_cue:
+                    play_thinking_cue()
+                    play_waiting_reply()
                 while True:
-                    if not opening_done and stream_started_at:
-                        remaining = 3.0 - (time.perf_counter() - stream_started_at)
-                        try:
-                            prepared = audio.get(timeout=max(0.0, remaining))
-                        except queue.Empty:
-                            # No useful sentence by 3 s: the pre-recorded
-                            # opening precedes the thinking cue.
-                            play_waiting_reply()
-                            play_thinking_cue()
-                            opening_done = True
-                            continue
-                    else:
-                        prepared = audio.get()
+                    prepared = audio.get()
                     if prepared is None:
                         return
                     samples, clean_text, useful = prepared
@@ -577,11 +571,6 @@ class SentencePlayback:
                             return
                     if useful and not release_useful.wait(timeout=None):
                         return
-                    if useful and not opening_done:
-                        if time.perf_counter() - stream_started_at >= 3.0:
-                            play_waiting_reply()
-                        play_thinking_cue()
-                        opening_done = True
                     if useful and not first_useful_audio_logged:
                         print(json.dumps({
                             "event": "tts_first_useful_audio",

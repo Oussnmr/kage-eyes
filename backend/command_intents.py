@@ -35,29 +35,24 @@ ROBOT_PHRASES = {
         "back to idle", "arrete", "reviens a la normale", "retourne a la normale",
         "redeviens normal", "redeviens normale", "calme toi", "reviens normal",
         "retourne a ton etat normal", "mets toi en mode normal", "au repos",
-        "word normaal", "doe weer normaal", "ga terug naar normaal", "kalmeer",
-        "terug naar normaal", "ga naar ruststand",
     ),
     "blink": (
         "blink", "blink your eyes", "blink twice", "close and open your eyes",
         "cligne des yeux", "cligne", "clignote", "cligne deux fois",
-        "knipper", "knipper met je ogen", "knipper twee keer",
     ),
     "sleep": (
         "go to sleep", "sleep", "sleep now", "enter sleep mode", "take a nap",
         "rest", "go back to sleep", "endors toi", "va dormir", "retourne dormir",
         "rendort toi", "mets toi en veille", "passe en veille", "mode veille",
-        "ga slapen", "ga weer slapen", "terug naar slaapstand", "slaapstand",
     ),
     "angry": (
         "be angry", "get angry", "act angry", "look angry", "angry mode",
         "mets toi en colere", "sois en colere", "fais semblant d etre en colere",
-        "mode colere", "en colere", "word boos", "doe boos", "boze modus",
+        "mode colere", "en colere",
     ),
     "dizzy": (
         "spin", "spin around", "get dizzy", "act dizzy", "dizzy mode",
         "tourne sur toi meme", "etourdis toi", "mets toi en mode etourdi",
-        "word duizelig", "draai rond", "draai om jezelf", "duizelige modus",
     ),
 }
 
@@ -66,13 +61,11 @@ BACKEND_PHRASES = {
         "switch to local", "use local", "go local", "local mode", "use ollama",
         "switch to ollama", "go back to local", "passe en local", "mode local",
         "utilise le mode local", "repasse en local", "utilise ollama",
-        "schakel over naar lokaal", "gebruik lokaal", "lokale modus", "gebruik ollama",
     ),
     "codex": (
         "switch to chatgpt", "switch to codex", "use chatgpt", "use codex",
         "back to chatgpt", "cloud mode", "passe sur chatgpt", "repasse sur chatgpt",
         "utilise chatgpt", "mode chatgpt", "passe sur codex", "utilise codex",
-        "schakel over naar chatgpt", "gebruik chatgpt", "gebruik codex",
     ),
 }
 
@@ -83,51 +76,43 @@ SESSION_END_PHRASES = (
     "arrete de parler", "arrete d ecouter", "termine la conversation",
     "fin de conversation", "c est tout", "au revoir", "tais toi",
     "retourne dormir", "va dormir", "rendort toi", "reviens plus tard",
-    "stop met luisteren", "stop met praten", "einde gesprek", "tot ziens",
-    "ga weer slapen", "sluit de tent", "sluit de boel af",
 )
 
-SHUTDOWN_PHRASES = ("close the shop", "close everything", "close everything down",
-                    "sluit de tent", "sluit de boel af")
+SHUTDOWN_PHRASES = ("close the shop", "close everything", "close everything down")
 
 PROFILE_PHRASES = {
     "nightshift": (
         "nightshift", "night shift", "night mode", "mode nuit", "mode nocturne",
         "active le mode nuit", "passe en mode nuit", "mets night shift",
-        "nachtmodus", "nacht stand", "zet nachtmodus aan", "schakel nachtmodus in",
     ),
     "rest": (
         "rest mode", "restmode", "rest time", "mode repos", "mode detente",
-        "active le mode repos", "passe en mode repos", "rustmodus", "ruststand",
-        "zet rustmodus aan", "schakel ruststand in",
+        "active le mode repos", "passe en mode repos",
     ),
 }
 
 DEVICE_ALIASES = {
     "light": ("light", "lights", "main light", "ceiling light", "ceiling",
-              "lumiere", "lumieres", "plafonnier", "plafonier", "eclairage",
-              "licht", "lichten", "plafondlamp", "verlichting"),
-    "lamp": ("lamp", "desk lamp", "bedside lamp", "lampe", "lampje", "bureaulamp"),
+              "lumiere", "lumieres", "plafonnier", "plafonier", "eclairage"),
+    "lamp": ("lamp", "desk lamp", "bedside lamp", "lampe"),
     "projector": ("projector", "beamer", "projecteur", "videoprojecteur"),
     "leds": ("led", "leds", "led light", "led lights", "lumiere led", "lumieres led",
-             "bande led", "ruban led", "ledstrip", "led verlichting"),
+             "bande led", "ruban led"),
     "desk": ("desk power", "desk plug", "power strip", "multiprise", "multiprises",
-             "prise du bureau", "prise de bureau", "stekkerdoos", "bureau stopcontact"),
+             "prise du bureau", "prise de bureau"),
 }
 
 ON_PHRASES = (
     "turn on", "switch on", "power on", "enable", "allume", "allumer",
     "active", "activer", "mets en marche", "mets", "marche", "ouvre",
-    "zet aan", "doe aan", "schakel in", "aanzetten", "inschakelen",
 )
 OFF_PHRASES = (
     "turn off", "switch off", "power off", "shut off", "disable", "kill",
     "eteins", "eteindre", "coupe", "couper", "desactive", "desactiver",
     "ferme", "fermer", "arrete", "stoppe", "mets hors tension",
-    "zet uit", "doe uit", "schakel uit", "uitzetten", "uitschakelen",
 )
 ALL_PHRASES = ("everything", "all devices", "all the lights", "all lights",
-               "tout", "tous", "toutes les lumieres", "alle lichten", "alles", "alle apparaten")
+               "tout", "tous", "toutes les lumieres")
 
 
 def _complete_match(text, phrases):
@@ -160,8 +145,7 @@ def home_intent(text):
     # A question about the setting is not an instruction to change it.
     if any(text.startswith(prefix) for prefix in (
         "what is ", "what does ", "why ", "how ", "qu est ce que ",
-        "pourquoi ", "comment ", "je veux savoir ", "explique ",
-        "wat is ", "waarom ", "hoe ", "ik wil weten ", "tell me ",
+        "pourquoi ", "comment ", "je veux savoir ", "explique ", "tell me ",
     )):
         return None
     for profile, phrases in PROFILE_PHRASES.items():
@@ -169,9 +153,9 @@ def home_intent(text):
             return "profile", profile
     on = any(has(text, phrase) for phrase in ON_PHRASES)
     off = any(has(text, phrase) for phrase in OFF_PHRASES)
-    # Dutch and some English forms put the object between verb and particle.
-    on = on or bool(re.search(r"\b(?:zet|doe|schakel|turn|switch)\b.+\b(?:aan|in|on)\b$", text))
-    off = off or bool(re.search(r"\b(?:zet|doe|schakel|turn|switch)\b.+\b(?:uit|off)\b$", text))
+    # Some English forms put the object between verb and particle.
+    on = on or bool(re.search(r"\b(?:turn|switch)\b.+\bon\b$", text))
+    off = off or bool(re.search(r"\b(?:turn|switch)\b.+\boff\b$", text))
     if on == off:
         return None
     targets = {name for name, aliases in DEVICE_ALIASES.items()
