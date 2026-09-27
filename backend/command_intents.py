@@ -25,7 +25,15 @@ def clean_request(text):
     text = re.sub(r"^(?:hey |ok |okay )?(?:kage |cage )", "", text)
     text = re.sub(r"^(?:s il te plait |stp |svp |please |can you |could you |wil je |kun je |kan je |alsjeblieft )", "", text)
     text = re.sub(r" (?:s il te plait|stp|svp|please|alsjeblieft)$", "", text)
-    return text.strip()
+    text = text.strip()
+    # Stable phonetic STT confusions observed on the live M920q microphone.
+    # Keep these as exact rewrites so generic conversation is not affected.
+    transcript_corrections = {
+        "torn off de disc": "turn off the desk",
+        "turn off de disc": "turn off the desk",
+        "torn off the disc": "turn off the desk",
+    }
+    return transcript_corrections.get(text, text)
 
 
 ROBOT_PHRASES = {
@@ -98,7 +106,8 @@ DEVICE_ALIASES = {
     "projector": ("projector", "beamer", "projecteur", "videoprojecteur"),
     "leds": ("led", "leds", "led light", "led lights", "lumiere led", "lumieres led",
              "bande led", "ruban led"),
-    "desk": ("desk power", "desk plug", "power strip", "multiprise", "multiprises",
+    "desk": ("desk power", "desk plug", "power strip",
+             "multiprise", "multiprises",
              "prise du bureau", "prise de bureau"),
 }
 
@@ -108,7 +117,7 @@ ON_PHRASES = (
 )
 OFF_PHRASES = (
     "turn off", "switch off", "power off", "shut off", "disable", "kill",
-    "eteins", "eteindre", "coupe", "couper", "desactive", "desactiver",
+    "eteins", "eteint", "eteind", "eteindre", "coupe", "couper", "desactive", "desactiver",
     "ferme", "fermer", "arrete", "stoppe", "mets hors tension",
 )
 ALL_PHRASES = ("everything", "all devices", "all the lights", "all lights",
@@ -160,6 +169,10 @@ def home_intent(text):
         return None
     targets = {name for name, aliases in DEVICE_ALIASES.items()
                if any(has(text, alias) for alias in aliases)}
+    # "bureau/desk" alone means its power strip, but in "lumière du
+    # bureau/desk light" it is only a location qualifier.
+    if not targets and re.search(r"\b(?:le |the )?(?:bureau|desk)$", text):
+        targets.add("desk")
     # "led light" is one LED target, not both the LED strip and ceiling light.
     if "leds" in targets and any(has(text, phrase) for phrase in DEVICE_ALIASES["leds"]):
         without_leds = text
