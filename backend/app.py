@@ -55,7 +55,7 @@ OLLAMA_MODEL = "qwen3:4b-instruct-2507-q4_K_M"
 DEFAULT_CONVERSATION_BACKEND = os.getenv("KAGE_CONVERSATION_BACKEND", "ollama").strip().lower()
 SETTINGS_PATH = Path(os.getenv("KAGE_SETTINGS_PATH", r"C:\Kage\kage_settings.json"))
 KAGE_API_KEY = os.getenv("KAGE_API_KEY", "").strip()
-WEB_PIPELINE_VERSION = "web-progressive-v3.1"
+WEB_PIPELINE_VERSION = "web-progressive-v3.2"
 RESEARCH_MEMORY_TTL_SECONDS = 15 * 60
 
 AUDIO_SAMPLE_RATE = 16000
