@@ -7,7 +7,7 @@ from tts_service import kokoro_service
 from codex_bridge import CodexBridgeError, codex_bridge
 from web_search import format_web_context, needs_web_search, search_web
 from kage_sounds import play_sound
-from command_intents import direct_intent, home_intent
+from command_intents import direct_intent, home_intent, looks_like_home_command
 
 from faster_whisper import WhisperModel
 
@@ -201,6 +201,17 @@ def route_home_control(message: str):
     """Route every recognized home-device request directly to the local Python bridge."""
     intent = home_intent(message)
     if intent is None:
+        if looks_like_home_command(message):
+            current = current_state()
+            return {
+                "ok": False,
+                "heard": normalize_kage_name(message),
+                "reply": "Je n'ai pas compris la commande. Répète seulement l'action et l'appareil.",
+                "command": "none",
+                "sequence": current["sequence"],
+                "route": "home_clarification",
+                "speak": True,
+            }
         return None
     if intent[0] == "profile":
         profile_name = intent[1]

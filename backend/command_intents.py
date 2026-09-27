@@ -32,6 +32,8 @@ def clean_request(text):
         "torn off de disc": "turn off the desk",
         "turn off de disc": "turn off the desk",
         "torn off the disc": "turn off the desk",
+        "etrelle ledez": "eteins les leds",
+        "etrelle les ledez": "eteins les leds",
     }
     return transcript_corrections.get(text, text)
 
@@ -104,8 +106,8 @@ DEVICE_ALIASES = {
               "lumiere", "lumieres", "plafonnier", "plafonier", "eclairage"),
     "lamp": ("lamp", "desk lamp", "bedside lamp", "lampe"),
     "projector": ("projector", "beamer", "projecteur", "videoprojecteur"),
-    "leds": ("led", "leds", "led light", "led lights", "lumiere led", "lumieres led",
-             "bande led", "ruban led"),
+    "leds": ("led", "leds", "ledes", "ledez", "led light", "led lights",
+             "lumiere led", "lumieres led", "bande led", "ruban led"),
     "desk": ("desk power", "desk plug", "power strip",
              "multiprise", "multiprises",
              "prise du bureau", "prise de bureau"),
@@ -113,11 +115,12 @@ DEVICE_ALIASES = {
 
 ON_PHRASES = (
     "turn on", "switch on", "power on", "enable", "allume", "allumer",
-    "active", "activer", "mets en marche", "mets", "marche", "ouvre",
+    "active", "activer", "mets en marche", "mets", "marche", "ouvre", "lume", "lumes",
 )
 OFF_PHRASES = (
     "turn off", "switch off", "power off", "shut off", "disable", "kill",
-    "eteins", "eteint", "eteind", "eteindre", "coupe", "couper", "desactive", "desactiver",
+    "eteins", "eteint", "eteind", "eteindre", "etant", "coupe", "couper",
+    "desactive", "desactiver",
     "ferme", "fermer", "arrete", "stoppe", "mets hors tension",
 )
 ALL_PHRASES = ("everything", "all devices", "all the lights", "all lights",
@@ -186,4 +189,20 @@ def home_intent(text):
 
 
 def is_direct(text):
-    return direct_intent(text) is not None or home_intent(text) is not None
+    return (direct_intent(text) is not None or home_intent(text) is not None
+            or looks_like_home_command(text))
+
+
+def looks_like_home_command(text):
+    """Catch an ambiguous device command before it reaches the LLM."""
+    text = clean_request(text)
+    if any(text.startswith(prefix) for prefix in (
+        "what is ", "what does ", "why ", "how ", "qu est ce que ",
+        "pourquoi ", "comment ", "je veux savoir ", "explique ", "tell me ",
+    )):
+        return False
+    device_seen = any(
+        has(text, alias) for aliases in DEVICE_ALIASES.values() for alias in aliases
+    ) or bool(re.search(r"\b(?:bureau|desk)$", text))
+    command_seen = any(has(text, phrase) for phrase in ON_PHRASES + OFF_PHRASES)
+    return device_seen and command_seen

@@ -5,7 +5,9 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from command_intents import direct_intent, home_intent, session_intent  # noqa: E402
+from command_intents import (  # noqa: E402
+    direct_intent, home_intent, looks_like_home_command, session_intent,
+)
 
 
 class CommandIntentTests(unittest.TestCase):
@@ -35,6 +37,11 @@ class CommandIntentTests(unittest.TestCase):
             "Éteint le bureau": ("devices", ("desk",), False),
             "Turn off the desk": ("devices", ("desk",), False),
             "Torn off de disc": ("devices", ("desk",), False),
+            "Etrelle Lédez": ("devices", ("leds",), False),
+            "Étant les Leds": ("devices", ("leds",), False),
+            "Éteins les lèdes": ("devices", ("leds",), False),
+            "Lumes les LED": ("devices", ("leds",), True),
+            "Lume le bureau": ("devices", ("desk",), True),
             "Kill everything": ("devices", ("light", "lamp", "projector", "leds", "desk"), False),
             "Ferme tout": ("devices", ("light", "lamp", "projector", "leds", "desk"), False),
             "Night shift": ("profile", "nightshift"),
@@ -58,6 +65,9 @@ class CommandIntentTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIsNone(direct_intent(phrase))
                 self.assertIsNone(home_intent(phrase))
+
+        self.assertIsNone(home_intent("Lumes ou lume"))
+        self.assertFalse(looks_like_home_command("Lumes ou lume"))
 
 
 if __name__ == "__main__":
