@@ -839,11 +839,26 @@ def toggle_voice_from_waveshare(request: Request):
 def _launch_voice_direct() -> bool:
     """Open a visible console and return promptly, even while models load."""
     with voice_control_lock:
-        if current_state()["voice_active"] or _voice_process_count():
+        if current_state()["voice_active"]:
             return False
+        stale_count = _voice_process_count()
+        if stale_count:
+            # A previous console may have survived a crash or a duplicate
+            # launch. Clean every old voice process before starting one fresh.
+            cleanup = ("$voice = @(Get-CimInstance Win32_Process | Where-Object { "
+                       "$_.Name -eq 'python.exe' -and $_.CommandLine -and "
+                       "$_.CommandLine -like '*Kage*voice.py*' "
+                       "}); $voice | ForEach-Object { Stop-Process -Id $_.ProcessId -Force "
+                       "-ErrorAction SilentlyContinue }")
+            subprocess.run(["powershell.exe", "-NoProfile", "-Command", cleanup],
+                           capture_output=True, text=True, timeout=8, check=True)
         script = ("$host.UI.RawUI.WindowTitle='Kage Voice'; "
                   "$env:KAGE_START_LISTENING='1'; "
-                  "& 'C:\\Kage\\venv\\Scripts\\python.exe' 'C:\\Kage\\voice.py'")
+                  "$env:KAGE_SILENCE_AFTER_SPEECH='2.0'; "
+                  "$site='C:\\Kage\\venv\\Lib\\site-packages'; "
+                  "$env:PYTHONPATH=\"$site;$site\\win32;$site\\win32\\lib;$site\\pywin32_system32;C:\\Kage\"; "
+                  "$env:PATH=\"$site\\pywin32_system32;$env:PATH\"; "
+                  "& 'C:\\Users\\Oussama\\AppData\\Local\\Programs\\Python\\Python312\\python.exe' 'C:\\Kage\\voice.py'")
         subprocess.Popen([
             "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
             "-Command", script,
