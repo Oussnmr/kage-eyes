@@ -5,6 +5,7 @@ import re
 import html
 import threading
 import time
+import unicodedata
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from html.parser import HTMLParser
@@ -25,10 +26,11 @@ WEB_TRIGGER_RE = re.compile(
     r"what's the price of|price of|cost of|worth of|current value of|"
     r"latest news about|today's news about|today news about|"
     r"cherche(?: sur internet| en ligne)?|recherche(?: sur internet| en ligne)?|"
-    r"regarde en ligne|verifie en ligne|utilise internet|utilise le web|"
+    r"regarde en ligne|regarder en ligne|verifie en ligne|verifier en ligne|"
+    r"tu peux regarder|peux tu regarder|utilise internet|utilise le web|"
     r"quelle est la meteo|quel temps fait il|previsions meteo|temperature a|"
     r"combien coute|quel est le prix de|prix actuel de|cours actuel de|"
-    r"dernieres nouvelles sur|actualites? sur)\b",
+    r"dernieres nouvelles sur|dernieres nouvelles de|actualites? sur|actualites? de)\b",
     re.IGNORECASE,
 )
 
@@ -36,7 +38,8 @@ SEARCH_PREFIX_RE = re.compile(
     r"^\s*(?:kage\s*)?(?:please\s*)?(?:search(?: the web| online)?|"
     r"look (?:it|this|that) up(?: online)?|check online|use the internet|"
     r"cherche(?: sur internet| en ligne)?|recherche(?: sur internet| en ligne)?|"
-    r"regarde en ligne|verifie en ligne|utilise internet|utilise le web)"
+    r"regarde en ligne|regarder en ligne|verifie en ligne|verifier en ligne|"
+    r"tu peux regarder|peux tu regarder|utilise internet|utilise le web)"
     r"\s*(?:for|about|pour|sur|a propos de)?\s*",
     re.IGNORECASE,
 )
@@ -44,6 +47,11 @@ SEARCH_PREFIX_RE = re.compile(
 _CACHE_TTL_SECONDS = 120.0
 _search_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _cache_lock = threading.Lock()
+
+
+def _search_normalized(text: str) -> str:
+    text = unicodedata.normalize("NFKD", text.lower())
+    return "".join(char for char in text if not unicodedata.combining(char))
 
 
 class _PageTextParser(HTMLParser):
@@ -92,11 +100,12 @@ def fetch_page_text(url: str) -> str:
 
 
 def needs_web_search(message: str) -> bool:
-    return bool(WEB_TRIGGER_RE.search(message))
+    return bool(WEB_TRIGGER_RE.search(_search_normalized(message)))
 
 
 def search_query(message: str) -> str:
-    query = SEARCH_PREFIX_RE.sub("", message).lstrip(":, ").strip(" .?!")
+    normalized = _search_normalized(message)
+    query = SEARCH_PREFIX_RE.sub("", normalized).lstrip(":, ").strip(" .?!")
     return query if len(query) >= 5 else message
 
 
