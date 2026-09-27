@@ -45,11 +45,19 @@ class ProgressiveWebTests(unittest.TestCase):
     def test_continuation_phrases(self):
         for phrase in (
             "continue", "Donne-moi plus d'informations", "Dis-m'en plus",
-            "Tell me more", "Continue the search",
+            "Tell me more", "Continue the search", "Continu", "Tu peux continuer",
         ):
             with self.subTest(phrase=phrase):
                 self.assertTrue(web_search.is_web_continuation(phrase))
         self.assertFalse(web_search.is_web_continuation("Continue la musique"))
+
+    def test_french_news_for_triggers_background_research(self):
+        for phrase in (
+            "Quelles sont les dernières actualités pour la Belgique ?",
+            "Actualités pour la société Renault",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertTrue(web_search.needs_web_search(phrase))
 
     @patch.object(web_search, "DDGS", FakeDDGS)
     @patch.object(web_search, "fetch_page_text", return_value="page")

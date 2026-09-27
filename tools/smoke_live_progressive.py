@@ -6,6 +6,7 @@ import json
 import os
 import time
 import urllib.request
+import argparse
 
 
 BASE_URL = "http://127.0.0.1:8000"
@@ -51,11 +52,18 @@ def status() -> dict:
 
 
 def main() -> None:
-    first = stream("Combien coûte un iPhone 13, reconditionné en ligne ?")
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "prompt", nargs="?",
+        default="Combien coûte un iPhone 13, reconditionné en ligne ?",
+    )
+    parser.add_argument("continuation", nargs="?", default="Continue")
+    args = parser.parse_args()
+    first = stream(args.prompt)
     deadline = time.monotonic() + 12
     while time.monotonic() < deadline and status().get("background_research") == "running":
         time.sleep(0.25)
-    second = stream("Continue")
+    second = stream(args.continuation)
     print(json.dumps({
         "pipeline": status().get("web_pipeline"),
         "background_research": status().get("background_research"),

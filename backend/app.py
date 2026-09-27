@@ -55,7 +55,7 @@ OLLAMA_MODEL = "qwen3:4b-instruct-2507-q4_K_M"
 DEFAULT_CONVERSATION_BACKEND = os.getenv("KAGE_CONVERSATION_BACKEND", "ollama").strip().lower()
 SETTINGS_PATH = Path(os.getenv("KAGE_SETTINGS_PATH", r"C:\Kage\kage_settings.json"))
 KAGE_API_KEY = os.getenv("KAGE_API_KEY", "").strip()
-WEB_PIPELINE_VERSION = "web-progressive-v3"
+WEB_PIPELINE_VERSION = "web-progressive-v3.1"
 RESEARCH_MEMORY_TTL_SECONDS = 15 * 60
 
 AUDIO_SAMPLE_RATE = 16000
@@ -158,6 +158,23 @@ def start_background_research(message: str) -> None:
     threading.Thread(target=research, name="kage-background-research", daemon=True).start()
 
 
+def clear_research_memory() -> None:
+    """Detach stale research whenever the conversation moves to a new topic."""
+    with research_memory_lock:
+        previous_ready = research_memory.get("ready")
+        research_memory.update({
+            "generation": int(research_memory["generation"]) + 1,
+            "query": None,
+            "data": None,
+            "status": "empty",
+            "updated_at": time.monotonic(),
+            "ready": None,
+            "continuations": 0,
+        })
+        if previous_ready is not None:
+            previous_ready.set()
+
+
 def latest_research(wait_seconds: float = 0.0) -> dict | None:
     """Return fresh completed research, optionally waiting briefly for it."""
     with research_memory_lock:
@@ -184,7 +201,7 @@ def research_status() -> str:
 
 
 def prepare_codex_web_request(message: str) -> tuple[str, str | None, bool, bool]:
-    """Choose quick foreground context or the cached background continuation."""
+    """Choose a new foreground query or the immediately preceding research."""
     if is_web_continuation(message):
         cached = latest_research(wait_seconds=1.5)
         if cached:
@@ -199,6 +216,9 @@ def prepare_codex_web_request(message: str) -> tuple[str, str | None, bool, bool
             }, ensure_ascii=False))
             return follow_up, format_web_context(cached["data"]), False, False
 
+    # A bare continuation always refers to the immediately preceding answer.
+    # Once another topic begins, older research must never leak into it.
+    clear_research_memory()
     explicit_web_request = needs_web_search(message)
     if not explicit_web_request:
         return message, None, False, False
@@ -544,7 +564,7 @@ def process_message(message: str) -> dict:
                 web_search_requested=explicit_web_request,
                 timeout=75,
             )
-            if enrich_after:
+            if enrich_after or codex.get("web_search_calls", 0) > 0:
                 start_background_research(message)
             reply = codex["reply"] or "Je n'ai pas réussi à formuler une réponse."
             current = current_state()
@@ -730,7 +750,8 @@ def stream_message_events(message: str):
                 on_delta=stream_delta,
                 timeout=75,
             )
-            if enrich_after and not enrichment_started:
+            if ((enrich_after or codex.get("web_search_calls", 0) > 0)
+                    and not enrichment_started):
                 start_background_research(message)
             reply = codex["reply"] or "I could not form a response."
             current = current_state()

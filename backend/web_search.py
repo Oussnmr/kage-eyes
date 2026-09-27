@@ -30,7 +30,8 @@ WEB_TRIGGER_RE = re.compile(
     r"tu peux regarder|peux tu regarder|utilise internet|utilise le web|"
     r"quelle est la meteo|quel temps fait il|previsions meteo|temperature a|"
     r"combien coute|quel est le prix de|prix actuel de|cours actuel de|"
-    r"dernieres nouvelles sur|dernieres nouvelles de|actualites? sur|actualites? de)\b",
+    r"dernieres nouvelles sur|dernieres nouvelles de|dernieres actualites?|"
+    r"actualites? sur|actualites? de|actualites? pour)\b",
     re.IGNORECASE,
 )
 
@@ -45,10 +46,11 @@ SEARCH_PREFIX_RE = re.compile(
 )
 
 WEB_CONTINUATION_RE = re.compile(
-    r"^(?:continue|continuer|continue la recherche|continue de chercher|"
+    r"^(?:continue|continu|continuer|poursuis|tu peux continuer|peux tu continuer|"
+    r"continue la recherche|continue de chercher|"
     r"donne moi plus d informations?|donne moi plus d infos?|plus d informations?|"
     r"plus d infos?|dis m en plus|vas y continue|tell me more|go on|"
-    r"continue the search|keep searching)$",
+    r"continue the search|keep searching|go ahead)$",
     re.IGNORECASE,
 )
 
