@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import re
 import html
+import threading
+import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urlparse
@@ -20,16 +23,27 @@ WEB_TRIGGER_RE = re.compile(
     r"search the internet|find this online|what(?:'s| is) the weather in|"
     r"weather forecast for|temperature in|how much is|what is the price of|"
     r"what's the price of|price of|cost of|worth of|current value of|"
-    r"latest news about|today's news about|today news about)\b",
+    r"latest news about|today's news about|today news about|"
+    r"cherche(?: sur internet| en ligne)?|recherche(?: sur internet| en ligne)?|"
+    r"regarde en ligne|verifie en ligne|utilise internet|utilise le web|"
+    r"quelle est la meteo|quel temps fait il|previsions meteo|temperature a|"
+    r"combien coute|quel est le prix de|prix actuel de|cours actuel de|"
+    r"dernieres nouvelles sur|actualites? sur)\b",
     re.IGNORECASE,
 )
 
 SEARCH_PREFIX_RE = re.compile(
     r"^\s*(?:kage\s*)?(?:please\s*)?(?:search(?: the web| online)?|"
-    r"look (?:it|this|that) up(?: online)?|check online|use the internet)"
-    r"\s*(?:for|about)?\s*",
+    r"look (?:it|this|that) up(?: online)?|check online|use the internet|"
+    r"cherche(?: sur internet| en ligne)?|recherche(?: sur internet| en ligne)?|"
+    r"regarde en ligne|verifie en ligne|utilise internet|utilise le web)"
+    r"\s*(?:for|about|pour|sur|a propos de)?\s*",
     re.IGNORECASE,
 )
+
+_CACHE_TTL_SECONDS = 120.0
+_search_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_cache_lock = threading.Lock()
 
 
 class _PageTextParser(HTMLParser):
@@ -64,14 +78,15 @@ def fetch_page_text(url: str) -> str:
         headers={"User-Agent": "Kage/1.0 (current-information lookup)"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=8) as response:
+        with urllib.request.urlopen(request, timeout=4) as response:
             content_type = response.headers.get("Content-Type", "").lower()
             if "text/html" not in content_type:
                 return ""
-            raw = response.read(400_000)
+            raw = response.read(250_000)
         parser = _PageTextParser()
         parser.feed(raw.decode("utf-8", errors="replace"))
-        return " ".join(parser.parts)[:3500]
+        text = re.sub(r"\s+", " ", " ".join(parser.parts)).strip()
+        return text[:3000]
     except Exception:
         return ""
 
@@ -89,8 +104,16 @@ def search_web(message: str) -> dict[str, Any]:
     """Return compact search results; never raises into the voice pipeline."""
     if DDGS is None:
         return {"query": message, "results": [], "error": "search dependency unavailable"}
+    query = search_query(message)
+    cache_key = query.casefold()
+    with _cache_lock:
+        cached = _search_cache.get(cache_key)
+        if cached and time.monotonic() - cached[0] < _CACHE_TTL_SECONDS:
+            result = dict(cached[1])
+            result["cached"] = True
+            return result
     try:
-        rows = DDGS(timeout=8).text(search_query(message), max_results=5)
+        rows = DDGS(timeout=5).text(query, max_results=5)
         results = []
         for row in rows or []:
             title = str(row.get("title", "")).strip()
@@ -98,9 +121,21 @@ def search_web(message: str) -> dict[str, Any]:
             body = str(row.get("body", row.get("snippet", ""))).strip()
             if title and url:
                 results.append({"title": title[:180], "url": url[:500], "snippet": body[:500]})
-        for result in results[:2]:
-            result["page_text"] = fetch_page_text(result["url"])
-        return {"query": message, "results": results}
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="kage-web") as pool:
+            futures = {
+                pool.submit(fetch_page_text, result["url"]): result
+                for result in results[:2]
+            }
+            for future in as_completed(futures):
+                result = futures[future]
+                try:
+                    result["page_text"] = future.result(timeout=4)
+                except Exception:
+                    result["page_text"] = ""
+        payload = {"query": message, "results": results}
+        with _cache_lock:
+            _search_cache[cache_key] = (time.monotonic(), payload)
+        return payload
     except Exception as exc:
         return {"query": message, "results": [], "error": type(exc).__name__}
 
