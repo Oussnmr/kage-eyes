@@ -16,6 +16,7 @@ import time
 import hashlib
 import atexit
 import tkinter as tk
+import msvcrt
 from pocketsphinx import LiveSpeech
 from kage_sounds import play_sound, start_loop, stop_loop
 from stt_engine import KageSTT
@@ -80,6 +81,7 @@ MAX_RECORD_SECONDS = 12
 PRE_ROLL_SECONDS = 0.30
 WAKE_WORD_ENABLED = os.getenv("KAGE_WAKE_WORD", "1").strip().lower() in {"1", "true", "yes", "on"}
 TEXT_MODE_ON_START = os.getenv("KAGE_TEXT_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
+TEXT_MODE_HOTKEY = os.getenv("KAGE_TEXT_HOTKEY", "t").strip().lower()[:1] or "t"
 WAKE_KEYPHRASE = "wake up"
 START_LISTENING_ON_LAUNCH = os.getenv("KAGE_START_LISTENING", "0").strip().lower() in {"1", "true", "yes"}
 WAKE_THRESHOLD = float(os.getenv("KAGE_WAKE_THRESHOLD", "1e-18"))
@@ -358,6 +360,16 @@ def wait_for_wake_word(stop_event=None, announce=True, keyphrase=None):
         listener.ad.start()
         while stop_event is None or not stop_event.is_set():
             _start_text_window_if_requested()
+            if msvcrt.kbhit():
+                key = msvcrt.getwch().lower()
+                if key == TEXT_MODE_HOTKEY:
+                    try:
+                        open(VOICE_TEXT_MODE_FLAG, "w", encoding="ascii").close()
+                    except OSError:
+                        pass
+                    _start_text_window_if_requested()
+                    print("⌨️ Fenêtre texte ouverte — Entrée envoie, Retour au micro la ferme.")
+                    continue
             try:
                 return ("text_input", TEXT_INPUT_QUEUE.get_nowait())
             except queue.Empty:

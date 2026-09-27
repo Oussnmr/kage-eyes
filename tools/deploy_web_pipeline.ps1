@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$version = 'web-progressive-v3.9'
+$version = 'web-progressive-v4.0'
 $files = @('app.py', 'codex_bridge.py', 'voice.py', 'web_search.py', 'stt_engine.py', 'kage_sounds.py')
 $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $backupDir = Join-Path $RollbackRoot "${version}_$stamp"
