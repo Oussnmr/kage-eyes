@@ -1138,7 +1138,19 @@ def handle_utterance(wait_for_speech_seconds, simulated_text=None):
             return True
 
         print(f"📝 Entendu : {text}")
-        print(json.dumps({"event": "stt_result", **stt_result.log_payload()}, ensure_ascii=False))
+        if simulated_text is not None:
+            print(json.dumps({
+                "event": "stt_result",
+                "text": text,
+                "engine": "text_mode",
+                "duration_ms": 0.0,
+                "language": current_response_language(),
+                "confidence": 1.0,
+                "confidence_usable": True,
+                "fallback_used": False,
+            }, ensure_ascii=False))
+        else:
+            print(json.dumps({"event": "stt_result", **stt_result.log_payload()}, ensure_ascii=False))
 
         # The cue now means that Kagé accepted intelligible speech and is
         # starting to process it. Rejected/empty transcripts remain silent.
