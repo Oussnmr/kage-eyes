@@ -252,6 +252,10 @@ def current_voice_settings():
 def current_response_language():
     return current_voice_settings()[0]
 
+
+def listening_announcement():
+    return "Kagé is listening." if current_response_language() == "en" else "Kagé t'écoute."
+
 def load_waiting_audio():
     _waiting_audio.clear()
     for phrase in WAITING_REPLIES:
@@ -1107,13 +1111,13 @@ def main():
             if wake_source == "wake_word":
                 play_sound("wake_listening")
             if wake_source != "hold" and not hold_is_active():
-                speak("Kagé t'écoute.")
+                speak(listening_announcement())
             wait_time = FOLLOW_UP_TIMEOUT_SECONDS
         else:
             start_direct = False
             if WAKE_WORD_ENABLED:
                 if not hold_is_active():
-                    speak("Kagé t'écoute.")
+                    speak(listening_announcement())
                 wait_time = FOLLOW_UP_TIMEOUT_SECONDS
                 # Do not fall through to the keyboard-only branch.
             else:
