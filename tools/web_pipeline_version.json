@@ -1,0 +1,9 @@
+{
+  "version": "web-native-v2",
+  "description": "Codex native live web search with automatic freshness routing and source-aware voice answers.",
+  "codex_web_search": "live",
+  "codex_web_context": "low",
+  "local_search_fallback": "DuckDuckGo for Ollama",
+  "live_files": ["app.py", "codex_bridge.py"],
+  "rollback": "tools/rollback_web_pipeline.ps1"
+}

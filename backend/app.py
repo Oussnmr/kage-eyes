@@ -50,6 +50,7 @@ OLLAMA_MODEL = "qwen3:4b-instruct-2507-q4_K_M"
 DEFAULT_CONVERSATION_BACKEND = os.getenv("KAGE_CONVERSATION_BACKEND", "ollama").strip().lower()
 SETTINGS_PATH = Path(os.getenv("KAGE_SETTINGS_PATH", r"C:\Kage\kage_settings.json"))
 KAGE_API_KEY = os.getenv("KAGE_API_KEY", "").strip()
+WEB_PIPELINE_VERSION = "web-native-v2"
 
 AUDIO_SAMPLE_RATE = 16000
 AUDIO_CHANNELS = 1
@@ -413,8 +414,12 @@ def process_message(message: str) -> dict:
     if home_control is not None:
         return home_control
 
+    backend = get_conversation_backend()
+    explicit_web_request = needs_web_search(message)
     web_context = None
-    if needs_web_search(message):
+    # Codex has its own hosted search tool and decides when current information
+    # is needed. Keep the local DDGS adapter only for the Ollama fallback.
+    if backend != "codex" and explicit_web_request:
         web_data = search_web(message)
         web_context = format_web_context(web_data)
         print(json.dumps({
@@ -423,12 +428,14 @@ def process_message(message: str) -> dict:
             "available": not bool(web_data.get("error")),
         }, ensure_ascii=False))
 
-    backend = get_conversation_backend()
     language = get_response_language()
     if backend == "codex":
         try:
             codex = codex_bridge.ask(
-                message, web_context=web_context, response_language=language, timeout=60
+                message,
+                response_language=language,
+                web_search_requested=explicit_web_request,
+                timeout=75,
             )
             reply = codex["reply"] or "Je n'ai pas réussi à formuler une réponse."
             current = current_state()
@@ -437,6 +444,9 @@ def process_message(message: str) -> dict:
                 "first_delta_ms": codex["first_delta_ms"],
                 "total_ms": codex["total_ms"],
                 "model": codex["model"],
+                "web_search_calls": codex.get("web_search_calls", 0),
+                "web_search_mode": codex.get("web_search_mode"),
+                "web_pipeline": WEB_PIPELINE_VERSION,
             }, ensure_ascii=False))
             return {
                 "ok": True,
@@ -569,8 +579,10 @@ def stream_message_events(message: str):
         yield {"type": "done", "result": home_control}
         return
 
+    backend = get_conversation_backend()
+    explicit_web_request = needs_web_search(message)
     web_context = None
-    if needs_web_search(message):
+    if backend != "codex" and explicit_web_request:
         web_data = search_web(message)
         web_context = format_web_context(web_data)
         print(json.dumps({
@@ -579,7 +591,6 @@ def stream_message_events(message: str):
             "available": not bool(web_data.get("error")),
         }, ensure_ascii=False))
 
-    backend = get_conversation_backend()
     language = get_response_language()
     if backend != "codex":
         result = process_message(message)
@@ -596,8 +607,9 @@ def stream_message_events(message: str):
                 message,
                 web_context=web_context,
                 response_language=language,
+                web_search_requested=explicit_web_request,
                 on_delta=lambda text: events.put({"type": "delta", "text": text}),
-                timeout=60,
+                timeout=75,
             )
             reply = codex["reply"] or "I could not form a response."
             current = current_state()
@@ -616,6 +628,9 @@ def stream_message_events(message: str):
                 "first_delta_ms": codex["first_delta_ms"],
                 "total_ms": codex["total_ms"],
                 "model": codex["model"],
+                "web_search_calls": codex.get("web_search_calls", 0),
+                "web_search_mode": codex.get("web_search_mode"),
+                "web_pipeline": WEB_PIPELINE_VERSION,
             }, ensure_ascii=False))
             events.put({"type": "done", "result": result})
         except CodexBridgeError as exc:
@@ -784,6 +799,9 @@ def get_status(request: Request):
         "conversation_backend": get_conversation_backend(),
         "voice_active": current["voice_active"],
         "codex_model": os.getenv("KAGE_CODEX_MODEL", "gpt-5.6-luna"),
+        "web_pipeline": WEB_PIPELINE_VERSION,
+        "codex_web_search": os.getenv("KAGE_CODEX_WEB_SEARCH", "live"),
+        "codex_web_context": os.getenv("KAGE_CODEX_WEB_CONTEXT", "low"),
     }
 
 
