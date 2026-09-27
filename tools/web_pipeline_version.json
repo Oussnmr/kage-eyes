@@ -1,6 +1,6 @@
 {
-  "version": "web-progressive-v3.1",
-  "description": "Topic-bound progressive research with five-word first audio and three spoken sentences.",
+  "version": "web-progressive-v3.2",
+  "description": "Topic-bound progressive research with natural five-to-eight-word first sentences and three spoken sentences.",
   "codex_web_search": "live",
   "codex_web_context": "low",
   "local_search_fallback": "DuckDuckGo background cache and Ollama fallback",

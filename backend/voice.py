@@ -670,7 +670,8 @@ class SentencePlayback:
 
 
 MAX_SPOKEN_SENTENCES = 3
-FIRST_SPOKEN_CHUNK_WORDS = 5
+FIRST_SPOKEN_MIN_WORDS = 5
+FIRST_SPOKEN_MAX_WORDS = 8
 
 
 def split_complete_sentences(buffer, max_words=None):
@@ -680,10 +681,10 @@ def split_complete_sentences(buffer, max_words=None):
         match = re.search(r"[.!?](?=\s|$)", buffer)
         clause_match = re.search(r"[;:](?=\s)", buffer)
 
-        # The first spoken unit is intentionally tiny. This bounds Kokoro's
-        # time-to-first-audio even if the model ignores the short-first-sentence
-        # instruction. Wait for a following character so a still-streaming
-        # fifth word is never cut in half.
+        # Keep the first spoken unit as a real short sentence. We wait through
+        # five words for the model's own full stop, but force a safe boundary at
+        # eight words if the model ignores the instruction. A forced boundary
+        # gets a period so Kokoro does not read a bare sentence fragment.
         if max_words:
             words = list(re.finditer(r"[0-9A-Za-zÀ-ÖØ-öø-ÿ]+(?:['’][0-9A-Za-zÀ-ÖØ-öø-ÿ]+)?", buffer))
             if len(words) >= max_words:
@@ -695,7 +696,7 @@ def split_complete_sentences(buffer, max_words=None):
                         phrase = buffer[:cut].strip()
                         buffer = buffer[cut:].lstrip(" ,;:-")
                         if phrase:
-                            complete.append(phrase)
+                            complete.append(phrase.rstrip(".!?") + ".")
                         max_words = None
                         continue
 
@@ -779,7 +780,7 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
             pending += delta
             sentences, pending = split_complete_sentences(
                 pending,
-                max_words=FIRST_SPOKEN_CHUNK_WORDS if complete_sentence_count == 0 else None,
+                max_words=FIRST_SPOKEN_MAX_WORDS if complete_sentence_count == 0 else None,
             )
             for sentence in sentences:
                 if complete_sentence_count >= MAX_SPOKEN_SENTENCES:

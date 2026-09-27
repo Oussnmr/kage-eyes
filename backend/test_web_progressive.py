@@ -66,14 +66,20 @@ class ProgressiveWebTests(unittest.TestCase):
         self.assertEqual(len(result["results"]), 5)
         self.assertEqual(fetch.call_count, 2)
 
-    def test_first_spoken_chunk_is_five_words(self):
+    def test_first_spoken_chunk_is_a_real_short_sentence(self):
         split = load_sentence_splitter()
         chunks, remainder = split(
             "An iPhone 13 refurbished online currently costs about 300 euros.",
-            max_words=5,
+            max_words=8,
         )
-        self.assertEqual(chunks[0], "An iPhone 13 refurbished online")
-        self.assertEqual(chunks[1], "currently costs about 300 euros.")
+        self.assertEqual(chunks, ["An iPhone 13 refurbished online currently costs about.",
+                                  "300 euros."])
+        self.assertEqual(remainder, "")
+
+    def test_short_model_sentence_keeps_its_period(self):
+        split = load_sentence_splitter()
+        chunks, remainder = split("Around three hundred euros.", max_words=8)
+        self.assertEqual(chunks, ["Around three hundred euros."])
         self.assertEqual(remainder, "")
 
 
