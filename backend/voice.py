@@ -16,7 +16,7 @@ import time
 import hashlib
 import atexit
 from pocketsphinx import LiveSpeech
-from kage_sounds import play_sound
+from kage_sounds import play_sound, start_loop, stop_loop
 from stt_engine import KageSTT
 from command_intents import is_direct, session_intent
 
@@ -242,7 +242,7 @@ def current_voice_settings():
         saved = json.loads(open(SETTINGS_PATH, "r", encoding="utf-8").read())
     except (OSError, json.JSONDecodeError):
         saved = {}
-    language = saved.get("response_language", "fr")
+    language = saved.get("response_language", "en")
     if language not in {"fr", "en"}:
         language = "fr"
     expected_voice = "am_puck" if language == "en" else "ff_siwis"
@@ -556,6 +556,7 @@ class SentencePlayback:
         def play_prepared_audio():
             nonlocal first_useful_audio_logged
             waiting_used = False
+            recording_loop = None
 
             def play_waiting_reply():
                 nonlocal waiting_used
@@ -586,6 +587,7 @@ class SentencePlayback:
                 if thinking_cue:
                     play_thinking_cue()
                     play_waiting_reply()
+                    recording_loop = start_loop("recording_loop")
                 while True:
                     prepared = audio.get()
                     if prepared is None:
@@ -597,6 +599,8 @@ class SentencePlayback:
                     if useful and not release_useful.wait(timeout=None):
                         return
                     if useful and not first_useful_audio_logged:
+                        stop_loop(recording_loop)
+                        recording_loop = None
                         print(json.dumps({
                             "event": "tts_first_useful_audio",
                             "since_stream_start_ms": round((time.perf_counter() - stream_started_at) * 1000, 1)
@@ -612,6 +616,7 @@ class SentencePlayback:
                     elif clean_text:
                         print(json.dumps({"event": "tts_skipped", "reason": "no_french_voice"}, ensure_ascii=False))
             finally:
+                stop_loop(recording_loop)
                 if thinking_cue:
                     print(json.dumps({"event": "waiting_reply", "used": waiting_used}, ensure_ascii=False))
                 with self._lock:

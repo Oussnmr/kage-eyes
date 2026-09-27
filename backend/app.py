@@ -232,7 +232,7 @@ def load_conversation_backend() -> str:
 
 
 conversation_backend = load_conversation_backend()
-response_language = "fr"
+response_language = "en"
 try:
     _saved_settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
     if _saved_settings.get("response_language") in {"fr", "en"}:

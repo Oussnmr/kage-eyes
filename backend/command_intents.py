@@ -82,12 +82,12 @@ BACKEND_PHRASES = {
 LANGUAGE_PHRASES = {
     "en": (
         "reponds en anglais", "repond en anglais", "parle en anglais", "parle anglais",
-        "passe en anglais", "mode anglais", "answer in english", "reply in english",
+        "passe en anglais", "mode anglais", "en anglais", "answer in english", "reply in english",
         "speak english", "switch to english", "english mode",
     ),
     "fr": (
         "reponds en francais", "repond en francais", "parle en francais", "parle francais",
-        "passe en francais", "mode francais", "answer in french", "reply in french",
+        "passe en francais", "mode francais", "en francais", "answer in french", "reply in french",
         "speak french", "switch to french", "french mode",
     ),
 }

@@ -1,0 +1,5 @@
+{
+  "conversation_backend": "codex",
+  "response_language": "en",
+  "tts_voice": "am_puck"
+}
