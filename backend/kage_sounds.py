@@ -6,6 +6,8 @@ import ctypes
 import itertools
 import threading
 import time
+import sounddevice as sd
+import soundfile as sf
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -20,7 +22,7 @@ SOUNDS = {
     "stop_speaking": ("drop-004.mp3", 0.30),
     "home_command": ("confirmation-002.mp3", 0.30),
     "sleep_listening": ("minimize-004.mp3", 0.30),
-    "recording_loop": ("zen-recording.mp3", 1.00),
+    "recording_loop": ("zen-recording.ogg", 1.00),
 }
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="kage-sfx")
@@ -68,6 +70,30 @@ def start_loop(name: str):
     path = SOUND_DIRECTORY / spec[0]
     if not path.is_file():
         return None
+    if path.suffix.lower() == ".ogg":
+        samples, sample_rate = sf.read(path, dtype="float32", always_2d=True)
+        if not samples.size:
+            return None
+        position = [0]
+
+        def fill_loop(outdata, frames, _time_info, _status):
+            written = 0
+            while written < frames:
+                available = min(frames - written, len(samples) - position[0])
+                outdata[written:written + available] = samples[
+                    position[0]:position[0] + available
+                ]
+                written += available
+                position[0] = (position[0] + available) % len(samples)
+
+        stream = sd.OutputStream(
+            samplerate=sample_rate,
+            channels=samples.shape[1],
+            dtype="float32",
+            callback=fill_loop,
+        )
+        stream.start()
+        return {"kind": "pcm", "stream": stream}
     alias = f"kage_loop_{next(_counter)}"
     with _mci_lock:
         _mci(f'open "{path}" type mpegvideo alias {alias}')
@@ -79,6 +105,12 @@ def start_loop(name: str):
 def stop_loop(alias) -> None:
     """Stop a loop handle safely; repeated cleanup is harmless."""
     if not alias:
+        return
+    if isinstance(alias, dict) and alias.get("kind") == "pcm":
+        stream = alias.get("stream")
+        if stream is not None:
+            stream.stop()
+            stream.close()
         return
     with _mci_lock:
         _mci(f"stop {alias}")
