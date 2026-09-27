@@ -1,9 +1,9 @@
 {
-  "version": "web-progressive-v3.3",
-  "description": "Topic-bound progressive research with natural short sentences and validated end-of-transcription audio cue.",
+  "version": "web-progressive-v3.4",
+  "description": "Topic-bound progressive research with noise-safe Nemotron fallback and validated transcription audio cue.",
   "codex_web_search": "live",
   "codex_web_context": "low",
   "local_search_fallback": "DuckDuckGo background cache and Ollama fallback",
-  "live_files": ["app.py", "codex_bridge.py", "voice.py", "web_search.py"],
+  "live_files": ["app.py", "codex_bridge.py", "voice.py", "web_search.py", "stt_engine.py"],
   "rollback": "tools/rollback_web_pipeline.ps1"
 }

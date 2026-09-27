@@ -48,6 +48,10 @@ class KageSTT:
         self.whisper_num_workers = int(os.getenv("KAGE_WHISPER_NUM_WORKERS", "1"))
         self.whisper_prompt = _env_bool("KAGE_WHISPER_PROMPT", self.language.lower().startswith("fr"))
         self.allow_fallback = _env_bool("KAGE_STT_FALLBACK", True)
+        # An explicit empty Nemotron transcript means its VAD found no speech.
+        # Do not turn noise into a Whisper hallucination unless the operator
+        # explicitly opts back into this risky fallback.
+        self.fallback_on_empty = _env_bool("KAGE_STT_FALLBACK_ON_EMPTY", False)
         # NeMo-Speech.cpp's greedy RNNT confidence is currently a constant
         # 1.0, so it must not drive fallback decisions by default.
         self.confidence_usable = _env_bool("KAGE_NEMO_CONFIDENCE_USABLE", False)
@@ -81,6 +85,7 @@ class KageSTT:
             "whisper_num_workers": self.whisper_num_workers,
             "whisper_prompt": self.whisper_prompt,
             "fallback": self.allow_fallback,
+            "fallback_on_empty": self.fallback_on_empty,
             "nemotron_url": self.nemo_url,
             "confidence_fallback_enabled": self.confidence_usable,
             "min_confidence": self.min_confidence if self.confidence_usable else None,
@@ -235,7 +240,8 @@ class KageSTT:
                     if not result.text
                     else f"confidence {result.confidence:.3f} < {self.min_confidence:.3f}"
                 )
-                if not self.allow_fallback:
+                if (not self.allow_fallback or
+                        (not result.text and not self.fallback_on_empty)):
                     return result
             except Exception as exc:
                 primary_error = f"{type(exc).__name__}: {exc}"
