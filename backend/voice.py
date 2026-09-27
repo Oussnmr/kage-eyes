@@ -15,6 +15,7 @@ import threading
 import time
 import hashlib
 import atexit
+import tkinter as tk
 from pocketsphinx import LiveSpeech
 from kage_sounds import play_sound, start_loop, stop_loop
 from stt_engine import KageSTT
@@ -69,6 +70,7 @@ VOICE_INTERRUPT_FLAG = r"C:\Kage\voice_interrupt.flag"
 VOICE_WAKE_FLAG = r"C:\Kage\voice_wake.flag"
 VOICE_SLEEP_FLAG = r"C:\Kage\voice_sleep.flag"
 VOICE_HOLD_ACTIVE_FLAG = r"C:\Kage\voice_hold_active.flag"
+VOICE_TEXT_MODE_FLAG = r"C:\Kage\voice_text_mode.flag"
 
 # Détection de voix
 BLOCK_MS = 50
@@ -85,6 +87,52 @@ FOLLOW_UP_TIMEOUT_SECONDS = float(os.getenv("KAGE_FOLLOW_UP_TIMEOUT", "25"))
 WAITING_REPLIES_ENABLED = os.getenv("KAGE_WAITING_REPLIES", "1").strip().lower() in {
     "1", "true", "yes", "on",
 }
+TEXT_INPUT_QUEUE = queue.Queue()
+TEXT_WINDOW_STARTED = False
+
+
+def _text_input_window():
+    """Keep a small optional desktop text box available when requested."""
+    global TEXT_WINDOW_STARTED
+    if TEXT_WINDOW_STARTED:
+        return
+    TEXT_WINDOW_STARTED = True
+    try:
+        root = tk.Tk()
+        root.title("Kagé — mode écriture")
+        root.geometry("520x130")
+        root.attributes("-topmost", True)
+        tk.Label(root, text="Écris une phrase puis Entrée. Le bouton Audio revient au micro.").pack(pady=(10, 4))
+        entry = tk.Entry(root, width=60)
+        entry.pack(fill="x", padx=12)
+        entry.focus_set()
+        buttons = tk.Frame(root)
+        buttons.pack(pady=8)
+        def submit(_event=None):
+            text = entry.get().strip()
+            if text:
+                TEXT_INPUT_QUEUE.put(text)
+                entry.delete(0, tk.END)
+        def audio():
+            try:
+                os.remove(VOICE_TEXT_MODE_FLAG)
+            except FileNotFoundError:
+                pass
+            root.destroy()
+        tk.Button(buttons, text="Envoyer", command=submit).pack(side="left", padx=5)
+        tk.Button(buttons, text="Retour au micro", command=audio).pack(side="left", padx=5)
+        entry.bind("<Return>", submit)
+        root.protocol("WM_DELETE_WINDOW", audio)
+        root.mainloop()
+    except Exception as exc:
+        print(json.dumps({"event": "text_window_unavailable", "error": str(exc)}, ensure_ascii=False))
+    finally:
+        TEXT_WINDOW_STARTED = False
+
+
+def _start_text_window_if_requested():
+    if os.path.exists(VOICE_TEXT_MODE_FLAG) and not TEXT_WINDOW_STARTED:
+        threading.Thread(target=_text_input_window, name="kage-text-window", daemon=True).start()
 
 print("Chargement du moteur STT...")
 stt = KageSTT()
@@ -309,6 +357,11 @@ def wait_for_wake_word(stop_event=None, announce=True, keyphrase=None):
         )
         listener.ad.start()
         while stop_event is None or not stop_event.is_set():
+            _start_text_window_if_requested()
+            try:
+                return ("text_input", TEXT_INPUT_QUEUE.get_nowait())
+            except queue.Empty:
+                pass
             if hold_is_active():
                 print("🟣 Kage woke for push-to-talk")
                 return "hold"
@@ -1173,6 +1226,7 @@ def main():
             if outcome == "shutdown":
                 break
             continue
+        _start_text_window_if_requested()
         if hold_is_active():
             start_direct = True
         if WAKE_WORD_ENABLED and not start_direct:
@@ -1180,6 +1234,11 @@ def main():
                 wake_source = wait_for_wake_word()
             except KeyboardInterrupt:
                 break
+            if isinstance(wake_source, tuple) and wake_source[0] == "text_input":
+                outcome = handle_utterance(MAX_RECORD_SECONDS, simulated_text=wake_source[1])
+                if outcome == "shutdown":
+                    break
+                continue
             # Touch already emitted its confirmation cue in the backend.
             if wake_source == "wake_word":
                 play_sound("wake_listening")

@@ -55,7 +55,7 @@ OLLAMA_MODEL = "qwen3:4b-instruct-2507-q4_K_M"
 DEFAULT_CONVERSATION_BACKEND = os.getenv("KAGE_CONVERSATION_BACKEND", "ollama").strip().lower()
 SETTINGS_PATH = Path(os.getenv("KAGE_SETTINGS_PATH", r"C:\Kage\kage_settings.json"))
 KAGE_API_KEY = os.getenv("KAGE_API_KEY", "").strip()
-WEB_PIPELINE_VERSION = "web-progressive-v3.6"
+WEB_PIPELINE_VERSION = "web-progressive-v3.7"
 RESEARCH_MEMORY_TTL_SECONDS = 15 * 60
 
 AUDIO_SAMPLE_RATE = 16000
@@ -107,6 +107,7 @@ VOICE_INTERRUPT_FLAG = Path(r"C:\Kage\voice_interrupt.flag")
 VOICE_WAKE_FLAG = Path(r"C:\Kage\voice_wake.flag")
 VOICE_SLEEP_FLAG = Path(r"C:\Kage\voice_sleep.flag")
 VOICE_HOLD_ACTIVE_FLAG = Path(r"C:\Kage\voice_hold_active.flag")
+VOICE_TEXT_MODE_FLAG = Path(r"C:\Kage\voice_text_mode.flag")
 voice_control_lock = threading.Lock()
 research_memory_lock = threading.Lock()
 research_memory = {
@@ -1099,6 +1100,21 @@ def stop_voice_hold(request: Request):
     require_kage_key(request)
     VOICE_HOLD_ACTIVE_FLAG.unlink(missing_ok=True)
     return {"ok": True, "hold_active": False}
+
+
+@app.post("/voice/text-mode")
+def enable_voice_text_mode(request: Request):
+    """Show the desktop text box; submitted text follows the normal voice path."""
+    require_kage_key(request)
+    VOICE_TEXT_MODE_FLAG.write_text(str(time.time()), encoding="ascii")
+    return {"ok": True, "text_mode": True}
+
+
+@app.post("/voice/text-mode/exit")
+def disable_voice_text_mode(request: Request):
+    require_kage_key(request)
+    VOICE_TEXT_MODE_FLAG.unlink(missing_ok=True)
+    return {"ok": True, "text_mode": False}
 
 
 @app.post("/voice/close-all")

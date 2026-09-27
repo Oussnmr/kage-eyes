@@ -13,7 +13,7 @@ if (-not $resolvedBackup.StartsWith($rollbackRoot + '\', [StringComparison]::Ord
 $manifestPath = Join-Path $resolvedBackup 'manifest.json'
 if (-not (Test-Path -LiteralPath $manifestPath)) { throw "Missing rollback manifest: $manifestPath" }
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-if ($manifest.version -notin @('web-native-v2', 'web-progressive-v3', 'web-progressive-v3.1', 'web-progressive-v3.2', 'web-progressive-v3.3', 'web-progressive-v3.4', 'web-progressive-v3.5', 'web-progressive-v3.6') -or
+if ($manifest.version -notin @('web-native-v2', 'web-progressive-v3', 'web-progressive-v3.1', 'web-progressive-v3.2', 'web-progressive-v3.3', 'web-progressive-v3.4', 'web-progressive-v3.5', 'web-progressive-v3.6', 'web-progressive-v3.7') -or
     $manifest.live_root -ne 'C:\Kage') {
     throw 'Rollback manifest does not describe a supported Kagé web deployment.'
 }
