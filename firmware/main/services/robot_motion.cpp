@@ -28,8 +28,8 @@ constexpr ledc_mode_t PWM_MODE = LEDC_LOW_SPEED_MODE;
 constexpr ledc_timer_t PWM_TIMER = LEDC_TIMER_1;
 constexpr ledc_timer_bit_t PWM_BITS = LEDC_TIMER_10_BIT;
 constexpr uint32_t PWM_MAX = (1U << 10) - 1U;
-constexpr uint32_t TEST_DUTY = PWM_MAX / 4U;  // 25 %, intentionally gentle.
-constexpr TickType_t MOTOR_PULSE = pdMS_TO_TICKS(120);
+constexpr uint32_t TEST_DUTY = (PWM_MAX * 40U) / 100U;  // 40 %, short bench pulse.
+constexpr TickType_t MOTOR_PULSE = pdMS_TO_TICKS(200);
 
 constexpr uint8_t PCA_ADDRESS = 0x40;
 constexpr uint8_t PCA_MODE1 = 0x00;
