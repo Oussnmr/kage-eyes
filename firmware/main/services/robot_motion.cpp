@@ -21,8 +21,9 @@ constexpr char TAG[] = "robot-motion";
 // Wiring reported by the user.
 constexpr gpio_num_t LEFT_IN1 = GPIO_NUM_18;
 constexpr gpio_num_t LEFT_IN2 = GPIO_NUM_38;
-constexpr gpio_num_t RIGHT_IN3 = GPIO_NUM_40;
-constexpr gpio_num_t RIGHT_IN4 = GPIO_NUM_42;
+// Right side is wired IN3=GPIO42 and IN4=GPIO40.
+constexpr gpio_num_t RIGHT_IN3 = GPIO_NUM_42;
+constexpr gpio_num_t RIGHT_IN4 = GPIO_NUM_40;
 
 constexpr ledc_mode_t PWM_MODE = LEDC_LOW_SPEED_MODE;
 constexpr ledc_timer_t PWM_TIMER = LEDC_TIMER_1;
