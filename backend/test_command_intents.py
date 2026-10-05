@@ -22,6 +22,21 @@ class CommandIntentTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertEqual(direct_intent(phrase), expected)
 
+    def test_short_motion_commands(self):
+        cases = {
+            "Kage, move H": ("robot", "move_h"),
+            "move v": ("robot", "move_v"),
+            "move F": ("robot", "move_f"),
+            "move b": ("robot", "move_b"),
+        }
+        for phrase, expected in cases.items():
+            with self.subTest(phrase=phrase):
+                self.assertEqual(direct_intent(phrase), expected)
+
+        # Descriptions and questions must never move hardware.
+        self.assertIsNone(direct_intent("How does move forward work?"))
+        self.assertIsNone(direct_intent("I want the robot to move forward later"))
+
     def test_backend_in_french_and_english(self):
         for phrase in ("Passe sur ChatGPT", "Use ChatGPT"):
             self.assertEqual(direct_intent(phrase), ("backend", "codex"))

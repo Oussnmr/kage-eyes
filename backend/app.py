@@ -48,7 +48,10 @@ except ImportError:
 
 app = FastAPI(title="Kage M920q Backend", docs_url=None, redoc_url=None, openapi_url=None)
 
-VALID_COMMANDS = {"idle", "blink", "sleep", "angry", "dizzy"}
+VALID_COMMANDS = {
+    "idle", "blink", "sleep", "angry", "dizzy",
+    "move_h", "move_v", "move_f", "move_b",
+}
 VALID_ASSISTANT_STATES = {"idle", "listening", "thinking", "speaking", "error", "offline"}
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 OLLAMA_MODEL = "qwen3:4b-instruct-2507-q4_K_M"

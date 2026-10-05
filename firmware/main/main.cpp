@@ -9,8 +9,14 @@
 #include "orientation_service.h"
 #include "wifi_service.h"
 #include "kage_bridge.h"
+#include "robot_motion.h"
 
 extern "C" void app_main(void) {
+    // These four pins are connected to the DRV8833.  Drive them low before
+    // NVS, Wi-Fi, the display, or any task can delay startup.  Both H-bridges
+    // therefore remain in coast/off until an explicit test command arrives.
+    robot_motion_safe_boot();
+
     esp_err_t nvs = nvs_flash_init();
 
     if (nvs == ESP_ERR_NVS_NO_FREE_PAGES ||

@@ -64,6 +64,13 @@ ROBOT_PHRASES = {
         "spin", "spin around", "get dizzy", "act dizzy", "dizzy mode",
         "tourne sur toi meme", "etourdis toi", "mets toi en mode etourdi",
     ),
+    # Deliberately short, exact bench-test commands.  They are matched as a
+    # complete request below, so ordinary sentences containing "move" cannot
+    # accidentally energize an actuator.
+    "move_h": ("move h", "move horizontal"),
+    "move_v": ("move v", "move vertical"),
+    "move_f": ("move f", "move forward"),
+    "move_b": ("move b", "move back", "move backward"),
 }
 
 BACKEND_PHRASES = {

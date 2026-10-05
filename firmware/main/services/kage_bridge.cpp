@@ -13,6 +13,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "robot_motion.h"
 #include "wifi_service.h"
 
 namespace {
@@ -154,6 +155,10 @@ static void dispatch_command(const char *command) {
     else if (std::strcmp(command, "sleep") == 0) robot_eyes_remote_sleep();
     else if (std::strcmp(command, "angry") == 0) robot_eyes_remote_angry();
     else if (std::strcmp(command, "dizzy") == 0) robot_eyes_remote_dizzy();
+    else if (std::strcmp(command, "move_h") == 0) robot_motion_command(ROBOT_MOVE_HORIZONTAL);
+    else if (std::strcmp(command, "move_v") == 0) robot_motion_command(ROBOT_MOVE_VERTICAL);
+    else if (std::strcmp(command, "move_f") == 0) robot_motion_command(ROBOT_MOVE_FORWARD);
+    else if (std::strcmp(command, "move_b") == 0) robot_motion_command(ROBOT_MOVE_BACKWARD);
     else {
         ESP_LOGW("kage-bridge", "Unknown command: %s", command);
         event_log_add("Unknown command: %s", command);
