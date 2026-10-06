@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta name="theme-color" content="#101216">
+  <title>Kage Control</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body { margin: 0; min-height: 100vh; background: #101216; color: #f5f7fa; display: grid; place-items: center; }
+    main { width: min(100%, 460px); padding: 18px; }
+    h1 { margin: 0 0 14px; text-align: center; font-size: 24px; }
+    .auth { display: flex; gap: 8px; margin-bottom: 12px; }
+    input, button { border: 0; border-radius: 14px; font: inherit; }
+    input { min-width: 0; flex: 1; padding: 12px; background: #20242b; color: inherit; }
+    .save { padding: 0 16px; background: #3178f6; color: white; font-weight: 700; }
+    #status { min-height: 22px; text-align: center; color: #9ba6b5; font-size: 14px; }
+    section { margin-top: 18px; padding: 16px; background: #191c22; border-radius: 22px; }
+    h2 { margin: 0 0 13px; text-align: center; font-size: 16px; color: #cbd2dc; }
+    .pad { display: grid; grid-template-columns: repeat(3, 82px); grid-template-rows: repeat(3, 70px); gap: 10px; justify-content: center; }
+    .control { background: #2a3039; color: #fff; font-size: 27px; font-weight: 800; touch-action: none; user-select: none; box-shadow: inset 0 -3px 0 #171a1f; }
+    .control:active, .control.active { background: #3178f6; transform: translateY(2px); box-shadow: none; }
+    .stop { background: #b82e3b; font-size: 14px; }
+    [data-command="drive_f"], [data-command="tilt_u"] { grid-column: 2; grid-row: 1; }
+    [data-command="drive_l"], [data-command="pan_l"] { grid-column: 1; grid-row: 2; }
+    .stop { grid-column: 2; grid-row: 2; }
+    [data-command="drive_r"], [data-command="pan_r"] { grid-column: 3; grid-row: 2; }
+    [data-command="drive_b"], [data-command="tilt_d"] { grid-column: 2; grid-row: 3; }
+    .hint { margin: 14px 0 0; text-align: center; color: #788392; font-size: 12px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Kage Control</h1>
+  <div class="auth">
+    <input id="key" type="password" autocomplete="off" placeholder="Clé Kage">
+    <button class="save" id="save">Connecter</button>
+  </div>
+  <div id="status">Entre la clé Kage une seule fois.</div>
+
+  <section>
+    <h2>Chenilles</h2>
+    <div class="pad">
+      <button class="control" data-command="drive_f" aria-label="Avancer">↑</button>
+      <button class="control" data-command="drive_l" aria-label="Tourner à gauche">←</button>
+      <button class="control stop" aria-label="Arrêt">STOP</button>
+      <button class="control" data-command="drive_r" aria-label="Tourner à droite">→</button>
+      <button class="control" data-command="drive_b" aria-label="Reculer">↓</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Pan / Tilt</h2>
+    <div class="pad">
+      <button class="control" data-command="tilt_u" aria-label="Incliner vers le haut">↑</button>
+      <button class="control" data-command="pan_l" aria-label="Regarder à gauche">←</button>
+      <button class="control stop" aria-label="Arrêt">STOP</button>
+      <button class="control" data-command="pan_r" aria-label="Regarder à droite">→</button>
+      <button class="control" data-command="tilt_d" aria-label="Incliner vers le bas">↓</button>
+    </div>
+  </section>
+  <p class="hint">Maintiens un bouton pour bouger. Relâche pour arrêter.</p>
+</main>
+<script>
+  const keyInput = document.querySelector('#key');
+  const statusEl = document.querySelector('#status');
+  const storageKey = 'kage-control-key';
+  let timer = null;
+  let activeButton = null;
+  keyInput.value = localStorage.getItem(storageKey) || new URLSearchParams(location.search).get('key') || '';
+
+  async function request(path, options = {}) {
+    const key = keyInput.value.trim();
+    const headers = {...(options.headers || {}), 'x-kage-key': key};
+    const response = await fetch(path, {...options, headers, cache: 'no-store'});
+    if (!response.ok) throw new Error(response.status === 401 ? 'Clé incorrecte' : `Erreur ${response.status}`);
+    return response.json();
+  }
+
+  async function send(command, quiet = false) {
+    try {
+      await request(`/command/${command}`, {method: 'POST', keepalive: true});
+      if (!quiet) statusEl.textContent = 'Connecté';
+    } catch (error) {
+      statusEl.textContent = error.message;
+    }
+  }
+
+  function stop() {
+    if (timer) clearInterval(timer);
+    timer = null;
+    if (activeButton) activeButton.classList.remove('active');
+    activeButton = null;
+    send('motion_stop', true);
+  }
+
+  function start(button, event) {
+    event.preventDefault();
+    stop();
+    activeButton = button;
+    button.classList.add('active');
+    if (button.setPointerCapture && event.pointerId !== undefined) button.setPointerCapture(event.pointerId);
+    const command = button.dataset.command;
+    send(command);
+    timer = setInterval(() => send(command, true), 300);
+  }
+
+  document.querySelectorAll('[data-command]').forEach(button => {
+    button.addEventListener('pointerdown', event => start(button, event));
+    button.addEventListener('pointerup', stop);
+    button.addEventListener('pointercancel', stop);
+    button.addEventListener('lostpointercapture', stop);
+    button.addEventListener('contextmenu', event => event.preventDefault());
+  });
+  document.querySelectorAll('.stop').forEach(button => button.addEventListener('pointerdown', event => {
+    event.preventDefault();
+    stop();
+  }));
+  document.querySelector('#save').addEventListener('click', async () => {
+    localStorage.setItem(storageKey, keyInput.value.trim());
+    try {
+      await request('/status');
+      statusEl.textContent = 'Connecté';
+    } catch (error) {
+      statusEl.textContent = error.message;
+    }
+  });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) stop(); });
+  window.addEventListener('pagehide', stop);
+  if (keyInput.value) document.querySelector('#save').click();
+</script>
+</body>
+</html>

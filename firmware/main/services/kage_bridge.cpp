@@ -159,6 +159,15 @@ static void dispatch_command(const char *command) {
     else if (std::strcmp(command, "move_v") == 0) robot_motion_command(ROBOT_MOVE_VERTICAL);
     else if (std::strcmp(command, "move_f") == 0) robot_motion_command(ROBOT_MOVE_FORWARD);
     else if (std::strcmp(command, "move_b") == 0) robot_motion_command(ROBOT_MOVE_BACKWARD);
+    else if (std::strcmp(command, "drive_f") == 0) robot_drive_hold(ROBOT_DRIVE_FORWARD);
+    else if (std::strcmp(command, "drive_b") == 0) robot_drive_hold(ROBOT_DRIVE_BACKWARD);
+    else if (std::strcmp(command, "drive_l") == 0) robot_drive_hold(ROBOT_DRIVE_LEFT);
+    else if (std::strcmp(command, "drive_r") == 0) robot_drive_hold(ROBOT_DRIVE_RIGHT);
+    else if (std::strcmp(command, "motion_stop") == 0) robot_motion_stop();
+    else if (std::strcmp(command, "pan_l") == 0) robot_servo_nudge(ROBOT_PAN_LEFT);
+    else if (std::strcmp(command, "pan_r") == 0) robot_servo_nudge(ROBOT_PAN_RIGHT);
+    else if (std::strcmp(command, "tilt_u") == 0) robot_servo_nudge(ROBOT_TILT_UP);
+    else if (std::strcmp(command, "tilt_d") == 0) robot_servo_nudge(ROBOT_TILT_DOWN);
     else {
         ESP_LOGW("kage-bridge", "Unknown command: %s", command);
         event_log_add("Unknown command: %s", command);

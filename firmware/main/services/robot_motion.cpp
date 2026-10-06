@@ -31,6 +31,7 @@ constexpr ledc_timer_bit_t PWM_BITS = LEDC_TIMER_10_BIT;
 constexpr uint32_t PWM_MAX = (1U << 10) - 1U;
 constexpr uint32_t TEST_DUTY = PWM_MAX;  // Full-power diagnostic pulse, wheels raised.
 constexpr TickType_t MOTOR_PULSE = pdMS_TO_TICKS(1000);
+constexpr TickType_t DRIVE_WATCHDOG = pdMS_TO_TICKS(850);
 
 constexpr uint8_t PCA_ADDRESS = 0x40;
 constexpr uint8_t PCA_MODE1 = 0x00;
@@ -44,11 +45,20 @@ constexpr TickType_t SERVO_STEP = pdMS_TO_TICKS(800);
 constexpr uint16_t SERVO_LOW_US = 1200;
 constexpr uint16_t SERVO_HIGH_US = 1800;
 constexpr uint16_t SERVO_CENTER_US = 1500;
+constexpr uint16_t SERVO_MIN_US = 900;
+constexpr uint16_t SERVO_MAX_US = 2100;
+constexpr uint16_t SERVO_NUDGE_US = 75;
+constexpr TickType_t SERVO_NUDGE_HOLD = pdMS_TO_TICKS(300);
 
 static std::atomic<bool> s_busy{false};
+static std::atomic<bool> s_servo_cancel{false};
+static std::atomic<int> s_drive_mode{-1};
+static std::atomic<uint32_t> s_drive_deadline{0};
 static bool s_pwm_ready;
 static bool s_i2c_diagnostics_logged;
 static i2c_master_dev_handle_t s_pca;
+static uint16_t s_pan_us = SERVO_CENTER_US;
+static uint16_t s_tilt_us = SERVO_CENTER_US;
 
 constexpr gpio_num_t MOTOR_PINS[] = {LEFT_IN1, LEFT_IN2, RIGHT_IN3, RIGHT_IN4};
 constexpr ledc_channel_t MOTOR_CHANNELS[] = {
@@ -99,6 +109,54 @@ static bool pwm_init() {
 static void set_motor_channel(size_t index, uint32_t duty) {
     ledc_set_duty(PWM_MODE, MOTOR_CHANNELS[index], duty);
     ledc_update_duty(PWM_MODE, MOTOR_CHANNELS[index]);
+}
+
+static void motors_apply(RobotDrive drive) {
+    motors_stop();
+    switch (drive) {
+        case ROBOT_DRIVE_FORWARD:
+            set_motor_channel(1, TEST_DUTY);  // left OUT2
+            set_motor_channel(3, TEST_DUTY);  // right OUT4
+            break;
+        case ROBOT_DRIVE_BACKWARD:
+            set_motor_channel(0, TEST_DUTY);  // left OUT1
+            set_motor_channel(2, TEST_DUTY);  // right OUT3
+            break;
+        case ROBOT_DRIVE_LEFT:
+            set_motor_channel(0, TEST_DUTY);  // left backward
+            set_motor_channel(3, TEST_DUTY);  // right forward
+            break;
+        case ROBOT_DRIVE_RIGHT:
+            set_motor_channel(1, TEST_DUTY);  // left forward
+            set_motor_channel(2, TEST_DUTY);  // right backward
+            break;
+    }
+}
+
+static void drive_watchdog_task(void *) {
+    int applied = -1;
+    for (;;) {
+        const int requested = s_drive_mode.load(std::memory_order_acquire);
+        const uint32_t now = xTaskGetTickCount();
+        const uint32_t deadline = s_drive_deadline.load(std::memory_order_acquire);
+        const bool alive = requested >= 0 && static_cast<int32_t>(deadline - now) > 0;
+
+        if (alive && requested != applied) {
+            if (pwm_init()) {
+                motors_apply(static_cast<RobotDrive>(requested));
+                applied = requested;
+            } else {
+                ESP_LOGE(TAG, "PWM initialization failed");
+                event_log_add("Motor PWM init failed");
+                s_drive_mode.store(-1, std::memory_order_release);
+            }
+        } else if (!alive && applied != -1) {
+            motors_stop();
+            s_drive_mode.store(-1, std::memory_order_release);
+            applied = -1;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
 }
 
 static void motors_pulse(bool forward) {
@@ -227,6 +285,53 @@ static void servo_sweep(uint8_t channel) {
     (void)pca_channel(channel, 0, true);
 }
 
+static uint16_t clamp_servo(int value) {
+    if (value < SERVO_MIN_US) return SERVO_MIN_US;
+    if (value > SERVO_MAX_US) return SERVO_MAX_US;
+    return static_cast<uint16_t>(value);
+}
+
+static void servo_nudge_task(void *argument) {
+    const RobotServoNudge nudge =
+        static_cast<RobotServoNudge>(reinterpret_cast<uintptr_t>(argument));
+    uint8_t channel = PCA_HORIZONTAL_CHANNEL;
+    uint16_t *target = &s_pan_us;
+    int delta = 0;
+    switch (nudge) {
+        case ROBOT_PAN_LEFT: delta = -SERVO_NUDGE_US; break;
+        case ROBOT_PAN_RIGHT: delta = SERVO_NUDGE_US; break;
+        case ROBOT_TILT_UP:
+            channel = PCA_VERTICAL_CHANNEL;
+            target = &s_tilt_us;
+            delta = SERVO_NUDGE_US;
+            break;
+        case ROBOT_TILT_DOWN:
+            channel = PCA_VERTICAL_CHANNEL;
+            target = &s_tilt_us;
+            delta = -SERVO_NUDGE_US;
+            break;
+    }
+
+    if (pca_init()) {
+        *target = clamp_servo(static_cast<int>(*target) + delta);
+        if (servo_position(channel, *target)) {
+            event_log_add("Servo %u: %u us", channel, *target);
+            TickType_t remaining = SERVO_NUDGE_HOLD;
+            while (remaining > 0 && !s_servo_cancel.load(std::memory_order_acquire)) {
+                const TickType_t slice = remaining > pdMS_TO_TICKS(20)
+                    ? pdMS_TO_TICKS(20) : remaining;
+                vTaskDelay(slice);
+                remaining -= slice;
+            }
+            (void)pca_channel(channel, 0, true);
+        }
+    } else {
+        event_log_add("PCA9685 unavailable");
+    }
+    s_busy.store(false);
+    vTaskDelete(nullptr);
+}
+
 static void motion_task(void *argument) {
     const RobotMove move = static_cast<RobotMove>(reinterpret_cast<uintptr_t>(argument));
     switch (move) {
@@ -260,6 +365,7 @@ void robot_motion_safe_boot(void) {
         gpio_set_direction(pin, GPIO_MODE_OUTPUT);
         gpio_set_level(pin, 0);
     }
+    xTaskCreate(drive_watchdog_task, "drive_watchdog", 3072, nullptr, 6, nullptr);
 }
 
 void robot_motion_command(RobotMove move) {
@@ -275,5 +381,28 @@ void robot_motion_command(RobotMove move) {
         s_busy.store(false);
         ESP_LOGE(TAG, "Unable to create motion task");
         event_log_add("Motion task start failed");
+    }
+}
+
+void robot_drive_hold(RobotDrive drive) {
+    const uint32_t deadline = xTaskGetTickCount() + DRIVE_WATCHDOG;
+    s_drive_deadline.store(deadline, std::memory_order_release);
+    s_drive_mode.store(static_cast<int>(drive), std::memory_order_release);
+}
+
+void robot_motion_stop(void) {
+    s_drive_mode.store(-1, std::memory_order_release);
+    s_servo_cancel.store(true, std::memory_order_release);
+    motors_stop();
+}
+
+void robot_servo_nudge(RobotServoNudge nudge) {
+    bool expected = false;
+    if (!s_busy.compare_exchange_strong(expected, true)) return;
+    s_servo_cancel.store(false, std::memory_order_release);
+    if (xTaskCreate(servo_nudge_task, "servo_nudge", 4096,
+                    reinterpret_cast<void *>(static_cast<uintptr_t>(nudge)), 5, nullptr) != pdPASS) {
+        s_busy.store(false);
+        event_log_add("Servo nudge task failed");
     }
 }

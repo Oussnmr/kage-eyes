@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
@@ -51,6 +51,8 @@ app = FastAPI(title="Kage M920q Backend", docs_url=None, redoc_url=None, openapi
 VALID_COMMANDS = {
     "idle", "blink", "sleep", "angry", "dizzy",
     "move_h", "move_v", "move_f", "move_b",
+    "drive_f", "drive_b", "drive_l", "drive_r", "motion_stop",
+    "pan_l", "pan_r", "tilt_u", "tilt_d",
 }
 VALID_ASSISTANT_STATES = {"idle", "listening", "thinking", "speaking", "error", "offline"}
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
@@ -60,6 +62,7 @@ SETTINGS_PATH = Path(os.getenv("KAGE_SETTINGS_PATH", r"C:\Kage\kage_settings.jso
 KAGE_API_KEY = os.getenv("KAGE_API_KEY", "").strip()
 WEB_PIPELINE_VERSION = "web-progressive-v4.0"
 RESEARCH_MEMORY_TTL_SECONDS = 15 * 60
+CONTROL_PAGE_PATH = Path(__file__).with_name("control.html")
 
 AUDIO_SAMPLE_RATE = 16000
 AUDIO_CHANNELS = 1
@@ -929,6 +932,11 @@ def process_audio(pcm: bytes) -> dict:
                       "audio_seconds": round(len(pcm) / (AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH), 3),
                       "heard": text, "command": result["command"]}, ensure_ascii=False))
     return result
+
+
+@app.get("/control", response_class=HTMLResponse)
+def control_page():
+    return HTMLResponse(CONTROL_PAGE_PATH.read_text(encoding="utf-8"))
 
 
 @app.get("/status")
