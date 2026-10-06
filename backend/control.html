@@ -65,15 +65,11 @@
 <script>
   const keyInput = document.querySelector('#key');
   const statusEl = document.querySelector('#status');
-  const storageKey = 'kage-control-key';
   let timer = null;
   let activeButton = null;
-  keyInput.value = localStorage.getItem(storageKey) || new URLSearchParams(location.search).get('key') || '';
 
   async function request(path, options = {}) {
-    const key = keyInput.value.trim();
-    const headers = {...(options.headers || {}), 'x-kage-key': key};
-    const response = await fetch(path, {...options, headers, cache: 'no-store'});
+    const response = await fetch(path, {...options, cache: 'no-store', credentials: 'same-origin'});
     if (!response.ok) throw new Error(response.status === 401 ? 'Clé incorrecte' : `Erreur ${response.status}`);
     return response.json();
   }
@@ -118,8 +114,13 @@
     stop();
   }));
   document.querySelector('#save').addEventListener('click', async () => {
-    localStorage.setItem(storageKey, keyInput.value.trim());
     try {
+      const login = await fetch('/control/login', {
+        method: 'POST', body: keyInput.value.trim(),
+        headers: {'content-type': 'text/plain'}, credentials: 'same-origin',
+      });
+      if (!login.ok) throw new Error('Clé incorrecte');
+      keyInput.value = '';
       await request('/status');
       statusEl.textContent = 'Connecté';
     } catch (error) {
@@ -128,7 +129,8 @@
   });
   document.addEventListener('visibilitychange', () => { if (document.hidden) stop(); });
   window.addEventListener('pagehide', stop);
-  if (keyInput.value) document.querySelector('#save').click();
+  request('/status').then(() => { statusEl.textContent = 'Connecté'; })
+    .catch(() => { statusEl.textContent = 'Entre la clé Kage une seule fois.'; });
 </script>
 </body>
 </html>

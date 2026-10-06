@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
@@ -21,6 +21,7 @@ import json
 import os
 import queue
 import re
+import secrets
 import subprocess
 import tempfile
 import threading
@@ -63,6 +64,9 @@ KAGE_API_KEY = os.getenv("KAGE_API_KEY", "").strip()
 WEB_PIPELINE_VERSION = "web-progressive-v4.0"
 RESEARCH_MEMORY_TTL_SECONDS = 15 * 60
 CONTROL_PAGE_PATH = Path(__file__).with_name("control.html")
+CONTROL_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
+control_session_lock = threading.Lock()
+control_sessions = {}
 
 AUDIO_SAMPLE_RATE = 16000
 AUDIO_CHANNELS = 1
@@ -446,7 +450,15 @@ def require_kage_key(request: Request) -> None:
         )
 
     provided = request.headers.get("x-kage-key", "")
-    if not provided or not hmac.compare_digest(provided, KAGE_API_KEY):
+    header_valid = bool(provided) and hmac.compare_digest(provided, KAGE_API_KEY)
+    session = request.cookies.get("kage-control", "")
+    now = time.monotonic()
+    with control_session_lock:
+        expires = control_sessions.get(session, 0.0)
+        session_valid = bool(session) and expires > now
+        if session and not session_valid:
+            control_sessions.pop(session, None)
+    if not header_valid and not session_valid:
         raise HTTPException(status_code=401, detail="Clé Kage invalide")
 
 
@@ -937,6 +949,22 @@ def process_audio(pcm: bytes) -> dict:
 @app.get("/control", response_class=HTMLResponse)
 def control_page():
     return HTMLResponse(CONTROL_PAGE_PATH.read_text(encoding="utf-8"))
+
+
+@app.post("/control/login")
+async def control_login(request: Request):
+    provided = (await request.body()).decode("utf-8", errors="ignore").strip()
+    if not KAGE_API_KEY or not hmac.compare_digest(provided, KAGE_API_KEY):
+        raise HTTPException(status_code=401, detail="Clé Kage invalide")
+    token = secrets.token_urlsafe(32)
+    with control_session_lock:
+        control_sessions[token] = time.monotonic() + CONTROL_SESSION_TTL_SECONDS
+    response = JSONResponse({"ok": True})
+    response.set_cookie(
+        "kage-control", token, max_age=CONTROL_SESSION_TTL_SECONDS,
+        httponly=True, samesite="strict", path="/",
+    )
+    return response
 
 
 @app.get("/status")
