@@ -25,7 +25,7 @@ constexpr const char *LOCAL_WAKE_URL = "http://192.168.129.157:8000/voice/wake";
 constexpr const char *LOCAL_SLEEP_URL = "http://192.168.129.157:8000/voice/sleep";
 constexpr const char *LOCAL_HOLD_START_URL = "http://192.168.129.157:8000/voice/hold/start";
 constexpr const char *LOCAL_HOLD_STOP_URL = "http://192.168.129.157:8000/voice/hold/stop";
-constexpr TickType_t LOCAL_POLL_DELAY = pdMS_TO_TICKS(500);
+constexpr TickType_t LOCAL_POLL_DELAY = pdMS_TO_TICKS(100);
 constexpr TickType_t REMOTE_POLL_DELAY = pdMS_TO_TICKS(2500);
 
 static KageBridgeInfo s_info = {};

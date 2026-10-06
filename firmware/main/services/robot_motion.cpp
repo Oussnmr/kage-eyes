@@ -31,7 +31,7 @@ constexpr ledc_timer_bit_t PWM_BITS = LEDC_TIMER_10_BIT;
 constexpr uint32_t PWM_MAX = (1U << 10) - 1U;
 constexpr uint32_t TEST_DUTY = PWM_MAX;  // Full-power diagnostic pulse, wheels raised.
 constexpr TickType_t MOTOR_PULSE = pdMS_TO_TICKS(1000);
-constexpr TickType_t DRIVE_WATCHDOG = pdMS_TO_TICKS(850);
+constexpr TickType_t DRIVE_WATCHDOG = pdMS_TO_TICKS(400);
 
 constexpr uint8_t PCA_ADDRESS = 0x40;
 constexpr uint8_t PCA_MODE1 = 0x00;
@@ -47,8 +47,8 @@ constexpr uint16_t SERVO_HIGH_US = 1800;
 constexpr uint16_t SERVO_CENTER_US = 1500;
 constexpr uint16_t SERVO_MIN_US = 900;
 constexpr uint16_t SERVO_MAX_US = 2100;
-constexpr uint16_t SERVO_NUDGE_US = 75;
-constexpr TickType_t SERVO_NUDGE_HOLD = pdMS_TO_TICKS(300);
+constexpr uint16_t SERVO_NUDGE_US = 35;
+constexpr TickType_t SERVO_NUDGE_HOLD = pdMS_TO_TICKS(140);
 
 static std::atomic<bool> s_busy{false};
 static std::atomic<bool> s_servo_cancel{false};

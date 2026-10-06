@@ -951,6 +951,20 @@ def control_page():
     return HTMLResponse(CONTROL_PAGE_PATH.read_text(encoding="utf-8"))
 
 
+@app.get("/control/manifest.webmanifest")
+def control_manifest():
+    return JSONResponse({
+        "name": "Kage Control",
+        "short_name": "Kage",
+        "start_url": "/control",
+        "scope": "/",
+        "display": "standalone",
+        "background_color": "#101216",
+        "theme_color": "#101216",
+        "orientation": "portrait",
+    }, media_type="application/manifest+json")
+
+
 @app.post("/control/login")
 async def control_login(request: Request):
     provided = (await request.body()).decode("utf-8", errors="ignore").strip()

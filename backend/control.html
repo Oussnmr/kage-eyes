@@ -4,6 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
   <meta name="theme-color" content="#101216">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Kage">
+  <link rel="manifest" href="/control/manifest.webmanifest">
   <title>Kage Control</title>
   <style>
     :root { color-scheme: dark; font-family: system-ui, sans-serif; }
@@ -60,7 +65,7 @@
       <button class="control" data-command="tilt_d" aria-label="Incliner vers le bas">↓</button>
     </div>
   </section>
-  <p class="hint">Maintiens un bouton pour bouger. Relâche pour arrêter.</p>
+  <p class="hint">Maintiens pour bouger · Relâche pour arrêter<br>iPhone : Partager → Sur l’écran d’accueil</p>
 </main>
 <script>
   const keyInput = document.querySelector('#key');
@@ -99,7 +104,7 @@
     if (button.setPointerCapture && event.pointerId !== undefined) button.setPointerCapture(event.pointerId);
     const command = button.dataset.command;
     send(command);
-    timer = setInterval(() => send(command, true), 300);
+    timer = setInterval(() => send(command, true), 150);
   }
 
   document.querySelectorAll('[data-command]').forEach(button => {
