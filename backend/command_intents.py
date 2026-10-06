@@ -34,6 +34,7 @@ def clean_request(text):
         "torn off the disc": "turn off the desk",
         "etrelle ledez": "eteins les leds",
         "etrelle les ledez": "eteins les leds",
+        "je m envoie": "en avant",
     }
     return transcript_corrections.get(text, text)
 
@@ -67,10 +68,10 @@ ROBOT_PHRASES = {
     # Deliberately short, exact bench-test commands.  They are matched as a
     # complete request below, so ordinary sentences containing "move" cannot
     # accidentally energize an actuator.
-    "move_h": ("move h", "move horizontal"),
-    "move_v": ("move v", "move vertical"),
-    "move_f": ("move f", "move forward"),
-    "move_b": ("move b", "move back", "move backward"),
+    "move_h": ("move h", "move horizontal", "horizontal", "horizontale"),
+    "move_v": ("move v", "move vertical", "vertical", "verticale"),
+    "move_f": ("move f", "move forward", "en avant"),
+    "move_b": ("move b", "move back", "move backward", "en arriere"),
 }
 
 BACKEND_PHRASES = {

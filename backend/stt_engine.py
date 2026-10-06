@@ -61,7 +61,7 @@ class KageSTT:
         self.nemo_url = os.getenv("KAGE_NEMO_URL", "http://127.0.0.1:18080").rstrip("/")
         self.nemo_read_timeout = float(os.getenv("KAGE_NEMO_READ_TIMEOUT", "20"))
         self._whisper_model = None
-        default_terms = "Kagé,Kage,ChatGPT,Qwen,Nextcloud,Angry,Dizzy,plafonnier,luminosité,calendrier"
+        default_terms = "Kagé,Kage,ChatGPT,Qwen,Nextcloud,Angry,Dizzy,plafonnier,luminosité,calendrier,horizontal,vertical,en avant,en arrière"
         self.context_terms = [
             item.strip()
             for item in os.getenv("KAGE_STT_CONTEXT", default_terms).split(",")

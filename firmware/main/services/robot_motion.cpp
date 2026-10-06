@@ -29,8 +29,8 @@ constexpr ledc_mode_t PWM_MODE = LEDC_LOW_SPEED_MODE;
 constexpr ledc_timer_t PWM_TIMER = LEDC_TIMER_1;
 constexpr ledc_timer_bit_t PWM_BITS = LEDC_TIMER_10_BIT;
 constexpr uint32_t PWM_MAX = (1U << 10) - 1U;
-constexpr uint32_t TEST_DUTY = (PWM_MAX * 40U) / 100U;  // 40 %, short bench pulse.
-constexpr TickType_t MOTOR_PULSE = pdMS_TO_TICKS(200);
+constexpr uint32_t TEST_DUTY = PWM_MAX;  // Full-power diagnostic pulse, wheels raised.
+constexpr TickType_t MOTOR_PULSE = pdMS_TO_TICKS(1000);
 
 constexpr uint8_t PCA_ADDRESS = 0x40;
 constexpr uint8_t PCA_MODE1 = 0x00;
@@ -40,12 +40,14 @@ constexpr uint8_t PCA_PRESCALE = 0xFE;
 constexpr uint8_t PCA_HORIZONTAL_CHANNEL = 15;
 constexpr uint8_t PCA_VERTICAL_CHANNEL = 14;
 constexpr uint8_t PCA_50HZ_PRESCALE = 121;
-constexpr TickType_t SERVO_PULSE = pdMS_TO_TICKS(100);
-constexpr uint16_t HORIZONTAL_TEST_US = 1540;
-constexpr uint16_t VERTICAL_TEST_US = 1460;
+constexpr TickType_t SERVO_STEP = pdMS_TO_TICKS(800);
+constexpr uint16_t SERVO_LOW_US = 1200;
+constexpr uint16_t SERVO_HIGH_US = 1800;
+constexpr uint16_t SERVO_CENTER_US = 1500;
 
 static std::atomic<bool> s_busy{false};
 static bool s_pwm_ready;
+static bool s_i2c_diagnostics_logged;
 static i2c_master_dev_handle_t s_pca;
 
 constexpr gpio_num_t MOTOR_PINS[] = {LEFT_IN1, LEFT_IN2, RIGHT_IN3, RIGHT_IN4};
@@ -136,8 +138,32 @@ static esp_err_t pca_channel(uint8_t channel, uint16_t pulse, bool full_off) {
     return i2c_master_transmit(s_pca, bytes, sizeof(bytes), 100);
 }
 
+static void log_i2c_devices_once() {
+    if (s_i2c_diagnostics_logged) return;
+    s_i2c_diagnostics_logged = true;
+
+    i2c_master_bus_handle_t bus = bsp_i2c_get_handle();
+    unsigned found = 0;
+    for (uint8_t address = 0x08; address <= 0x77; ++address) {
+        if (i2c_master_probe(bus, address, 30) == ESP_OK) {
+            ESP_LOGI(TAG, "I2C device detected at 0x%02x", address);
+            event_log_add("I2C device: 0x%02X", address);
+            ++found;
+        }
+    }
+    ESP_LOGI(TAG, "I2C scan complete: %u device(s)", found);
+    event_log_add("I2C scan: %u device(s)", found);
+}
+
 static bool pca_init() {
     if (s_pca) return true;
+
+    log_i2c_devices_once();
+    if (i2c_master_probe(bsp_i2c_get_handle(), PCA_ADDRESS, 100) != ESP_OK) {
+        ESP_LOGE(TAG, "PCA9685 not detected at 0x%02x", PCA_ADDRESS);
+        event_log_add("PCA9685 0x40 not detected");
+        return false;
+    }
 
     i2c_device_config_t config = {};
     config.dev_addr_length = I2C_ADDR_BIT_LEN_7;
@@ -168,6 +194,8 @@ static bool pca_init() {
             return false;
         }
     }
+    ESP_LOGI(TAG, "PCA9685 ready at 0x%02x", PCA_ADDRESS);
+    event_log_add("PCA9685 0x40 ready");
     return true;
 }
 
@@ -175,18 +203,27 @@ static uint16_t micros_to_ticks(uint16_t micros) {
     return static_cast<uint16_t>((static_cast<uint32_t>(micros) * 4096U) / 20000U);
 }
 
-static void servo_pulse(uint8_t channel, uint16_t micros) {
+static bool servo_position(uint8_t channel, uint16_t micros) {
+    if (pca_channel(channel, micros_to_ticks(micros), false) == ESP_OK) return true;
+    ESP_LOGE(TAG, "PCA9685 channel %u write failed", channel);
+    event_log_add("Servo channel %u failed", channel);
+    return false;
+}
+
+static void servo_sweep(uint8_t channel) {
     if (!pca_init()) {
         ESP_LOGE(TAG, "PCA9685 not available at 0x%02x", PCA_ADDRESS);
         event_log_add("PCA9685 unavailable");
         return;
     }
-    if (pca_channel(channel, micros_to_ticks(micros), false) != ESP_OK) {
-        ESP_LOGE(TAG, "PCA9685 channel %u write failed", channel);
-        event_log_add("Servo channel %u failed", channel);
-        return;
-    }
-    vTaskDelay(SERVO_PULSE);
+
+    event_log_add("Servo %u sweep: 1200-1800-1500", channel);
+    if (!servo_position(channel, SERVO_LOW_US)) return;
+    vTaskDelay(SERVO_STEP);
+    if (!servo_position(channel, SERVO_HIGH_US)) return;
+    vTaskDelay(SERVO_STEP);
+    if (!servo_position(channel, SERVO_CENTER_US)) return;
+    vTaskDelay(SERVO_STEP);
     (void)pca_channel(channel, 0, true);
 }
 
@@ -195,11 +232,11 @@ static void motion_task(void *argument) {
     switch (move) {
         case ROBOT_MOVE_HORIZONTAL:
             event_log_add("Test: horizontal servo");
-            servo_pulse(PCA_HORIZONTAL_CHANNEL, HORIZONTAL_TEST_US);
+            servo_sweep(PCA_HORIZONTAL_CHANNEL);
             break;
         case ROBOT_MOVE_VERTICAL:
             event_log_add("Test: vertical servo");
-            servo_pulse(PCA_VERTICAL_CHANNEL, VERTICAL_TEST_US);
+            servo_sweep(PCA_VERTICAL_CHANNEL);
             break;
         case ROBOT_MOVE_FORWARD:
             event_log_add("Test: motors forward");

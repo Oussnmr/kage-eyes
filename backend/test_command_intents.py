@@ -28,6 +28,13 @@ class CommandIntentTests(unittest.TestCase):
             "move v": ("robot", "move_v"),
             "move F": ("robot", "move_f"),
             "move b": ("robot", "move_b"),
+            "horizontal": ("robot", "move_h"),
+            "horizontale": ("robot", "move_h"),
+            "vertical": ("robot", "move_v"),
+            "verticale": ("robot", "move_v"),
+            "en avant": ("robot", "move_f"),
+            "je m'envoie": ("robot", "move_f"),
+            "en arrière": ("robot", "move_b"),
         }
         for phrase, expected in cases.items():
             with self.subTest(phrase=phrase):
