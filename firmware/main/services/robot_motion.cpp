@@ -47,6 +47,10 @@ constexpr uint16_t SERVO_HIGH_US = 1800;
 constexpr uint16_t SERVO_CENTER_US = 1500;
 constexpr uint16_t SERVO_MIN_US = 900;
 constexpr uint16_t SERVO_MAX_US = 2100;
+// The vertical bracket is manually parked at this outer cable-safe end while
+// unpowered. From there it may travel only toward its mechanical centre.
+constexpr uint16_t TILT_OUTER_SAFE_US = 900;
+constexpr uint16_t TILT_CENTRE_SAFE_US = SERVO_CENTER_US;
 constexpr uint16_t SERVO_NUDGE_US = 35;
 constexpr TickType_t SERVO_NUDGE_HOLD = pdMS_TO_TICKS(140);
 
@@ -58,7 +62,9 @@ static bool s_pwm_ready;
 static bool s_i2c_diagnostics_logged;
 static i2c_master_dev_handle_t s_pca;
 static uint16_t s_pan_us = SERVO_CENTER_US;
-static uint16_t s_tilt_us = SERVO_CENTER_US;
+// PCA9685 has no position feedback.  Match the known hand-parked position so
+// the first press is a small move rather than a jump to the logical centre.
+static uint16_t s_tilt_us = TILT_OUTER_SAFE_US;
 
 constexpr gpio_num_t MOTOR_PINS[] = {LEFT_IN1, LEFT_IN2, RIGHT_IN3, RIGHT_IN4};
 constexpr ledc_channel_t MOTOR_CHANNELS[] = {
@@ -291,6 +297,12 @@ static uint16_t clamp_servo(int value) {
     return static_cast<uint16_t>(value);
 }
 
+static uint16_t clamp_tilt(int value) {
+    if (value < TILT_OUTER_SAFE_US) return TILT_OUTER_SAFE_US;
+    if (value > TILT_CENTRE_SAFE_US) return TILT_CENTRE_SAFE_US;
+    return static_cast<uint16_t>(value);
+}
+
 static void servo_nudge_task(void *argument) {
     const RobotServoNudge nudge =
         static_cast<RobotServoNudge>(reinterpret_cast<uintptr_t>(argument));
@@ -313,7 +325,9 @@ static void servo_nudge_task(void *argument) {
     }
 
     if (pca_init()) {
-        *target = clamp_servo(static_cast<int>(*target) + delta);
+        *target = channel == PCA_VERTICAL_CHANNEL
+            ? clamp_tilt(static_cast<int>(*target) + delta)
+            : clamp_servo(static_cast<int>(*target) + delta);
         if (servo_position(channel, *target)) {
             event_log_add("Servo %u: %u us", channel, *target);
             TickType_t remaining = SERVO_NUDGE_HOLD;

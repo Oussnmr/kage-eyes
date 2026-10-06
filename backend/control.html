@@ -12,7 +12,13 @@
   <title>Kage Control</title>
   <style>
     :root { color-scheme: dark; font-family: system-ui, sans-serif; }
-    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    *, *::before, *::after {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
     body { margin: 0; min-height: 100vh; background: #101216; color: #f5f7fa; display: grid; place-items: center; }
     main { width: min(100%, 460px); padding: 18px; }
     h1 { margin: 0 0 14px; text-align: center; font-size: 24px; }
@@ -24,7 +30,12 @@
     section { margin-top: 18px; padding: 16px; background: #191c22; border-radius: 22px; }
     h2 { margin: 0 0 13px; text-align: center; font-size: 16px; color: #cbd2dc; }
     .pad { display: grid; grid-template-columns: repeat(3, 82px); grid-template-rows: repeat(3, 70px); gap: 10px; justify-content: center; }
-    .control { background: #2a3039; color: #fff; font-size: 27px; font-weight: 800; touch-action: none; user-select: none; box-shadow: inset 0 -3px 0 #171a1f; }
+    .control {
+      background: #2a3039; color: #fff; font-size: 27px; font-weight: 800;
+      touch-action: none; -webkit-user-select: none; user-select: none;
+      -webkit-touch-callout: none; -webkit-user-drag: none;
+      box-shadow: inset 0 -3px 0 #171a1f;
+    }
     .control:active, .control.active { background: #3178f6; transform: translateY(2px); box-shadow: none; }
     .stop { background: #b82e3b; font-size: 14px; }
     [data-command="drive_f"], [data-command="tilt_u"] { grid-column: 2; grid-row: 1; }
