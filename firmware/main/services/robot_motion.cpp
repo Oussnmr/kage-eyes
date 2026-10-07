@@ -56,14 +56,17 @@ constexpr uint16_t TILT_OUTER_SAFE_US = 900;
 constexpr uint16_t TILT_CENTRE_SAFE_US = SERVO_CENTER_US;
 constexpr uint16_t SERVO_NUDGE_US = 35;
 constexpr TickType_t SERVO_NUDGE_HOLD = pdMS_TO_TICKS(140);
-constexpr uint16_t SERVO_SMOOTH_STEP_US = 14;
 constexpr TickType_t SERVO_SMOOTH_TICK = pdMS_TO_TICKS(20);
 constexpr TickType_t SERVO_RELEASE_DELAY = pdMS_TO_TICKS(500);
-constexpr uint16_t PAN_POSE_OFFSET_US = 360;   // three former 120 us clicks
-constexpr uint16_t TILT_POSE_OFFSET_US = 450; // five former 90 us clicks
+constexpr uint16_t PAN_POSE_MAX_OFFSET_US = 360;   // three former 120 us clicks
+constexpr uint16_t TILT_POSE_MAX_OFFSET_US = 450; // five former 90 us clicks
 constexpr char MOTION_NVS_NAMESPACE[] = "kage_motion";
 constexpr char PAN_ZERO_KEY[] = "pan_zero";
 constexpr char TILT_ZERO_KEY[] = "tilt_zero";
+constexpr char MOTOR_LIMIT_KEY[] = "motor_limit";
+constexpr char PAN_RANGE_KEY[] = "pan_range";
+constexpr char TILT_RANGE_KEY[] = "tilt_range";
+constexpr char SERVO_SPEED_KEY[] = "servo_speed";
 
 static std::atomic<bool> s_busy{false};
 static std::atomic<bool> s_servo_cancel{false};
@@ -82,16 +85,41 @@ static std::atomic<uint16_t> s_tilt_target_us{TILT_OUTER_SAFE_US};
 static std::atomic<uint16_t> s_pan_zero_us{SERVO_CENTER_US};
 static std::atomic<uint16_t> s_tilt_zero_us{TILT_OUTER_SAFE_US};
 static std::atomic<bool> s_calibration_mode{false};
+static std::atomic<uint8_t> s_motor_limit{100};
+static std::atomic<uint8_t> s_pan_range{100};
+static std::atomic<uint8_t> s_tilt_range{50};
+static std::atomic<uint8_t> s_servo_speed{50};
 
 static bool pca_init();
 static esp_err_t pca_channel(uint8_t channel, uint16_t pulse, bool full_off);
 static bool servo_position(uint8_t channel, uint16_t micros);
 
 static bool valid_saved_zeros(uint16_t pan, uint16_t tilt) {
-    return pan >= SERVO_MIN_US + PAN_POSE_OFFSET_US &&
-           pan <= SERVO_MAX_US - PAN_POSE_OFFSET_US &&
+    return pan >= SERVO_MIN_US + PAN_POSE_MAX_OFFSET_US &&
+           pan <= SERVO_MAX_US - PAN_POSE_MAX_OFFSET_US &&
            tilt >= SERVO_MIN_US &&
-           tilt <= SERVO_MAX_US - TILT_POSE_OFFSET_US;
+           tilt <= SERVO_MAX_US - TILT_POSE_MAX_OFFSET_US;
+}
+
+static uint8_t read_percent(nvs_handle_t handle, const char *key, uint8_t fallback) {
+    uint8_t value = fallback;
+    if (nvs_get_u8(handle, key, &value) != ESP_OK || value < 10 || value > 100) {
+        return fallback;
+    }
+    return value;
+}
+
+static void load_motion_settings() {
+    nvs_handle_t handle;
+    if (nvs_open(MOTION_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return;
+    s_motor_limit.store(read_percent(handle, MOTOR_LIMIT_KEY, 100), std::memory_order_release);
+    s_pan_range.store(read_percent(handle, PAN_RANGE_KEY, 100), std::memory_order_release);
+    s_tilt_range.store(read_percent(handle, TILT_RANGE_KEY, 50), std::memory_order_release);
+    s_servo_speed.store(read_percent(handle, SERVO_SPEED_KEY, 50), std::memory_order_release);
+    nvs_close(handle);
+    event_log_add("Motion config: motor %u pan %u tilt %u speed %u%%",
+                  s_motor_limit.load(), s_pan_range.load(), s_tilt_range.load(),
+                  s_servo_speed.load());
 }
 
 static void load_servo_zeros() {
@@ -168,7 +196,8 @@ static void set_motor_channel(size_t index, uint32_t duty) {
 
 static uint32_t percent_duty(int percent) {
     const int magnitude = percent < 0 ? -percent : percent;
-    return static_cast<uint32_t>(magnitude > 100 ? 100 : magnitude) * PWM_MAX / 100U;
+    const uint32_t requested = static_cast<uint32_t>(magnitude > 100 ? 100 : magnitude);
+    return requested * s_motor_limit.load(std::memory_order_acquire) * PWM_MAX / 10000U;
 }
 
 static void motors_apply_analog(int left, int right) {
@@ -181,11 +210,18 @@ static void motors_apply_analog(int left, int right) {
     else if (right < 0) set_motor_channel(2, right_duty);// right OUT3
 }
 
-static uint16_t step_toward(uint16_t current, uint16_t target) {
+static uint16_t servo_step_us() {
+    const uint16_t speed = s_servo_speed.load(std::memory_order_acquire);
+    // 10..100% maps to 4..28 us per 20 ms. The default 50% is 14 us,
+    // matching the previously tested movement speed.
+    return static_cast<uint16_t>(4U + (speed - 10U) * 24U / 90U);
+}
+
+static uint16_t step_toward(uint16_t current, uint16_t target, uint16_t step) {
     if (current < target) return static_cast<uint16_t>(
-        current + SERVO_SMOOTH_STEP_US > target ? target : current + SERVO_SMOOTH_STEP_US);
+        current + step > target ? target : current + step);
     if (current > target) return static_cast<uint16_t>(
-        current - SERVO_SMOOTH_STEP_US < target ? target : current - SERVO_SMOOTH_STEP_US);
+        current - step < target ? target : current - step);
     return current;
 }
 
@@ -196,8 +232,9 @@ static void servo_smooth_task(void *) {
         const uint16_t tilt_target = s_tilt_target_us.load(std::memory_order_acquire);
         const bool moving = s_pan_us != pan_target || s_tilt_us != tilt_target;
         if (moving && pca_init()) {
-            const uint16_t next_pan = step_toward(s_pan_us, pan_target);
-            const uint16_t next_tilt = step_toward(s_tilt_us, tilt_target);
+            const uint16_t step = servo_step_us();
+            const uint16_t next_pan = step_toward(s_pan_us, pan_target, step);
+            const uint16_t next_tilt = step_toward(s_tilt_us, tilt_target, step);
             if (next_pan != s_pan_us) (void)servo_position(PCA_HORIZONTAL_CHANNEL, next_pan);
             if (next_tilt != s_tilt_us) (void)servo_position(PCA_VERTICAL_CHANNEL, next_tilt);
             s_pan_us = next_pan;
@@ -469,6 +506,7 @@ void robot_motion_safe_boot(void) {
 }
 
 void robot_motion_begin(void) {
+    load_motion_settings();
     load_servo_zeros();
     xTaskCreate(servo_smooth_task, "servo_smooth", 4096, nullptr, 5, nullptr);
 }
@@ -534,10 +572,14 @@ void robot_servo_pose(int pan_state, int tilt_state) {
     if (pan_state > 1) pan_state = 1;
     if (tilt_state < 0) tilt_state = 0;
     if (tilt_state > 1) tilt_state = 1;
+    const int pan_offset = PAN_POSE_MAX_OFFSET_US *
+                           s_pan_range.load(std::memory_order_acquire) / 100;
+    const int tilt_offset = TILT_POSE_MAX_OFFSET_US *
+                            s_tilt_range.load(std::memory_order_acquire) / 100;
     const int pan = static_cast<int>(s_pan_zero_us.load(std::memory_order_acquire)) +
-                    pan_state * static_cast<int>(PAN_POSE_OFFSET_US);
+                    pan_state * pan_offset;
     const int tilt = static_cast<int>(s_tilt_zero_us.load(std::memory_order_acquire)) +
-                     tilt_state * static_cast<int>(TILT_POSE_OFFSET_US);
+                     tilt_state * tilt_offset;
     s_pan_target_us.store(clamp_servo(pan), std::memory_order_release);
     s_tilt_target_us.store(clamp_servo(tilt), std::memory_order_release);
 }
@@ -562,10 +604,10 @@ void robot_servo_adjust(int pan_delta_us, int tilt_delta_us) {
     // Keep enough absolute headroom for every future -1/0/+1 pan pose and
     // the complete zero/up tilt motion. A saved calibration is therefore
     // always usable and can never authorize an out-of-range pulse.
-    if (pan < SERVO_MIN_US + PAN_POSE_OFFSET_US) pan = SERVO_MIN_US + PAN_POSE_OFFSET_US;
-    if (pan > SERVO_MAX_US - PAN_POSE_OFFSET_US) pan = SERVO_MAX_US - PAN_POSE_OFFSET_US;
+    if (pan < SERVO_MIN_US + PAN_POSE_MAX_OFFSET_US) pan = SERVO_MIN_US + PAN_POSE_MAX_OFFSET_US;
+    if (pan > SERVO_MAX_US - PAN_POSE_MAX_OFFSET_US) pan = SERVO_MAX_US - PAN_POSE_MAX_OFFSET_US;
     if (tilt < SERVO_MIN_US) tilt = SERVO_MIN_US;
-    if (tilt > SERVO_MAX_US - TILT_POSE_OFFSET_US) tilt = SERVO_MAX_US - TILT_POSE_OFFSET_US;
+    if (tilt > SERVO_MAX_US - TILT_POSE_MAX_OFFSET_US) tilt = SERVO_MAX_US - TILT_POSE_MAX_OFFSET_US;
     s_pan_target_us.store(static_cast<uint16_t>(pan), std::memory_order_release);
     s_tilt_target_us.store(static_cast<uint16_t>(tilt), std::memory_order_release);
 }
@@ -589,6 +631,39 @@ bool robot_servo_calibration_save(void) {
     s_tilt_zero_us.store(tilt, std::memory_order_release);
     s_calibration_mode.store(false, std::memory_order_release);
     event_log_add("Servo zeros saved: %u/%u us", pan, tilt);
+    return true;
+}
+
+bool robot_motion_settings(int motor_limit, int pan_range, int tilt_range,
+                           int servo_speed) {
+    if (motor_limit < 10 || motor_limit > 100 ||
+        pan_range < 10 || pan_range > 100 ||
+        tilt_range < 10 || tilt_range > 100 ||
+        servo_speed < 10 || servo_speed > 100) {
+        event_log_add("Motion config rejected");
+        return false;
+    }
+
+    nvs_handle_t handle;
+    if (nvs_open(MOTION_NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) return false;
+    const bool written = nvs_set_u8(handle, MOTOR_LIMIT_KEY, static_cast<uint8_t>(motor_limit)) == ESP_OK &&
+                         nvs_set_u8(handle, PAN_RANGE_KEY, static_cast<uint8_t>(pan_range)) == ESP_OK &&
+                         nvs_set_u8(handle, TILT_RANGE_KEY, static_cast<uint8_t>(tilt_range)) == ESP_OK &&
+                         nvs_set_u8(handle, SERVO_SPEED_KEY, static_cast<uint8_t>(servo_speed)) == ESP_OK &&
+                         nvs_commit(handle) == ESP_OK;
+    nvs_close(handle);
+    if (!written) return false;
+
+    s_motor_limit.store(static_cast<uint8_t>(motor_limit), std::memory_order_release);
+    s_pan_range.store(static_cast<uint8_t>(pan_range), std::memory_order_release);
+    s_tilt_range.store(static_cast<uint8_t>(tilt_range), std::memory_order_release);
+    s_servo_speed.store(static_cast<uint8_t>(servo_speed), std::memory_order_release);
+    s_drive_left.store(0, std::memory_order_release);
+    s_drive_right.store(0, std::memory_order_release);
+    s_drive_deadline.store(0, std::memory_order_release);
+    motors_stop();
+    event_log_add("Motion config saved: %d/%d/%d/%d", motor_limit, pan_range,
+                  tilt_range, servo_speed);
     return true;
 }
 

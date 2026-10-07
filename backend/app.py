@@ -64,9 +64,35 @@ KAGE_API_KEY = os.getenv("KAGE_API_KEY", "").strip()
 WEB_PIPELINE_VERSION = "web-progressive-v4.0"
 RESEARCH_MEMORY_TTL_SECONDS = 15 * 60
 CONTROL_PAGE_PATH = Path(__file__).with_name("control.html")
+CONTROL_MOTION_SETTINGS_PATH = Path(os.getenv(
+    "KAGE_MOTION_SETTINGS_PATH",
+    str(Path(__file__).with_name("motion_settings.json")),
+))
 CONTROL_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
 control_session_lock = threading.Lock()
 control_sessions = {}
+motion_settings_lock = threading.Lock()
+MOTION_SETTINGS_DEFAULTS = {
+    "motor_limit": 100,
+    "pan_range": 100,
+    "tilt_range": 50,
+    "servo_speed": 50,
+}
+
+
+def load_motion_settings() -> dict[str, int]:
+    try:
+        saved = json.loads(CONTROL_MOTION_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        saved = {}
+    return {
+        key: value if isinstance((value := saved.get(key)), int) and 10 <= value <= 100
+        else default
+        for key, default in MOTION_SETTINGS_DEFAULTS.items()
+    }
+
+
+motion_settings = load_motion_settings()
 
 AUDIO_SAMPLE_RATE = 16000
 AUDIO_CHANNELS = 1
@@ -460,6 +486,13 @@ class ServoPoseRequest(BaseModel):
 class ServoAdjustRequest(BaseModel):
     pan_delta: int = 0
     tilt_delta: int = 0
+
+
+class MotionSettingsRequest(BaseModel):
+    motor_limit: int
+    pan_range: int
+    tilt_range: int
+    servo_speed: int
 
 
 def require_kage_key(request: Request) -> None:
@@ -1051,6 +1084,45 @@ def control_drive(body: DriveControlRequest, request: Request):
         raise HTTPException(status_code=400, detail="Vitesse hors limites")
     command = f"drive:{body.left}:{body.right}"
     return {"ok": True, "command": command, "sequence": set_command(command)}
+
+
+@app.get("/control/settings")
+def get_control_settings(request: Request):
+    require_kage_key(request)
+    with motion_settings_lock:
+        return dict(motion_settings)
+
+
+@app.post("/control/settings")
+def update_control_settings(body: MotionSettingsRequest, request: Request):
+    """Persist motion limits and send them to the Waveshare firmware."""
+    require_kage_key(request)
+    values = {
+        "motor_limit": body.motor_limit,
+        "pan_range": body.pan_range,
+        "tilt_range": body.tilt_range,
+        "servo_speed": body.servo_speed,
+    }
+    if any(value < 10 or value > 100 for value in values.values()):
+        raise HTTPException(status_code=400, detail="Les réglages doivent être entre 10 et 100 %")
+
+    with motion_settings_lock:
+        CONTROL_MOTION_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary = CONTROL_MOTION_SETTINGS_PATH.with_suffix(".tmp")
+        temporary.write_text(json.dumps(values, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(CONTROL_MOTION_SETTINGS_PATH)
+        motion_settings.update(values)
+
+    command = (
+        f"motion_config:{body.motor_limit}:{body.pan_range}:"
+        f"{body.tilt_range}:{body.servo_speed}"
+    )
+    return {
+        "ok": True,
+        "settings": values,
+        "command": command,
+        "sequence": set_command(command),
+    }
 
 
 @app.post("/control/servos")

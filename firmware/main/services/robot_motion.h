@@ -47,3 +47,7 @@ void robot_servo_pose(int pan_state, int tilt_state);
 void robot_servo_adjust(int pan_delta_us, int tilt_delta_us);
 void robot_servo_calibration_begin(void);
 bool robot_servo_calibration_save(void);
+// Runtime limits selected from the control page. Values are percentages and
+// are persisted in NVS, so changing them later does not require another flash.
+bool robot_motion_settings(int motor_limit, int pan_range, int tilt_range,
+                           int servo_speed);

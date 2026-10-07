@@ -169,6 +169,13 @@ static void dispatch_command(const char *command) {
         robot_servo_adjust(first, second);
         return;
     }
+    int third = 0;
+    int fourth = 0;
+    if (std::sscanf(command, "motion_config:%d:%d:%d:%d",
+                    &first, &second, &third, &fourth) == 4) {
+        (void)robot_motion_settings(first, second, third, fourth);
+        return;
+    }
     if (std::strcmp(command, "servo_cal_begin") == 0) {
         robot_servo_calibration_begin();
         return;
