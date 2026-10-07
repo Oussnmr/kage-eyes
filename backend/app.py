@@ -439,6 +439,16 @@ class AskRequest(BaseModel):
 
 class SpeechRequest(BaseModel):
     text: str
+
+
+class DriveControlRequest(BaseModel):
+    left: int
+    right: int
+
+
+class ServoControlRequest(BaseModel):
+    pan: int
+    tilt: int
     voice: str = KAGE_TTS_VOICE
 
 
@@ -1018,6 +1028,26 @@ def send_command(command: str, request: Request):
         "command": command,
         "sequence": sequence,
     }
+
+
+@app.post("/control/drive")
+def control_drive(body: DriveControlRequest, request: Request):
+    """Persistent differential drive input from the landscape phone UI."""
+    require_kage_key(request)
+    if not -100 <= body.left <= 100 or not -100 <= body.right <= 100:
+        raise HTTPException(status_code=400, detail="Vitesse hors limites")
+    command = f"drive:{body.left}:{body.right}"
+    return {"ok": True, "command": command, "sequence": set_command(command)}
+
+
+@app.post("/control/servos")
+def control_servos(body: ServoControlRequest, request: Request):
+    """Absolute, cable-safe virtual positions. The ESP32 smooths the motion."""
+    require_kage_key(request)
+    if not 0 <= body.pan <= 100 or not 0 <= body.tilt <= 100:
+        raise HTTPException(status_code=400, detail="Position hors limites")
+    command = f"servo:{body.pan}:{body.tilt}"
+    return {"ok": True, "command": command, "sequence": set_command(command)}
 
 
 @app.post("/assistant-state/{assistant_state}")

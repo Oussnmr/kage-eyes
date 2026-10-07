@@ -32,5 +32,11 @@ void robot_motion_command(RobotMove move);
 // Hold-to-run controls used by the phone UI. Each drive request refreshes a
 // short watchdog; loss of Wi-Fi or a released button therefore stops motion.
 void robot_drive_hold(RobotDrive drive);
+// Differential-drive input from the phone controller. Values are -100..100;
+// positive is forward for the matching tracked side.
+void robot_drive_analog(int left_percent, int right_percent);
 void robot_motion_stop(void);
 void robot_servo_nudge(RobotServoNudge nudge);
+// Absolute virtual positions from the phone controller (0..100).  The
+// firmware owns the smooth trajectory and cable-safe limits.
+void robot_servo_targets(int pan_percent, int tilt_percent);

@@ -47,16 +47,22 @@ constexpr uint16_t SERVO_HIGH_US = 1800;
 constexpr uint16_t SERVO_CENTER_US = 1500;
 constexpr uint16_t SERVO_MIN_US = 900;
 constexpr uint16_t SERVO_MAX_US = 2100;
+constexpr uint16_t PAN_LEFT_SAFE_US = 1100;
+constexpr uint16_t PAN_RIGHT_SAFE_US = 1900;
 // The vertical bracket is manually parked at this outer cable-safe end while
 // unpowered. From there it may travel only toward its mechanical centre.
 constexpr uint16_t TILT_OUTER_SAFE_US = 900;
 constexpr uint16_t TILT_CENTRE_SAFE_US = SERVO_CENTER_US;
 constexpr uint16_t SERVO_NUDGE_US = 35;
 constexpr TickType_t SERVO_NUDGE_HOLD = pdMS_TO_TICKS(140);
+constexpr uint16_t SERVO_SMOOTH_STEP_US = 14;
+constexpr TickType_t SERVO_SMOOTH_TICK = pdMS_TO_TICKS(20);
+constexpr TickType_t SERVO_RELEASE_DELAY = pdMS_TO_TICKS(500);
 
 static std::atomic<bool> s_busy{false};
 static std::atomic<bool> s_servo_cancel{false};
-static std::atomic<int> s_drive_mode{-1};
+static std::atomic<int> s_drive_left{0};
+static std::atomic<int> s_drive_right{0};
 static std::atomic<uint32_t> s_drive_deadline{0};
 static bool s_pwm_ready;
 static bool s_i2c_diagnostics_logged;
@@ -65,6 +71,12 @@ static uint16_t s_pan_us = SERVO_CENTER_US;
 // PCA9685 has no position feedback.  Match the known hand-parked position so
 // the first press is a small move rather than a jump to the logical centre.
 static uint16_t s_tilt_us = TILT_OUTER_SAFE_US;
+static std::atomic<uint16_t> s_pan_target_us{SERVO_CENTER_US};
+static std::atomic<uint16_t> s_tilt_target_us{TILT_OUTER_SAFE_US};
+
+static bool pca_init();
+static esp_err_t pca_channel(uint8_t channel, uint16_t pulse, bool full_off);
+static bool servo_position(uint8_t channel, uint16_t micros);
 
 constexpr gpio_num_t MOTOR_PINS[] = {LEFT_IN1, LEFT_IN2, RIGHT_IN3, RIGHT_IN4};
 constexpr ledc_channel_t MOTOR_CHANNELS[] = {
@@ -117,49 +129,80 @@ static void set_motor_channel(size_t index, uint32_t duty) {
     ledc_update_duty(PWM_MODE, MOTOR_CHANNELS[index]);
 }
 
-static void motors_apply(RobotDrive drive) {
+static uint32_t percent_duty(int percent) {
+    const int magnitude = percent < 0 ? -percent : percent;
+    return static_cast<uint32_t>(magnitude > 100 ? 100 : magnitude) * PWM_MAX / 100U;
+}
+
+static void motors_apply_analog(int left, int right) {
     motors_stop();
-    switch (drive) {
-        case ROBOT_DRIVE_FORWARD:
-            set_motor_channel(1, TEST_DUTY);  // left OUT2
-            set_motor_channel(3, TEST_DUTY);  // right OUT4
-            break;
-        case ROBOT_DRIVE_BACKWARD:
-            set_motor_channel(0, TEST_DUTY);  // left OUT1
-            set_motor_channel(2, TEST_DUTY);  // right OUT3
-            break;
-        case ROBOT_DRIVE_LEFT:
-            set_motor_channel(0, TEST_DUTY);  // left backward
-            set_motor_channel(3, TEST_DUTY);  // right forward
-            break;
-        case ROBOT_DRIVE_RIGHT:
-            set_motor_channel(1, TEST_DUTY);  // left forward
-            set_motor_channel(2, TEST_DUTY);  // right backward
-            break;
+    const uint32_t left_duty = percent_duty(left);
+    const uint32_t right_duty = percent_duty(right);
+    if (left > 0) set_motor_channel(1, left_duty);       // left OUT2
+    else if (left < 0) set_motor_channel(0, left_duty);  // left OUT1
+    if (right > 0) set_motor_channel(3, right_duty);     // right OUT4
+    else if (right < 0) set_motor_channel(2, right_duty);// right OUT3
+}
+
+static uint16_t step_toward(uint16_t current, uint16_t target) {
+    if (current < target) return static_cast<uint16_t>(
+        current + SERVO_SMOOTH_STEP_US > target ? target : current + SERVO_SMOOTH_STEP_US);
+    if (current > target) return static_cast<uint16_t>(
+        current - SERVO_SMOOTH_STEP_US < target ? target : current - SERVO_SMOOTH_STEP_US);
+    return current;
+}
+
+static void servo_smooth_task(void *) {
+    TickType_t settled_since = 0;
+    for (;;) {
+        const uint16_t pan_target = s_pan_target_us.load(std::memory_order_acquire);
+        const uint16_t tilt_target = s_tilt_target_us.load(std::memory_order_acquire);
+        const bool moving = s_pan_us != pan_target || s_tilt_us != tilt_target;
+        if (moving && pca_init()) {
+            const uint16_t next_pan = step_toward(s_pan_us, pan_target);
+            const uint16_t next_tilt = step_toward(s_tilt_us, tilt_target);
+            if (next_pan != s_pan_us) (void)servo_position(PCA_HORIZONTAL_CHANNEL, next_pan);
+            if (next_tilt != s_tilt_us) (void)servo_position(PCA_VERTICAL_CHANNEL, next_tilt);
+            s_pan_us = next_pan;
+            s_tilt_us = next_tilt;
+            settled_since = 0;
+        } else if (s_pca) {
+            const TickType_t now = xTaskGetTickCount();
+            if (!settled_since) settled_since = now;
+            if (now - settled_since >= SERVO_RELEASE_DELAY) {
+                (void)pca_channel(PCA_HORIZONTAL_CHANNEL, 0, true);
+                (void)pca_channel(PCA_VERTICAL_CHANNEL, 0, true);
+            }
+        }
+        vTaskDelay(SERVO_SMOOTH_TICK);
     }
 }
 
 static void drive_watchdog_task(void *) {
-    int applied = -1;
+    int applied_left = 1000;
+    int applied_right = 1000;
     for (;;) {
-        const int requested = s_drive_mode.load(std::memory_order_acquire);
+        const int requested_left = s_drive_left.load(std::memory_order_acquire);
+        const int requested_right = s_drive_right.load(std::memory_order_acquire);
         const uint32_t now = xTaskGetTickCount();
         const uint32_t deadline = s_drive_deadline.load(std::memory_order_acquire);
-        const bool alive = requested >= 0 && static_cast<int32_t>(deadline - now) > 0;
+        const bool alive = static_cast<int32_t>(deadline - now) > 0;
 
-        if (alive && requested != applied) {
+        if (alive && (requested_left != applied_left || requested_right != applied_right)) {
             if (pwm_init()) {
-                motors_apply(static_cast<RobotDrive>(requested));
-                applied = requested;
+                motors_apply_analog(requested_left, requested_right);
+                applied_left = requested_left;
+                applied_right = requested_right;
             } else {
                 ESP_LOGE(TAG, "PWM initialization failed");
                 event_log_add("Motor PWM init failed");
-                s_drive_mode.store(-1, std::memory_order_release);
+                s_drive_left.store(0, std::memory_order_release);
+                s_drive_right.store(0, std::memory_order_release);
             }
-        } else if (!alive && applied != -1) {
+        } else if (!alive && (applied_left || applied_right)) {
             motors_stop();
-            s_drive_mode.store(-1, std::memory_order_release);
-            applied = -1;
+            applied_left = 0;
+            applied_right = 0;
         }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
@@ -380,6 +423,7 @@ void robot_motion_safe_boot(void) {
         gpio_set_level(pin, 0);
     }
     xTaskCreate(drive_watchdog_task, "drive_watchdog", 3072, nullptr, 6, nullptr);
+    xTaskCreate(servo_smooth_task, "servo_smooth", 4096, nullptr, 5, nullptr);
 }
 
 void robot_motion_command(RobotMove move) {
@@ -399,15 +443,42 @@ void robot_motion_command(RobotMove move) {
 }
 
 void robot_drive_hold(RobotDrive drive) {
-    const uint32_t deadline = xTaskGetTickCount() + DRIVE_WATCHDOG;
-    s_drive_deadline.store(deadline, std::memory_order_release);
-    s_drive_mode.store(static_cast<int>(drive), std::memory_order_release);
+    switch (drive) {
+        case ROBOT_DRIVE_FORWARD: robot_drive_analog(100, 100); break;
+        case ROBOT_DRIVE_BACKWARD: robot_drive_analog(-100, -100); break;
+        case ROBOT_DRIVE_LEFT: robot_drive_analog(-100, 100); break;
+        case ROBOT_DRIVE_RIGHT: robot_drive_analog(100, -100); break;
+    }
+}
+
+void robot_drive_analog(int left_percent, int right_percent) {
+    if (left_percent > 100) left_percent = 100;
+    if (left_percent < -100) left_percent = -100;
+    if (right_percent > 100) right_percent = 100;
+    if (right_percent < -100) right_percent = -100;
+    s_drive_left.store(left_percent, std::memory_order_release);
+    s_drive_right.store(right_percent, std::memory_order_release);
+    s_drive_deadline.store(xTaskGetTickCount() + DRIVE_WATCHDOG, std::memory_order_release);
 }
 
 void robot_motion_stop(void) {
-    s_drive_mode.store(-1, std::memory_order_release);
+    s_drive_left.store(0, std::memory_order_release);
+    s_drive_right.store(0, std::memory_order_release);
     s_servo_cancel.store(true, std::memory_order_release);
     motors_stop();
+}
+
+void robot_servo_targets(int pan_percent, int tilt_percent) {
+    if (pan_percent < 0) pan_percent = 0;
+    if (pan_percent > 100) pan_percent = 100;
+    if (tilt_percent < 0) tilt_percent = 0;
+    if (tilt_percent > 100) tilt_percent = 100;
+    const uint16_t pan = static_cast<uint16_t>(PAN_LEFT_SAFE_US +
+        (PAN_RIGHT_SAFE_US - PAN_LEFT_SAFE_US) * pan_percent / 100);
+    const uint16_t tilt = static_cast<uint16_t>(TILT_OUTER_SAFE_US +
+        (TILT_CENTRE_SAFE_US - TILT_OUTER_SAFE_US) * tilt_percent / 100);
+    s_pan_target_us.store(pan, std::memory_order_release);
+    s_tilt_target_us.store(tilt, std::memory_order_release);
 }
 
 void robot_servo_nudge(RobotServoNudge nudge) {

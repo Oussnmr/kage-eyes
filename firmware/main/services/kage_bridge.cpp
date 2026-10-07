@@ -1,6 +1,7 @@
 #include "kage_bridge.h"
 
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 
 #include "cJSON.h"
@@ -150,6 +151,16 @@ static void update_info(bool reachable, int status, uint32_t sequence,
 
 static void dispatch_command(const char *command) {
     if (!command) return;
+    int first = 0;
+    int second = 0;
+    if (std::sscanf(command, "drive:%d:%d", &first, &second) == 2) {
+        robot_drive_analog(first, second);
+        return;
+    }
+    if (std::sscanf(command, "servo:%d:%d", &first, &second) == 2) {
+        robot_servo_targets(first, second);
+        return;
+    }
     if (std::strcmp(command, "idle") == 0) robot_eyes_remote_idle();
     else if (std::strcmp(command, "blink") == 0) robot_eyes_remote_blink();
     else if (std::strcmp(command, "sleep") == 0) robot_eyes_remote_sleep();
