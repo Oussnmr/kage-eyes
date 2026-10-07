@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs.h"
 
 #include "event_log.h"
 
@@ -58,6 +59,11 @@ constexpr TickType_t SERVO_NUDGE_HOLD = pdMS_TO_TICKS(140);
 constexpr uint16_t SERVO_SMOOTH_STEP_US = 14;
 constexpr TickType_t SERVO_SMOOTH_TICK = pdMS_TO_TICKS(20);
 constexpr TickType_t SERVO_RELEASE_DELAY = pdMS_TO_TICKS(500);
+constexpr uint16_t PAN_POSE_OFFSET_US = 360;   // three former 120 us clicks
+constexpr uint16_t TILT_POSE_OFFSET_US = 450; // five former 90 us clicks
+constexpr char MOTION_NVS_NAMESPACE[] = "kage_motion";
+constexpr char PAN_ZERO_KEY[] = "pan_zero";
+constexpr char TILT_ZERO_KEY[] = "tilt_zero";
 
 static std::atomic<bool> s_busy{false};
 static std::atomic<bool> s_servo_cancel{false};
@@ -73,10 +79,41 @@ static uint16_t s_pan_us = SERVO_CENTER_US;
 static uint16_t s_tilt_us = TILT_OUTER_SAFE_US;
 static std::atomic<uint16_t> s_pan_target_us{SERVO_CENTER_US};
 static std::atomic<uint16_t> s_tilt_target_us{TILT_OUTER_SAFE_US};
+static std::atomic<uint16_t> s_pan_zero_us{SERVO_CENTER_US};
+static std::atomic<uint16_t> s_tilt_zero_us{TILT_OUTER_SAFE_US};
+static std::atomic<bool> s_calibration_mode{false};
 
 static bool pca_init();
 static esp_err_t pca_channel(uint8_t channel, uint16_t pulse, bool full_off);
 static bool servo_position(uint8_t channel, uint16_t micros);
+
+static bool valid_saved_zeros(uint16_t pan, uint16_t tilt) {
+    return pan >= SERVO_MIN_US + PAN_POSE_OFFSET_US &&
+           pan <= SERVO_MAX_US - PAN_POSE_OFFSET_US &&
+           tilt >= SERVO_MIN_US &&
+           tilt <= SERVO_MAX_US - TILT_POSE_OFFSET_US;
+}
+
+static void load_servo_zeros() {
+    nvs_handle_t handle;
+    if (nvs_open(MOTION_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return;
+    uint16_t pan = 0;
+    uint16_t tilt = 0;
+    const bool loaded = nvs_get_u16(handle, PAN_ZERO_KEY, &pan) == ESP_OK &&
+                        nvs_get_u16(handle, TILT_ZERO_KEY, &tilt) == ESP_OK;
+    nvs_close(handle);
+    if (!loaded || !valid_saved_zeros(pan, tilt)) {
+        event_log_add("Servo calibration missing or invalid");
+        return;
+    }
+    s_pan_zero_us.store(pan, std::memory_order_release);
+    s_tilt_zero_us.store(tilt, std::memory_order_release);
+    s_pan_us = pan;
+    s_tilt_us = tilt;
+    s_pan_target_us.store(pan, std::memory_order_release);
+    s_tilt_target_us.store(tilt, std::memory_order_release);
+    event_log_add("Servo zeros loaded: %u/%u us", pan, tilt);
+}
 
 constexpr gpio_num_t MOTOR_PINS[] = {LEFT_IN1, LEFT_IN2, RIGHT_IN3, RIGHT_IN4};
 constexpr ledc_channel_t MOTOR_CHANNELS[] = {
@@ -165,6 +202,12 @@ static void servo_smooth_task(void *) {
             if (next_tilt != s_tilt_us) (void)servo_position(PCA_VERTICAL_CHANNEL, next_tilt);
             s_pan_us = next_pan;
             s_tilt_us = next_tilt;
+            settled_since = 0;
+        } else if (s_pca && s_calibration_mode.load(std::memory_order_acquire)) {
+            // Keep both channels energized while the user performs the fine
+            // adjustment so the saved zero corresponds to a real PWM value.
+            (void)servo_position(PCA_HORIZONTAL_CHANNEL, s_pan_us);
+            (void)servo_position(PCA_VERTICAL_CHANNEL, s_tilt_us);
             settled_since = 0;
         } else if (s_pca) {
             const TickType_t now = xTaskGetTickCount();
@@ -423,6 +466,10 @@ void robot_motion_safe_boot(void) {
         gpio_set_level(pin, 0);
     }
     xTaskCreate(drive_watchdog_task, "drive_watchdog", 3072, nullptr, 6, nullptr);
+}
+
+void robot_motion_begin(void) {
+    load_servo_zeros();
     xTaskCreate(servo_smooth_task, "servo_smooth", 4096, nullptr, 5, nullptr);
 }
 
@@ -479,6 +526,70 @@ void robot_servo_targets(int pan_percent, int tilt_percent) {
         (TILT_CENTRE_SAFE_US - TILT_OUTER_SAFE_US) * tilt_percent / 100);
     s_pan_target_us.store(pan, std::memory_order_release);
     s_tilt_target_us.store(tilt, std::memory_order_release);
+}
+
+void robot_servo_pose(int pan_state, int tilt_state) {
+    if (s_calibration_mode.load(std::memory_order_acquire)) return;
+    if (pan_state < -1) pan_state = -1;
+    if (pan_state > 1) pan_state = 1;
+    if (tilt_state < 0) tilt_state = 0;
+    if (tilt_state > 1) tilt_state = 1;
+    const int pan = static_cast<int>(s_pan_zero_us.load(std::memory_order_acquire)) +
+                    pan_state * static_cast<int>(PAN_POSE_OFFSET_US);
+    const int tilt = static_cast<int>(s_tilt_zero_us.load(std::memory_order_acquire)) +
+                     tilt_state * static_cast<int>(TILT_POSE_OFFSET_US);
+    s_pan_target_us.store(clamp_servo(pan), std::memory_order_release);
+    s_tilt_target_us.store(clamp_servo(tilt), std::memory_order_release);
+}
+
+void robot_servo_calibration_begin(void) {
+    // Energize the last known logical position. The user can then use the
+    // fine-adjust arrows to place the mechanism precisely before saving.
+    s_calibration_mode.store(true, std::memory_order_release);
+    s_pan_target_us.store(s_pan_us, std::memory_order_release);
+    s_tilt_target_us.store(s_tilt_us, std::memory_order_release);
+    if (pca_init()) {
+        (void)servo_position(PCA_HORIZONTAL_CHANNEL, s_pan_us);
+        (void)servo_position(PCA_VERTICAL_CHANNEL, s_tilt_us);
+    }
+    event_log_add("Servo calibration mode");
+}
+
+void robot_servo_adjust(int pan_delta_us, int tilt_delta_us) {
+    if (!s_calibration_mode.load(std::memory_order_acquire)) return;
+    int pan = static_cast<int>(s_pan_target_us.load(std::memory_order_acquire)) + pan_delta_us;
+    int tilt = static_cast<int>(s_tilt_target_us.load(std::memory_order_acquire)) + tilt_delta_us;
+    // Keep enough absolute headroom for every future -1/0/+1 pan pose and
+    // the complete zero/up tilt motion. A saved calibration is therefore
+    // always usable and can never authorize an out-of-range pulse.
+    if (pan < SERVO_MIN_US + PAN_POSE_OFFSET_US) pan = SERVO_MIN_US + PAN_POSE_OFFSET_US;
+    if (pan > SERVO_MAX_US - PAN_POSE_OFFSET_US) pan = SERVO_MAX_US - PAN_POSE_OFFSET_US;
+    if (tilt < SERVO_MIN_US) tilt = SERVO_MIN_US;
+    if (tilt > SERVO_MAX_US - TILT_POSE_OFFSET_US) tilt = SERVO_MAX_US - TILT_POSE_OFFSET_US;
+    s_pan_target_us.store(static_cast<uint16_t>(pan), std::memory_order_release);
+    s_tilt_target_us.store(static_cast<uint16_t>(tilt), std::memory_order_release);
+}
+
+bool robot_servo_calibration_save(void) {
+    if (!s_calibration_mode.load(std::memory_order_acquire)) return false;
+    const uint16_t pan = s_pan_us;
+    const uint16_t tilt = s_tilt_us;
+    if (!valid_saved_zeros(pan, tilt)) {
+        event_log_add("Calibration rejected: unsafe zero");
+        return false;
+    }
+    nvs_handle_t handle;
+    if (nvs_open(MOTION_NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) return false;
+    const bool written = nvs_set_u16(handle, PAN_ZERO_KEY, pan) == ESP_OK &&
+                         nvs_set_u16(handle, TILT_ZERO_KEY, tilt) == ESP_OK &&
+                         nvs_commit(handle) == ESP_OK;
+    nvs_close(handle);
+    if (!written) return false;
+    s_pan_zero_us.store(pan, std::memory_order_release);
+    s_tilt_zero_us.store(tilt, std::memory_order_release);
+    s_calibration_mode.store(false, std::memory_order_release);
+    event_log_add("Servo zeros saved: %u/%u us", pan, tilt);
+    return true;
 }
 
 void robot_servo_nudge(RobotServoNudge nudge) {

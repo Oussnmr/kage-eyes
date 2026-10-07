@@ -24,6 +24,9 @@ enum RobotServoNudge {
 // Called as the very first app_main operation.  It does not touch I2C or the
 // servos; it only guarantees that every DRV8833 input starts at logic zero.
 void robot_motion_safe_boot(void);
+// Called after NVS has been initialized. Loads saved servo zeros and starts
+// the smooth servo worker.
+void robot_motion_begin(void);
 
 // Starts one short, self-stopping bench-test pulse.  A command received while
 // another pulse is active is ignored rather than extending the movement.
@@ -40,3 +43,7 @@ void robot_servo_nudge(RobotServoNudge nudge);
 // Absolute virtual positions from the phone controller (0..100).  The
 // firmware owns the smooth trajectory and cable-safe limits.
 void robot_servo_targets(int pan_percent, int tilt_percent);
+void robot_servo_pose(int pan_state, int tilt_state);
+void robot_servo_adjust(int pan_delta_us, int tilt_delta_us);
+void robot_servo_calibration_begin(void);
+bool robot_servo_calibration_save(void);

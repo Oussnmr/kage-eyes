@@ -27,6 +27,8 @@ extern "C" void app_main(void) {
         ESP_ERROR_CHECK(nvs);
     }
 
+    robot_motion_begin();
+
     wifi_service_begin();
 
     lv_display_t *display = bsp_display_start();

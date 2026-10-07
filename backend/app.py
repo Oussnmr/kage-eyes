@@ -439,6 +439,7 @@ class AskRequest(BaseModel):
 
 class SpeechRequest(BaseModel):
     text: str
+    voice: str = KAGE_TTS_VOICE
 
 
 class DriveControlRequest(BaseModel):
@@ -449,7 +450,16 @@ class DriveControlRequest(BaseModel):
 class ServoControlRequest(BaseModel):
     pan: int
     tilt: int
-    voice: str = KAGE_TTS_VOICE
+
+
+class ServoPoseRequest(BaseModel):
+    pan_state: int
+    tilt_state: int
+
+
+class ServoAdjustRequest(BaseModel):
+    pan_delta: int = 0
+    tilt_delta: int = 0
 
 
 def require_kage_key(request: Request) -> None:
@@ -1050,6 +1060,33 @@ def control_servos(body: ServoControlRequest, request: Request):
     if not 0 <= body.pan <= 100 or not 0 <= body.tilt <= 100:
         raise HTTPException(status_code=400, detail="Position hors limites")
     command = f"servo:{body.pan}:{body.tilt}"
+    return {"ok": True, "command": command, "sequence": set_command(command)}
+
+
+@app.post("/control/servo/pose")
+def control_servo_pose(body: ServoPoseRequest, request: Request):
+    require_kage_key(request)
+    if body.pan_state not in {-1, 0, 1} or body.tilt_state not in {0, 1}:
+        raise HTTPException(status_code=400, detail="État servo invalide")
+    command = f"servo_pose:{body.pan_state}:{body.tilt_state}"
+    return {"ok": True, "command": command, "sequence": set_command(command)}
+
+
+@app.post("/control/servo/adjust")
+def control_servo_adjust(body: ServoAdjustRequest, request: Request):
+    require_kage_key(request)
+    if not -40 <= body.pan_delta <= 40 or not -40 <= body.tilt_delta <= 40:
+        raise HTTPException(status_code=400, detail="Réglage servo trop grand")
+    command = f"servo_adjust:{body.pan_delta}:{body.tilt_delta}"
+    return {"ok": True, "command": command, "sequence": set_command(command)}
+
+
+@app.post("/control/servo/calibration/{action}")
+def control_servo_calibration(action: str, request: Request):
+    require_kage_key(request)
+    if action not in {"begin", "save"}:
+        raise HTTPException(status_code=400, detail="Action de calibration invalide")
+    command = "servo_cal_begin" if action == "begin" else "servo_cal_save"
     return {"ok": True, "command": command, "sequence": set_command(command)}
 
 

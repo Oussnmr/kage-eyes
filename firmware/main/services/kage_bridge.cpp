@@ -161,6 +161,22 @@ static void dispatch_command(const char *command) {
         robot_servo_targets(first, second);
         return;
     }
+    if (std::sscanf(command, "servo_pose:%d:%d", &first, &second) == 2) {
+        robot_servo_pose(first, second);
+        return;
+    }
+    if (std::sscanf(command, "servo_adjust:%d:%d", &first, &second) == 2) {
+        robot_servo_adjust(first, second);
+        return;
+    }
+    if (std::strcmp(command, "servo_cal_begin") == 0) {
+        robot_servo_calibration_begin();
+        return;
+    }
+    if (std::strcmp(command, "servo_cal_save") == 0) {
+        (void)robot_servo_calibration_save();
+        return;
+    }
     if (std::strcmp(command, "idle") == 0) robot_eyes_remote_idle();
     else if (std::strcmp(command, "blink") == 0) robot_eyes_remote_blink();
     else if (std::strcmp(command, "sleep") == 0) robot_eyes_remote_sleep();
