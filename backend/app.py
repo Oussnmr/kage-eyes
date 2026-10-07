@@ -958,7 +958,10 @@ def process_audio(pcm: bytes) -> dict:
 
 @app.get("/control", response_class=HTMLResponse)
 def control_page():
-    return HTMLResponse(CONTROL_PAGE_PATH.read_text(encoding="utf-8"))
+    return HTMLResponse(
+        CONTROL_PAGE_PATH.read_text(encoding="utf-8"),
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
 
 
 @app.get("/control/manifest.webmanifest")
