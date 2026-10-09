@@ -43,7 +43,6 @@ static bool s_started;
 // in flight finishes before /audio starts, and that no new GET starts until the
 // upload has completed.
 static std::atomic<bool> s_voice_network_pending{false};
-static std::atomic<bool> s_ota_network_pending{false};
 static std::atomic<bool> s_touch_hold_requested{false};
 static std::atomic<bool> s_hold_worker_active{false};
 static SemaphoreHandle_t s_http_mutex;
@@ -474,11 +473,6 @@ static void bridge_task(void *) {
     bool was_reachable = false;
 
     for (;;) {
-        if (s_ota_network_pending.load(std::memory_order_acquire)) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-            continue;
-        }
-
         if (!wifi_service_connected()) {
             if (was_reachable) {
                 event_log_add("Backend offline: Wi-Fi lost");
@@ -514,12 +508,6 @@ static void bridge_task(void *) {
         if (s_voice_network_pending.load(std::memory_order_acquire)) {
             xSemaphoreGive(mutex);
             vTaskDelay(pdMS_TO_TICKS(50));
-            continue;
-        }
-
-        if (s_ota_network_pending.load(std::memory_order_acquire)) {
-            xSemaphoreGive(mutex);
-            vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
@@ -606,22 +594,6 @@ void kage_bridge_begin(void) {
     (void)http_mutex();
     event_log_add("Command bridge starting");
     xTaskCreate(bridge_task, "kage_bridge", 6144, nullptr, 4, nullptr);
-}
-
-bool kage_bridge_pause_network_for_ota(uint32_t timeout_ms) {
-    s_ota_network_pending.store(true, std::memory_order_release);
-    SemaphoreHandle_t mutex = http_mutex();
-    if (!mutex || xSemaphoreTake(mutex, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
-        s_ota_network_pending.store(false, std::memory_order_release);
-        return false;
-    }
-    return true;
-}
-
-void kage_bridge_resume_network_after_ota(void) {
-    SemaphoreHandle_t mutex = http_mutex();
-    if (mutex) xSemaphoreGive(mutex);
-    s_ota_network_pending.store(false, std::memory_order_release);
 }
 
 void kage_bridge_toggle_voice(void) {

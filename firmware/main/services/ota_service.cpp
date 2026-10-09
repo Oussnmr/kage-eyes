@@ -9,7 +9,6 @@
 #include "event_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "kage_bridge.h"
 #include "wifi_service.h"
 
 namespace {
@@ -26,14 +25,6 @@ void set_status(const char *status) {
 }
 
 void ota_task(void *) {
-    if (!kage_bridge_pause_network_for_ota(5000)) {
-        s_status = "BRIDGE BUSY";
-        event_log_add("OTA refused: network bridge busy");
-        s_running.store(false);
-        vTaskDelete(nullptr);
-        return;
-    }
-
     set_status("DOWNLOADING");
     esp_http_client_config_t http = {};
     http.url = OTA_URL;
@@ -55,7 +46,6 @@ void ota_task(void *) {
         esp_restart();
     }
 
-    kage_bridge_resume_network_after_ota();
     ESP_LOGE(TAG, "OTA failed: %s (0x%x)", esp_err_to_name(result), result);
     event_log_add("OTA failed: %s 0x%x", esp_err_to_name(result), result);
     s_status = "FAILED - CHECK LOGS";
