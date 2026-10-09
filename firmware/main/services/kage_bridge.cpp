@@ -77,7 +77,7 @@ static void copy_text(char *destination, size_t size, const char *source) {
 }
 
 struct HttpResponse {
-    char body[192];
+    char body[384];
     size_t length;
 };
 
@@ -151,18 +151,52 @@ static void update_info(bool reachable, int status, uint32_t sequence,
 
 static void dispatch_command(const char *command) {
     if (!command) return;
+    if (std::strcmp(command, "dance") != 0) robot_motion_stop_dance();
     int first = 0;
     int second = 0;
     if (std::sscanf(command, "drive:%d:%d", &first, &second) == 2) {
         robot_drive_analog(first, second);
+        robot_eyes_set_drive_state(first, second);
+        robot_eyes_set_behavior(ROBOT_BEHAVIOR_NEUTRAL, 100);
+        return;
+    }
+    char behavior_name[32] = {};
+    if (std::sscanf(command, "behavior:%31[^:]", behavior_name) == 1) {
+        int behavior = ROBOT_BEHAVIOR_NEUTRAL;
+        if (std::strcmp(behavior_name, "listening") == 0) behavior = ROBOT_BEHAVIOR_LISTENING;
+        else if (std::strcmp(behavior_name, "thinking") == 0) behavior = ROBOT_BEHAVIOR_THINKING;
+        else if (std::strcmp(behavior_name, "speaking") == 0) behavior = ROBOT_BEHAVIOR_SPEAKING;
+        else if (std::strcmp(behavior_name, "affirm") == 0) behavior = ROBOT_BEHAVIOR_AFFIRM;
+        else if (std::strcmp(behavior_name, "deny") == 0) behavior = ROBOT_BEHAVIOR_DENY;
+        else if (std::strcmp(behavior_name, "amused") == 0) behavior = ROBOT_BEHAVIOR_AMUSED;
+        else if (std::strcmp(behavior_name, "sarcastic") == 0) behavior = ROBOT_BEHAVIOR_SARCASTIC;
+        else if (std::strcmp(behavior_name, "confused") == 0) behavior = ROBOT_BEHAVIOR_CONFUSED;
+        else if (std::strcmp(behavior_name, "warning") == 0) behavior = ROBOT_BEHAVIOR_WARNING;
+        else if (std::strcmp(behavior_name, "celebrate") == 0) behavior = ROBOT_BEHAVIOR_CELEBRATE;
+        else if (std::strcmp(behavior_name, "happy") == 0) behavior = ROBOT_BEHAVIOR_HAPPY;
+        else if (std::strcmp(behavior_name, "curious") == 0) behavior = ROBOT_BEHAVIOR_CURIOUS;
+        else if (std::strcmp(behavior_name, "surprised") == 0) behavior = ROBOT_BEHAVIOR_SURPRISED;
+        else if (std::strcmp(behavior_name, "worried") == 0) behavior = ROBOT_BEHAVIOR_WORRIED;
+        else if (std::strcmp(behavior_name, "sad") == 0) behavior = ROBOT_BEHAVIOR_SAD;
+        else if (std::strcmp(behavior_name, "satisfied") == 0) behavior = ROBOT_BEHAVIOR_SATISFIED;
+        else if (std::strcmp(behavior_name, "gentle") == 0) behavior = ROBOT_BEHAVIOR_GENTLE;
+        else if (std::strcmp(behavior_name, "explore") == 0) behavior = ROBOT_BEHAVIOR_EXPLORE;
+        if (behavior != ROBOT_BEHAVIOR_NEUTRAL) {
+            robot_motion_behavior(behavior, behavior == ROBOT_BEHAVIOR_EXPLORE ? 3000 : 1500);
+            robot_eyes_set_behavior(behavior, behavior == ROBOT_BEHAVIOR_EXPLORE ? 3000 : 1500);
+        }
         return;
     }
     if (std::sscanf(command, "servo:%d:%d", &first, &second) == 2) {
+        robot_motion_cancel_behavior();
         robot_servo_targets(first, second);
+        robot_eyes_set_manual_look(first < 46 ? -1 : (first > 54 ? 1 : 0));
         return;
     }
     if (std::sscanf(command, "servo_pose:%d:%d", &first, &second) == 2) {
+        robot_motion_cancel_behavior();
         robot_servo_pose(first, second);
+        robot_eyes_set_manual_look(first);
         return;
     }
     if (std::sscanf(command, "servo_adjust:%d:%d", &first, &second) == 2) {
@@ -184,7 +218,11 @@ static void dispatch_command(const char *command) {
         (void)robot_servo_calibration_save();
         return;
     }
-    if (std::strcmp(command, "idle") == 0) robot_eyes_remote_idle();
+    if (std::strcmp(command, "idle") == 0) {
+        robot_motion_stop();
+        robot_eyes_remote_idle();
+        robot_eyes_set_drive_state(0, 0);
+    }
     else if (std::strcmp(command, "blink") == 0) robot_eyes_remote_blink();
     else if (std::strcmp(command, "sleep") == 0) robot_eyes_remote_sleep();
     else if (std::strcmp(command, "angry") == 0) robot_eyes_remote_angry();
@@ -197,9 +235,27 @@ static void dispatch_command(const char *command) {
     else if (std::strcmp(command, "drive_b") == 0) robot_drive_hold(ROBOT_DRIVE_BACKWARD);
     else if (std::strcmp(command, "drive_l") == 0) robot_drive_hold(ROBOT_DRIVE_LEFT);
     else if (std::strcmp(command, "drive_r") == 0) robot_drive_hold(ROBOT_DRIVE_RIGHT);
-    else if (std::strcmp(command, "motion_stop") == 0) robot_motion_stop();
-    else if (std::strcmp(command, "pan_l") == 0) robot_servo_nudge(ROBOT_PAN_LEFT);
-    else if (std::strcmp(command, "pan_r") == 0) robot_servo_nudge(ROBOT_PAN_RIGHT);
+    else if (std::strcmp(command, "motion_stop") == 0) {
+        robot_motion_stop();
+        robot_eyes_set_drive_state(0, 0);
+        robot_eyes_set_manual_look(0);
+    }
+    else if (std::strcmp(command, "dance") == 0) {
+        robot_motion_start_dance();
+        robot_eyes_set_behavior(ROBOT_BEHAVIOR_CELEBRATE, 3000);
+    }
+    else if (std::strcmp(command, "explore") == 0) {
+        robot_motion_behavior(ROBOT_BEHAVIOR_EXPLORE, 3000);
+        robot_eyes_set_behavior(ROBOT_BEHAVIOR_EXPLORE, 3000);
+    }
+    else if (std::strcmp(command, "pan_l") == 0) {
+        robot_servo_nudge(ROBOT_PAN_LEFT);
+        robot_eyes_set_manual_look(-1);
+    }
+    else if (std::strcmp(command, "pan_r") == 0) {
+        robot_servo_nudge(ROBOT_PAN_RIGHT);
+        robot_eyes_set_manual_look(1);
+    }
     else if (std::strcmp(command, "tilt_u") == 0) robot_servo_nudge(ROBOT_TILT_UP);
     else if (std::strcmp(command, "tilt_d") == 0) robot_servo_nudge(ROBOT_TILT_DOWN);
     else {
@@ -372,8 +428,14 @@ static void hold_voice_task(void *) {
 static void dispatch_assistant_state(const char *assistant_state) {
     if (!assistant_state) return;
     if (std::strcmp(assistant_state, "idle") == 0) robot_eyes_assistant_idle();
-    else if (std::strcmp(assistant_state, "listening") == 0) robot_eyes_assistant_listening();
-    else if (std::strcmp(assistant_state, "thinking") == 0) robot_eyes_assistant_thinking();
+    else if (std::strcmp(assistant_state, "listening") == 0) {
+        robot_eyes_assistant_listening();
+        robot_motion_behavior(ROBOT_BEHAVIOR_LISTENING, 1200);
+    }
+    else if (std::strcmp(assistant_state, "thinking") == 0) {
+        robot_eyes_assistant_thinking();
+        robot_motion_behavior(ROBOT_BEHAVIOR_THINKING, 1800);
+    }
     else if (std::strcmp(assistant_state, "speaking") == 0) robot_eyes_assistant_speaking();
     else if (std::strcmp(assistant_state, "error") == 0) robot_eyes_assistant_error();
     else if (std::strcmp(assistant_state, "offline") == 0) robot_eyes_assistant_offline();
@@ -414,6 +476,8 @@ static void bridge_task(void *) {
         if (!wifi_service_connected()) {
             if (was_reachable) {
                 event_log_add("Backend offline: Wi-Fi lost");
+                robot_motion_stop_dance();
+                robot_eyes_set_drive_state(0, 0);
                 was_reachable = false;
             }
             update_info(false, 0, s_last_sequence == UINT32_MAX ? 0 : s_last_sequence,
@@ -465,7 +529,11 @@ static void bridge_task(void *) {
         xSemaphoreGive(mutex);
 
         if (!request_ok) {
-            if (was_reachable) event_log_add("Backend offline: %s", request_error);
+            if (was_reachable) {
+                event_log_add("Backend offline: %s", request_error);
+                robot_motion_stop_dance();
+                robot_eyes_set_drive_state(0, 0);
+            }
             was_reachable = false;
             update_info(false, status, s_last_sequence == UINT32_MAX ? 0 : s_last_sequence,
                         "", request_error);
@@ -479,6 +547,7 @@ static void bridge_task(void *) {
         cJSON *assistant_state_item = root ? cJSON_GetObjectItem(root, "assistant_state") : nullptr;
         cJSON *assistant_sequence_item = root ? cJSON_GetObjectItem(root, "assistant_sequence") : nullptr;
         cJSON *voice_active_item = root ? cJSON_GetObjectItem(root, "voice_active") : nullptr;
+        cJSON *mouth_level_item = root ? cJSON_GetObjectItem(root, "mouth_level") : nullptr;
         if (!root || !cJSON_IsString(command_item) || !cJSON_IsNumber(sequence_item)) {
             if (root) cJSON_Delete(root);
             if (was_reachable) event_log_add("Backend response invalid");
@@ -505,6 +574,9 @@ static void bridge_task(void *) {
                                   static_cast<uint32_t>(assistant_sequence_item->valuedouble));
         }
         robot_eyes_set_voice_active(cJSON_IsTrue(voice_active_item));
+        if (cJSON_IsNumber(mouth_level_item)) {
+            robot_eyes_set_mouth_level(static_cast<int>(mouth_level_item->valuedouble));
+        }
 
         cJSON_Delete(root);
         vTaskDelay(current_poll_delay());

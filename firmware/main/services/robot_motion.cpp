@@ -89,6 +89,11 @@ static std::atomic<uint8_t> s_motor_limit{100};
 static std::atomic<uint8_t> s_pan_range{100};
 static std::atomic<uint8_t> s_tilt_range{50};
 static std::atomic<uint8_t> s_servo_speed{50};
+static std::atomic<int> s_behavior{ROBOT_BEHAVIOR_NEUTRAL};
+static std::atomic<uint32_t> s_behavior_generation{0};
+static std::atomic<uint16_t> s_behavior_duration_ms{1200};
+static std::atomic<bool> s_dance_active{false};
+static std::atomic<uint32_t> s_dance_started{0};
 
 static bool pca_init();
 static esp_err_t pca_channel(uint8_t channel, uint16_t pulse, bool full_off);
@@ -262,9 +267,24 @@ static void drive_watchdog_task(void *) {
     int applied_left = 1000;
     int applied_right = 1000;
     for (;;) {
-        const int requested_left = s_drive_left.load(std::memory_order_acquire);
-        const int requested_right = s_drive_right.load(std::memory_order_acquire);
         const uint32_t now = xTaskGetTickCount();
+        int requested_left = s_drive_left.load(std::memory_order_acquire);
+        int requested_right = s_drive_right.load(std::memory_order_acquire);
+        if (s_dance_active.load(std::memory_order_acquire)) {
+            const uint32_t elapsed = now - s_dance_started.load(std::memory_order_acquire);
+            if (elapsed >= pdMS_TO_TICKS(5000)) {
+                s_dance_active.store(false, std::memory_order_release);
+                requested_left = requested_right = 0;
+                s_drive_left.store(0, std::memory_order_release);
+                s_drive_right.store(0, std::memory_order_release);
+                s_drive_deadline.store(0, std::memory_order_release);
+            } else {
+                const bool clockwise = ((elapsed / pdMS_TO_TICKS(360)) % 2U) == 0;
+                requested_left = clockwise ? 52 : -52;
+                requested_right = -requested_left;
+                s_drive_deadline.store(now + DRIVE_WATCHDOG, std::memory_order_release);
+            }
+        }
         const uint32_t deadline = s_drive_deadline.load(std::memory_order_acquire);
         const bool alive = static_cast<int32_t>(deadline - now) > 0;
 
@@ -283,6 +303,82 @@ static void drive_watchdog_task(void *) {
             motors_stop();
             applied_left = 0;
             applied_right = 0;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
+static void behavior_task(void *) {
+    uint32_t seen_generation = 0;
+    uint32_t started = 0;
+    int active_behavior = ROBOT_BEHAVIOR_NEUTRAL;
+    for (;;) {
+        const uint32_t generation = s_behavior_generation.load(std::memory_order_acquire);
+        if (generation != seen_generation) {
+            seen_generation = generation;
+            active_behavior = s_behavior.load(std::memory_order_acquire);
+            started = xTaskGetTickCount();
+        }
+        if (active_behavior != ROBOT_BEHAVIOR_NEUTRAL &&
+            !s_calibration_mode.load(std::memory_order_acquire)) {
+            const uint32_t elapsed_ms = (xTaskGetTickCount() - started) * 1000U / configTICK_RATE_HZ;
+            const uint32_t duration = s_behavior_duration_ms.load(std::memory_order_acquire);
+            if (elapsed_ms >= duration) {
+                active_behavior = ROBOT_BEHAVIOR_NEUTRAL;
+                s_behavior.store(ROBOT_BEHAVIOR_NEUTRAL, std::memory_order_release);
+                robot_servo_pose(0, 0);
+            } else {
+                int pan = 0;
+                int tilt = 0;
+                switch (active_behavior) {
+                    case ROBOT_BEHAVIOR_AFFIRM:
+                        tilt = (elapsed_ms % 900U) < 240U ? 1 : 0;
+                        break;
+                    case ROBOT_BEHAVIOR_LISTENING:
+                        tilt = 1;
+                        break;
+                    case ROBOT_BEHAVIOR_DENY: {
+                        const uint32_t phase = (elapsed_ms / 300U) % 3U;
+                        pan = phase == 0 ? -1 : (phase == 1 ? 1 : 0);
+                        break;
+                    }
+                    case ROBOT_BEHAVIOR_THINKING:
+                    case ROBOT_BEHAVIOR_SARCASTIC:
+                        if (elapsed_ms < 750U) { pan = -1; tilt = 1; }
+                        break;
+                    case ROBOT_BEHAVIOR_AMUSED:
+                    case ROBOT_BEHAVIOR_HAPPY:
+                    case ROBOT_BEHAVIOR_CELEBRATE:
+                    case ROBOT_BEHAVIOR_SATISFIED:
+                    case ROBOT_BEHAVIOR_GENTLE:
+                        tilt = (elapsed_ms % 1200U) < 260U ? 1 : 0;
+                        break;
+                    case ROBOT_BEHAVIOR_CURIOUS:
+                    case ROBOT_BEHAVIOR_SURPRISED:
+                        if (elapsed_ms < 650U) { pan = 1; tilt = 1; }
+                        break;
+                    case ROBOT_BEHAVIOR_CONFUSED:
+                        pan = ((elapsed_ms / 450U) % 2U) ? 1 : -1;
+                        tilt = 1;
+                        break;
+                    case ROBOT_BEHAVIOR_WORRIED:
+                    case ROBOT_BEHAVIOR_WARNING:
+                        tilt = 1;
+                        break;
+                    case ROBOT_BEHAVIOR_SAD:
+                        pan = -1;
+                        break;
+                    case ROBOT_BEHAVIOR_EXPLORE: {
+                        const uint32_t phase = (elapsed_ms / 500U) % 4U;
+                        pan = phase == 0 ? -1 : (phase == 2 ? 1 : 0);
+                        tilt = (phase == 1 || phase == 3) ? 1 : 0;
+                        break;
+                    }
+                    default:
+                        break;
+                }
+                robot_servo_pose(pan, tilt);
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
@@ -509,6 +605,7 @@ void robot_motion_begin(void) {
     load_motion_settings();
     load_servo_zeros();
     xTaskCreate(servo_smooth_task, "servo_smooth", 4096, nullptr, 5, nullptr);
+    xTaskCreate(behavior_task, "robot_behavior", 3072, nullptr, 4, nullptr);
 }
 
 void robot_motion_command(RobotMove move) {
@@ -541,19 +638,56 @@ void robot_drive_analog(int left_percent, int right_percent) {
     if (left_percent < -100) left_percent = -100;
     if (right_percent > 100) right_percent = 100;
     if (right_percent < -100) right_percent = -100;
+    s_dance_active.store(false, std::memory_order_release);
+    s_behavior.store(ROBOT_BEHAVIOR_NEUTRAL, std::memory_order_release);
+    s_behavior_generation.fetch_add(1, std::memory_order_acq_rel);
     s_drive_left.store(left_percent, std::memory_order_release);
     s_drive_right.store(right_percent, std::memory_order_release);
     s_drive_deadline.store(xTaskGetTickCount() + DRIVE_WATCHDOG, std::memory_order_release);
 }
 
 void robot_motion_stop(void) {
+    s_dance_active.store(false, std::memory_order_release);
+    robot_motion_cancel_behavior();
     s_drive_left.store(0, std::memory_order_release);
     s_drive_right.store(0, std::memory_order_release);
+    s_drive_deadline.store(0, std::memory_order_release);
     s_servo_cancel.store(true, std::memory_order_release);
     motors_stop();
 }
 
+void robot_motion_cancel_behavior(void) {
+    s_behavior.store(ROBOT_BEHAVIOR_NEUTRAL, std::memory_order_release);
+    s_behavior_generation.fetch_add(1, std::memory_order_acq_rel);
+}
+
+void robot_motion_behavior(int behavior, int duration_ms) {
+    if (behavior <= ROBOT_BEHAVIOR_NEUTRAL || behavior > ROBOT_BEHAVIOR_EXPLORE) return;
+    if (duration_ms < 100) duration_ms = 100;
+    if (duration_ms > 3000) duration_ms = 3000;
+    s_behavior_duration_ms.store(static_cast<uint16_t>(duration_ms), std::memory_order_release);
+    s_behavior.store(behavior, std::memory_order_release);
+    s_behavior_generation.fetch_add(1, std::memory_order_acq_rel);
+}
+
+void robot_motion_start_dance(void) {
+    if (s_calibration_mode.load(std::memory_order_acquire)) return;
+    s_behavior.store(ROBOT_BEHAVIOR_NEUTRAL, std::memory_order_release);
+    s_behavior_generation.fetch_add(1, std::memory_order_acq_rel);
+    s_dance_started.store(xTaskGetTickCount(), std::memory_order_release);
+    s_dance_active.store(true, std::memory_order_release);
+}
+
+void robot_motion_stop_dance(void) {
+    if (!s_dance_active.exchange(false, std::memory_order_acq_rel)) return;
+    s_drive_left.store(0, std::memory_order_release);
+    s_drive_right.store(0, std::memory_order_release);
+    s_drive_deadline.store(0, std::memory_order_release);
+    motors_stop();
+}
+
 void robot_servo_targets(int pan_percent, int tilt_percent) {
+    robot_motion_cancel_behavior();
     if (pan_percent < 0) pan_percent = 0;
     if (pan_percent > 100) pan_percent = 100;
     if (tilt_percent < 0) tilt_percent = 0;

@@ -54,8 +54,14 @@ VALID_COMMANDS = {
     "move_h", "move_v", "move_f", "move_b",
     "drive_f", "drive_b", "drive_l", "drive_r", "motion_stop",
     "pan_l", "pan_r", "tilt_u", "tilt_d",
+    "dance", "explore",
 }
 VALID_ASSISTANT_STATES = {"idle", "listening", "thinking", "speaking", "error", "offline"}
+VALID_BEHAVIORS = {
+    "neutral", "listening", "thinking", "speaking", "affirm", "deny",
+    "amused", "sarcastic", "confused", "warning", "celebrate", "happy",
+    "curious", "surprised", "worried", "sad", "satisfied", "gentle", "explore",
+}
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 OLLAMA_MODEL = "qwen3:4b-instruct-2507-q4_K_M"
 DEFAULT_CONVERSATION_BACKEND = os.getenv("KAGE_CONVERSATION_BACKEND", "ollama").strip().lower()
@@ -135,6 +141,8 @@ state = {
     "assistant_sequence": 0,
     "voice_active": False,
     "voice_last_seen": 0.0,
+    "mouth_level": 0,
+    "mouth_updated_at": 0.0,
 }
 VOICE_HEARTBEAT_TIMEOUT_SECONDS = 6.0
 backend_lock = threading.Lock()
@@ -538,6 +546,12 @@ def set_assistant_state(assistant_state: str) -> int:
         return state["assistant_sequence"]
 
 
+def set_mouth_level(level: int) -> None:
+    with state_lock:
+        state["mouth_level"] = max(0, min(1000, int(level)))
+        state["mouth_updated_at"] = time.monotonic()
+
+
 def set_voice_active(active: bool) -> bool:
     with state_lock:
         state["voice_active"] = bool(active)
@@ -547,6 +561,8 @@ def set_voice_active(active: bool) -> bool:
 
 def current_state() -> dict:
     with state_lock:
+        if time.monotonic() - state["mouth_updated_at"] > 0.25:
+            state["mouth_level"] = 0
         # Closing the PowerShell host can terminate voice.py before atexit has
         # time to publish its shutdown. A stale heartbeat is authoritative.
         if (state["voice_active"] and state["voice_last_seen"]
@@ -1048,6 +1064,7 @@ def get_status(request: Request):
         "sequence": current["sequence"],
         "assistant_state": current["assistant_state"],
         "assistant_sequence": current["assistant_sequence"],
+        "mouth_level": current["mouth_level"],
         "conversation_backend": get_conversation_backend(),
         "voice_active": current["voice_active"],
         "codex_model": os.getenv("KAGE_CODEX_MODEL", "gpt-5.6-luna"),
@@ -1173,6 +1190,25 @@ def update_assistant_state(assistant_state: str, request: Request):
     print(json.dumps({"event": "assistant_state", "state": assistant_state,
                       "sequence": sequence}, ensure_ascii=False))
     return {"ok": True, "assistant_state": assistant_state, "assistant_sequence": sequence}
+
+
+@app.post("/voice/mouth/{level}")
+def update_mouth_level(level: int, request: Request):
+    require_kage_key(request)
+    if not 0 <= level <= 1000:
+        raise HTTPException(status_code=400, detail="Niveau audio hors limites")
+    set_mouth_level(level)
+    return {"ok": True}
+
+
+@app.post("/behavior/{behavior}")
+def set_behavior(behavior: str, request: Request):
+    require_kage_key(request)
+    behavior = behavior.lower().strip()
+    if behavior not in VALID_BEHAVIORS:
+        raise HTTPException(status_code=400, detail="Comportement invalide")
+    sequence = set_command(f"behavior:{behavior}")
+    return {"ok": True, "behavior": behavior, "sequence": sequence}
 
 
 @app.post("/voice/toggle")

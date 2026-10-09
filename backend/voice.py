@@ -176,6 +176,9 @@ request_executor = ThreadPoolExecutor(max_workers=1)
 state_executor = ThreadPoolExecutor(max_workers=1)
 assistant_state_lock = threading.Lock()
 last_assistant_state = None
+mouth_publish_lock = threading.Lock()
+mouth_request_lock = threading.Lock()
+last_mouth_publish_at = 0.0
 
 
 def publish_assistant_state(state):
@@ -199,6 +202,100 @@ def publish_assistant_state(state):
             print(json.dumps({"event": "assistant_state_unavailable", "state": state,
                               "error": str(exc)}, ensure_ascii=False))
 
+    state_executor.submit(publish)
+
+
+def publish_mouth_level(level):
+    """Publish a low-rate audio envelope; stale levels expire on the backend."""
+    global last_mouth_publish_at
+    now = time.monotonic()
+    with mouth_publish_lock:
+        if level and now - last_mouth_publish_at < 0.10:
+            return
+        last_mouth_publish_at = now
+    if not mouth_request_lock.acquire(blocking=False):
+        return
+
+    def publish():
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:8000/voice/mouth/{int(level)}",
+                headers={"X-Kage-Key": KAGE_API_KEY}, method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=0.4):
+                pass
+        except Exception:
+            pass
+        finally:
+            mouth_request_lock.release()
+
+    state_executor.submit(publish)
+
+
+def play_audio_with_mouth(samples):
+    """Use the synthesized PCM itself for mouth motion, never a speaking timer."""
+    samples = np.asarray(samples, dtype=np.int16)
+    if samples.size == 0:
+        return
+    stop = threading.Event()
+
+    def meter():
+        started = time.perf_counter()
+        for offset in range(0, samples.size, 1600):  # 100 ms at 16 kHz
+            if stop.is_set():
+                break
+            chunk = samples[offset:offset + 1600].astype(np.float32) / 32768.0
+            rms = float(np.sqrt(np.mean(chunk * chunk))) if chunk.size else 0.0
+            level = int(max(0.0, min(1.0, (rms - 0.008) * 4.0)) * 1000)
+            publish_mouth_level(level)
+            deadline = started + (offset + chunk.size) / 16000.0
+            stop.wait(max(0.0, deadline - time.perf_counter()))
+
+    worker = threading.Thread(target=meter, name="kage-mouth-meter", daemon=True)
+    try:
+        sd.play(samples, samplerate=16000)
+        worker.start()
+        sd.wait()
+    finally:
+        stop.set()
+        worker.join(timeout=0.15)
+        publish_mouth_level(0)
+
+
+def classify_behavior_cue(text):
+    """Recognize only an unambiguous opening cue from the spoken answer."""
+    first = re.split(r"(?<=[.!?])\s+", text.strip(), maxsplit=1)[0].lower()
+    first = re.sub(r"^[^\wÀ-ÿ]+", "", first)
+    if re.match(r"^(yes|oui|absolutely|exactly|correct|bien sûr|tout à fait)\b", first):
+        return "affirm"
+    if re.match(r"^(no|non|not quite|pas du tout|ce n'est pas|ce n’est pas)\b", first):
+        return "deny"
+    if re.match(r"^(let me think|i'm thinking|laisse[- ]moi réfléchir|je réfléchis)\b", first):
+        return "thinking"
+    if re.match(r"^(interesting|c'est intéressant|c’est intéressant|curieux)\b", first):
+        return "curious"
+    if re.match(r"^(great|bravo|félicitations|congratulations)\b", first):
+        return "celebrate"
+    if re.match(r"^(attention|careful|warning|be careful)\b", first):
+        return "warning"
+    if re.match(r"^(haha|ha ha|c'est drôle|c’est drôle|that's funny|that is funny)\b", first):
+        return "amused"
+    return None
+
+
+def publish_behavior_cue(behavior):
+    if not behavior:
+        return
+    def publish():
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:8000/behavior/{behavior}",
+                headers={"X-Kage-Key": KAGE_API_KEY}, method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=0.5):
+                pass
+        except Exception:
+            pass
     state_executor.submit(publish)
 
 
@@ -544,7 +641,8 @@ def speak(text):
     if not text:
         return
     if samples is not None:
-        sd.play(samples, samplerate=16000, blocking=True)
+        publish_assistant_state("speaking")
+        play_audio_with_mouth(samples)
         play_sound("speech_finished")
         return
     if WINDOWS_FRENCH_VOICE_AVAILABLE:
@@ -592,6 +690,7 @@ class SentencePlayback:
     def __init__(self):
         self._lock = threading.Lock()
         self._generation = 0
+        self._behavior_cue_sent = False
         self._sentences = queue.Queue()
         self._audio = queue.Queue()
         self._release_useful = threading.Event()
@@ -603,6 +702,7 @@ class SentencePlayback:
         with self._lock:
             self._generation += 1
             generation = self._generation
+            self._behavior_cue_sent = False
             self._sentences = queue.Queue()
             self._audio = queue.Queue()
             self._release_useful = threading.Event()
@@ -646,7 +746,9 @@ class SentencePlayback:
                     if generation != self._generation:
                         return
                 if samples is not None:
-                    sd.play(samples, samplerate=16000, blocking=True)
+                    publish_assistant_state("speaking")
+                    play_audio_with_mouth(samples)
+                    publish_assistant_state("thinking")
                     waiting_used = True
                 elif clean_text and WINDOWS_FRENCH_VOICE_AVAILABLE:
                     tts.say(clean_text)
@@ -689,7 +791,7 @@ class SentencePlayback:
                         first_useful_audio_logged = True
                         publish_assistant_state("speaking")
                     if samples is not None:
-                        sd.play(samples, samplerate=16000, blocking=True)
+                        play_audio_with_mouth(samples)
                     elif clean_text and WINDOWS_FRENCH_VOICE_AVAILABLE:
                         tts.say(clean_text)
                         tts.runAndWait()
@@ -715,6 +817,9 @@ class SentencePlayback:
 
     def enqueue(self, text, useful=False):
         if text and text.strip():
+            if useful and not self._behavior_cue_sent:
+                self._behavior_cue_sent = True
+                publish_behavior_cue(classify_behavior_cue(text))
             self._sentences.put((text.strip(), useful))
 
     def finish(self):

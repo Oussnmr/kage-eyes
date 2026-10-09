@@ -1,5 +1,7 @@
 #pragma once
 
+#include "robot_behavior.h"
+
 enum RobotMove {
     ROBOT_MOVE_HORIZONTAL,
     ROBOT_MOVE_VERTICAL,
@@ -51,3 +53,7 @@ bool robot_servo_calibration_save(void);
 // are persisted in NVS, so changing them later does not require another flash.
 bool robot_motion_settings(int motor_limit, int pan_range, int tilt_range,
                            int servo_speed);
+void robot_motion_behavior(int behavior, int duration_ms);
+void robot_motion_cancel_behavior(void);
+void robot_motion_start_dance(void);
+void robot_motion_stop_dance(void);

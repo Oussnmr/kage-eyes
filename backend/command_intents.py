@@ -65,6 +65,16 @@ ROBOT_PHRASES = {
         "spin", "spin around", "get dizzy", "act dizzy", "dizzy mode",
         "tourne sur toi meme", "etourdis toi", "mets toi en mode etourdi",
     ),
+    "dance": (
+        "dance", "dance for me", "do a dance", "dance on the spot", "please dance",
+        "danse", "danse pour moi", "fais une danse", "fais moi une danse",
+        "danse sur place", "fais quelques pas",
+    ),
+    "explore": (
+        "explore", "look around", "scan around", "explore around", "look around the room",
+        "explore la pièce", "explore autour", "regarde autour", "regarde autour de toi",
+        "inspecte autour",
+    ),
     # Deliberately short, exact bench-test commands.  They are matched as a
     # complete request below, so ordinary sentences containing "move" cannot
     # accidentally energize an actuator.
@@ -171,6 +181,11 @@ def direct_intent(text):
         if _complete_match(text, phrases):
             return "backend", backend
     for action, phrases in ROBOT_PHRASES.items():
+        if action in {"dance", "explore"} and text.startswith((
+            "what is ", "what does ", "why ", "how ", "tell me about ",
+            "qu est ce que ", "pourquoi ", "comment ", "explique ",
+        )):
+            continue
         if _complete_match(text, phrases):
             return "robot", action
     return None
