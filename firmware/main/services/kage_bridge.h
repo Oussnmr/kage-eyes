@@ -12,6 +12,8 @@ struct KageBridgeInfo {
 };
 
 void kage_bridge_begin(void);
+bool kage_bridge_pause_network_for_ota(uint32_t timeout_ms);
+void kage_bridge_resume_network_after_ota(void);
 void kage_bridge_get_info(KageBridgeInfo *info);
 
 // Triggered by the robot face's three-tap gesture. It asks the PC backend to
