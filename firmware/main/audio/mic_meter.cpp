@@ -587,8 +587,10 @@ static void microphone_task(void *) {
 
 void mic_meter_begin() {
     if (s_task) return;
+    // Wi-Fi and its driver run on core 0. Keep continuous codec reads on the
+    // other core so opening Kage/Microphone cannot starve backend requests.
     xTaskCreatePinnedToCore(
-        microphone_task, "mic-meter", 7168, nullptr, 4, &s_task, 0);
+        microphone_task, "mic-meter", 7168, nullptr, 4, &s_task, 1);
 }
 
 void mic_meter_set_active(bool active) {
