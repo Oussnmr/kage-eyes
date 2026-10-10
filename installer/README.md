@@ -1,5 +1,13 @@
 # Browser installer
 
+The hosted installer also includes a reference rollback build at
+`versions/8983f4d/manifest.json`. The Pages workflow rebuilds that pinned
+commit and publishes its manifest and firmware beside the current installer,
+so the reference button remains available after GitHub Actions artifacts
+expire. Use it to compare connectivity against the earlier firmware; it does
+not include the behavior updates introduced later. Leave "Erase device"
+unchecked when installing it to preserve saved Wi-Fi and calibration settings.
+
 Plug the board in, open a page, click Install: the same "flash it from the
 browser" flow ESPHome and Home Assistant use ([ESP Web
 Tools](https://esphome.github.io/esp-web-tools/), Apache-2.0, vendored under

@@ -33,17 +33,36 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0          # git describe wants the tags
+      - name: Checkout reference firmware (8983f4d)
+        uses: actions/checkout@v4
+        with:
+          ref: 8983f4dfd7d2ebd479f11ab5c67d9f0eb296b3e3
+          path: reference-source
+          fetch-depth: 1
       - name: Build Kage Eyes (ESP-IDF v5.5.5, esp32s3)
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.5.5
           target: esp32s3
           path: firmware
+      - name: Build reference Kage Eyes firmware (ESP-IDF v5.5.5, esp32s3)
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.5
+          target: esp32s3
+          path: reference-source/firmware
       - name: Assemble the Kage Eyes installer
         run: |
           python3 tools/make_installer.py --build-dir firmware/build --out installer/dist
+          python3 reference-source/tools/make_installer.py \
+            --build-dir reference-source/firmware/build \
+            --out reference-source/installer/dist \
+            --version 8983f4d
+          mkdir -p installer/dist/versions/8983f4d
+          cp reference-source/installer/dist/manifest.json installer/dist/versions/8983f4d/
+          cp -R reference-source/installer/dist/firmware installer/dist/versions/8983f4d/
           touch installer/dist/.nojekyll
-          ls -la installer/dist installer/dist/firmware
+          ls -la installer/dist installer/dist/firmware installer/dist/versions/8983f4d/firmware
       - uses: actions/upload-pages-artifact@v3
         with:
           path: installer/dist
