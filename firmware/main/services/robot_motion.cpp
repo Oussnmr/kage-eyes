@@ -94,6 +94,7 @@ static std::atomic<uint32_t> s_behavior_generation{0};
 static std::atomic<uint16_t> s_behavior_duration_ms{1200};
 static std::atomic<bool> s_dance_active{false};
 static std::atomic<uint32_t> s_dance_started{0};
+static std::atomic<bool> s_behavior_task_started{false};
 
 static bool pca_init();
 static esp_err_t pca_channel(uint8_t channel, uint16_t pulse, bool full_off);
@@ -384,6 +385,21 @@ static void behavior_task(void *) {
     }
 }
 
+static bool ensure_behavior_task() {
+    bool expected = false;
+    if (!s_behavior_task_started.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel)) {
+        return true;
+    }
+    if (xTaskCreate(behavior_task, "robot_behavior", 3072, nullptr, 4, nullptr) != pdPASS) {
+        s_behavior_task_started.store(false, std::memory_order_release);
+        ESP_LOGE(TAG, "Behavior task creation failed");
+        event_log_add("Behavior task unavailable");
+        return false;
+    }
+    return true;
+}
+
 static void motors_pulse(bool forward) {
     if (!pwm_init()) {
         ESP_LOGE(TAG, "PWM initialization failed");
@@ -605,7 +621,6 @@ void robot_motion_begin(void) {
     load_motion_settings();
     load_servo_zeros();
     xTaskCreate(servo_smooth_task, "servo_smooth", 4096, nullptr, 5, nullptr);
-    xTaskCreate(behavior_task, "robot_behavior", 3072, nullptr, 4, nullptr);
 }
 
 void robot_motion_command(RobotMove move) {
@@ -663,6 +678,7 @@ void robot_motion_cancel_behavior(void) {
 
 void robot_motion_behavior(int behavior, int duration_ms) {
     if (behavior <= ROBOT_BEHAVIOR_NEUTRAL || behavior > ROBOT_BEHAVIOR_EXPLORE) return;
+    if (!ensure_behavior_task()) return;
     if (duration_ms < 100) duration_ms = 100;
     if (duration_ms > 3000) duration_ms = 3000;
     s_behavior_duration_ms.store(static_cast<uint16_t>(duration_ms), std::memory_order_release);
