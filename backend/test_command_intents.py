@@ -17,6 +17,9 @@ class CommandIntentTests(unittest.TestCase):
             "Kagé, retourne à ton état normal.": ("robot", "idle"),
             "Please blink your eyes": ("robot", "blink"),
             "Retourne dormir": ("robot", "sleep"),
+            "Kage, explore": ("robot", "explore"),
+            "Kage, regarde autour de toi": ("robot", "explore"),
+            "Kage, danse": ("robot", "dance"),
         }
         for phrase, expected in cases.items():
             with self.subTest(phrase=phrase):
@@ -43,6 +46,7 @@ class CommandIntentTests(unittest.TestCase):
         # Descriptions and questions must never move hardware.
         self.assertIsNone(direct_intent("How does move forward work?"))
         self.assertIsNone(direct_intent("I want the robot to move forward later"))
+        self.assertIsNone(direct_intent("Explique comment Kage explore"))
 
     def test_backend_in_french_and_english(self):
         for phrase in ("Passe sur ChatGPT", "Use ChatGPT"):

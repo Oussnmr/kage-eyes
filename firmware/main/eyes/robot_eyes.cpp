@@ -99,10 +99,11 @@ static std::atomic<int> s_assistant_state{ASSISTANT_IDLE};
 static std::atomic<int> s_mouth_level{0};
 static std::atomic<int> s_behavior{ROBOT_BEHAVIOR_NEUTRAL};
 static std::atomic<int64_t> s_behavior_until_us{0};
-static std::atomic<int> s_drive_left{0};
-static std::atomic<int> s_drive_right{0};
+static std::atomic<int> s_drive_forward{0};
+static std::atomic<int> s_drive_turn{0};
 static std::atomic<int64_t> s_drive_updated_us{0};
-static std::atomic<int> s_manual_look{0};
+static std::atomic<int> s_manual_look_x{0};
+static std::atomic<int> s_manual_look_y{0};
 static std::atomic<int64_t> s_manual_look_updated_us{0};
 static lv_timer_t *s_tap_timer;
 
@@ -451,7 +452,8 @@ static void animate(lv_timer_t *) {
     int gaze_x = static_cast<int>(s_gaze_x);
     int gaze_y = static_cast<int>(s_gaze_y);
     if (now_us - s_manual_look_updated_us.load() < 1800000) {
-        gaze_x += s_manual_look.load() * 14;
+        gaze_x += s_manual_look_x.load() * 18;
+        gaze_y += s_manual_look_y.load() * 12;
     }
     int left_width = EYE_W;
     int right_width = EYE_W;
@@ -571,13 +573,18 @@ static void animate(lv_timer_t *) {
         base_face_color = CYAN;
     }
     const int center_y = SCREEN_H / 2 + static_cast<int>(bob) + gaze_y;
-    const int drive_left = s_drive_left.load();
-    const int drive_right = s_drive_right.load();
+    const int forward = s_drive_forward.load();
+    const int turn = s_drive_turn.load();
     if (now_us - s_drive_updated_us.load() < 500000) {
-        const int average = (drive_left + drive_right) / 2;
-        const int turn = drive_right - drive_left;
-        if (average < -10 && !s_angry) base_face_color = ORANGE;
-        if (abs(turn) > 35 && abs(average) < 25) gaze_x += turn > 0 ? -12 : 12;
+        const int speed = std::max(abs(forward), abs(turn));
+        if (abs(turn) > 12) gaze_x += turn > 0 ? -18 : 18;
+        if (forward > 12) gaze_y -= 7;
+        else if (forward < -12) gaze_y += 10;
+        if (speed > 35) {
+            const float focus = 1.0f - std::min(0.18f, (speed - 35) / 360.0f);
+            left_height = std::max(34, static_cast<int>(left_height * focus));
+            right_height = std::max(34, static_cast<int>(right_height * focus));
+        }
     }
     set_face_color(base_face_color);
     const int left_center_x = SCREEN_W / 2 - EYE_OFFSET_X + gaze_x;
@@ -794,15 +801,17 @@ void robot_eyes_set_mouth_level(int level) {
     if (level > 1000) level = 1000;
     s_mouth_level.store(level);
 }
-void robot_eyes_set_drive_state(int left_percent, int right_percent) {
-    s_drive_left.store(std::max(-100, std::min(100, left_percent)));
-    s_drive_right.store(std::max(-100, std::min(100, right_percent)));
-    s_drive_updated_us.store((left_percent || right_percent) ? esp_timer_get_time() : 0);
+void robot_eyes_set_drive_state(int forward_percent, int turn_percent) {
+    s_drive_forward.store(std::max(-100, std::min(100, forward_percent)));
+    s_drive_turn.store(std::max(-100, std::min(100, turn_percent)));
+    s_drive_updated_us.store((forward_percent || turn_percent) ? esp_timer_get_time() : 0);
 }
-void robot_eyes_set_manual_look(int direction) {
-    direction = std::max(-1, std::min(1, direction));
-    s_manual_look.store(direction);
-    s_manual_look_updated_us.store(direction ? esp_timer_get_time() : 0);
+void robot_eyes_set_manual_look(int horizontal, int vertical) {
+    horizontal = std::max(-1, std::min(1, horizontal));
+    vertical = std::max(-1, std::min(1, vertical));
+    s_manual_look_x.store(horizontal);
+    s_manual_look_y.store(vertical);
+    s_manual_look_updated_us.store((horizontal || vertical) ? esp_timer_get_time() : 0);
 }
 void robot_eyes_set_behavior(int behavior, int duration_ms) {
     if (behavior < ROBOT_BEHAVIOR_NEUTRAL || behavior > ROBOT_BEHAVIOR_EXPLORE) return;

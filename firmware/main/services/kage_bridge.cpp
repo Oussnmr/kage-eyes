@@ -156,7 +156,9 @@ static void dispatch_command(const char *command) {
     int second = 0;
     if (std::sscanf(command, "drive:%d:%d", &first, &second) == 2) {
         robot_drive_analog(first, second);
-        robot_eyes_set_drive_state(first, second);
+        // The web controller compensates for mirrored tracks. Convert its raw
+        // pair back to logical forward/turn values for the face animation.
+        robot_eyes_set_drive_state((first - second) / 2, (first + second) / 2);
         robot_eyes_set_behavior(ROBOT_BEHAVIOR_NEUTRAL, 100);
         return;
     }
@@ -182,9 +184,11 @@ static void dispatch_command(const char *command) {
         else if (std::strcmp(behavior_name, "gentle") == 0) behavior = ROBOT_BEHAVIOR_GENTLE;
         else if (std::strcmp(behavior_name, "explore") == 0) behavior = ROBOT_BEHAVIOR_EXPLORE;
         if (behavior != ROBOT_BEHAVIOR_NEUTRAL) {
-            // Conversational cues affect the face only.  Moving a servo while
-            // the assistant starts listening can disturb the robot's power and
-            // Wi-Fi; physical motion remains reserved for explicit commands.
+            // A behavior cue is explicit and bounded, so it may use the head.
+            // Generic listening/thinking state changes remain face-only below;
+            // this preserves the network fix by avoiding repeated servo work
+            // on every assistant-state transition.
+            robot_motion_behavior(behavior, behavior == ROBOT_BEHAVIOR_EXPLORE ? 3000 : 1500);
             robot_eyes_set_behavior(behavior, behavior == ROBOT_BEHAVIOR_EXPLORE ? 3000 : 1500);
         }
         return;
@@ -192,13 +196,14 @@ static void dispatch_command(const char *command) {
     if (std::sscanf(command, "servo:%d:%d", &first, &second) == 2) {
         robot_motion_cancel_behavior();
         robot_servo_targets(first, second);
-        robot_eyes_set_manual_look(first < 46 ? -1 : (first > 54 ? 1 : 0));
+        robot_eyes_set_manual_look(first < 46 ? -1 : (first > 54 ? 1 : 0),
+                                   second < 46 ? -1 : (second > 54 ? 1 : 0));
         return;
     }
     if (std::sscanf(command, "servo_pose:%d:%d", &first, &second) == 2) {
         robot_motion_cancel_behavior();
         robot_servo_pose(first, second);
-        robot_eyes_set_manual_look(first);
+        robot_eyes_set_manual_look(first, second ? 1 : -1);
         return;
     }
     if (std::sscanf(command, "servo_adjust:%d:%d", &first, &second) == 2) {
@@ -233,14 +238,26 @@ static void dispatch_command(const char *command) {
     else if (std::strcmp(command, "move_v") == 0) robot_motion_command(ROBOT_MOVE_VERTICAL);
     else if (std::strcmp(command, "move_f") == 0) robot_motion_command(ROBOT_MOVE_FORWARD);
     else if (std::strcmp(command, "move_b") == 0) robot_motion_command(ROBOT_MOVE_BACKWARD);
-    else if (std::strcmp(command, "drive_f") == 0) robot_drive_hold(ROBOT_DRIVE_FORWARD);
-    else if (std::strcmp(command, "drive_b") == 0) robot_drive_hold(ROBOT_DRIVE_BACKWARD);
-    else if (std::strcmp(command, "drive_l") == 0) robot_drive_hold(ROBOT_DRIVE_LEFT);
-    else if (std::strcmp(command, "drive_r") == 0) robot_drive_hold(ROBOT_DRIVE_RIGHT);
+    else if (std::strcmp(command, "drive_f") == 0) {
+        robot_drive_hold(ROBOT_DRIVE_FORWARD);
+        robot_eyes_set_drive_state(100, 0);
+    }
+    else if (std::strcmp(command, "drive_b") == 0) {
+        robot_drive_hold(ROBOT_DRIVE_BACKWARD);
+        robot_eyes_set_drive_state(-100, 0);
+    }
+    else if (std::strcmp(command, "drive_l") == 0) {
+        robot_drive_hold(ROBOT_DRIVE_LEFT);
+        robot_eyes_set_drive_state(0, 100);
+    }
+    else if (std::strcmp(command, "drive_r") == 0) {
+        robot_drive_hold(ROBOT_DRIVE_RIGHT);
+        robot_eyes_set_drive_state(0, -100);
+    }
     else if (std::strcmp(command, "motion_stop") == 0) {
         robot_motion_stop();
         robot_eyes_set_drive_state(0, 0);
-        robot_eyes_set_manual_look(0);
+        robot_eyes_set_manual_look(0, 0);
     }
     else if (std::strcmp(command, "dance") == 0) {
         robot_motion_start_dance();
@@ -252,14 +269,20 @@ static void dispatch_command(const char *command) {
     }
     else if (std::strcmp(command, "pan_l") == 0) {
         robot_servo_nudge(ROBOT_PAN_LEFT);
-        robot_eyes_set_manual_look(-1);
+        robot_eyes_set_manual_look(-1, 0);
     }
     else if (std::strcmp(command, "pan_r") == 0) {
         robot_servo_nudge(ROBOT_PAN_RIGHT);
-        robot_eyes_set_manual_look(1);
+        robot_eyes_set_manual_look(1, 0);
     }
-    else if (std::strcmp(command, "tilt_u") == 0) robot_servo_nudge(ROBOT_TILT_UP);
-    else if (std::strcmp(command, "tilt_d") == 0) robot_servo_nudge(ROBOT_TILT_DOWN);
+    else if (std::strcmp(command, "tilt_u") == 0) {
+        robot_servo_nudge(ROBOT_TILT_UP);
+        robot_eyes_set_manual_look(0, -1);
+    }
+    else if (std::strcmp(command, "tilt_d") == 0) {
+        robot_servo_nudge(ROBOT_TILT_DOWN);
+        robot_eyes_set_manual_look(0, 1);
+    }
     else {
         ESP_LOGW("kage-bridge", "Unknown command: %s", command);
         event_log_add("Unknown command: %s", command);
@@ -571,7 +594,11 @@ static void bridge_task(void *) {
         }
         robot_eyes_set_voice_active(cJSON_IsTrue(voice_active_item));
         if (cJSON_IsNumber(mouth_level_item)) {
-            robot_eyes_set_mouth_level(static_cast<int>(mouth_level_item->valuedouble));
+            double mouth_level = mouth_level_item->valuedouble;
+            // Accept both the original 0..1000 protocol and the newer
+            // backend's normalized 0.0..1.0 envelope.
+            if (mouth_level > 0.0 && mouth_level <= 1.0) mouth_level *= 1000.0;
+            robot_eyes_set_mouth_level(static_cast<int>(mouth_level));
         }
 
         cJSON_Delete(root);
