@@ -221,7 +221,12 @@ static void motors_apply_analog(int left, int right) {
 }
 
 static uint16_t servo_step_us() {
-    const uint16_t speed = s_servo_speed.load(std::memory_order_acquire);
+    uint16_t speed = s_servo_speed.load(std::memory_order_acquire);
+    // Explore keeps the full calibrated pose range but moves the head more
+    // deliberately, independently of the user's global servo setting.
+    if (s_behavior.load(std::memory_order_acquire) == ROBOT_BEHAVIOR_EXPLORE) {
+        speed = std::min<uint16_t>(speed, 75);
+    }
     // 10..100% maps to 4..28 us per 20 ms. The default 50% is 14 us,
     // matching the previously tested movement speed.
     return static_cast<uint16_t>(4U + (speed - 10U) * 24U / 90U);
