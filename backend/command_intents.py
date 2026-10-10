@@ -66,7 +66,10 @@ ROBOT_PHRASES = {
         "tourne sur toi meme", "etourdis toi", "mets toi en mode etourdi",
     ),
     "360": (
-        "360", "three sixty", "tourne a 360", "fais un 360", "tourne sur toi meme a 360",
+        "360", "three sixty", "three hundred sixty", "three hundred and sixty",
+        "trois cent soixante", "tourne a 360", "tourne a trois cent soixante",
+        "fais un 360", "fais trois cent soixante", "tourne sur toi meme a 360",
+        "tourne sur toi meme a trois cent soixante",
     ),
     "dance": (
         "dance", "dance for me", "do a dance", "dance on the spot", "please dance",

@@ -297,9 +297,20 @@ static void drive_watchdog_task(void *) {
                 s_drive_right.store(0, std::memory_order_release);
                 s_drive_deadline.store(0, std::memory_order_release);
             } else {
-                const bool clockwise = ((elapsed / pdMS_TO_TICKS(360)) % 2U) == 0;
-                requested_left = clockwise ? 80 : -80;
-                requested_right = -requested_left;
+                const uint32_t phase = (elapsed / pdMS_TO_TICKS(360)) % 4U;
+                if (phase == 0U) {
+                    requested_left = 80;
+                    requested_right = -80;
+                } else if (phase == 1U) {
+                    requested_left = 80;
+                    requested_right = 80;
+                } else if (phase == 2U) {
+                    requested_left = -80;
+                    requested_right = 80;
+                } else {
+                    requested_left = -80;
+                    requested_right = -80;
+                }
                 s_drive_deadline.store(now + DRIVE_WATCHDOG, std::memory_order_release);
             }
         }
@@ -410,10 +421,23 @@ static void behavior_task(void *) {
                         // One axis at a time, with a centre pause between poses.
                         // This avoids the simultaneous full-range MG90 current
                         // peaks that can brown out Wi-Fi during exploration.
-                        const uint32_t phase = (elapsed_ms / 750U) % 6U;
-                        if (phase == 0) pan = -45;
-                        else if (phase == 2) tilt = 35;
-                        else if (phase == 4) pan = 45;
+                        const uint32_t phase = (elapsed_ms / 1250U) % 8U;
+                        // Alternate a stopped head scan with a short, bounded
+                        // track movement. Never drive tracks and servos in the
+                        // same phase, so the robot appears to search naturally.
+                        if (phase == 0) pan = -100;
+                        else if (phase == 1) pan = 0;
+                        else if (phase == 2) {
+                            s_drive_left.store(70, std::memory_order_release);
+                            s_drive_right.store(70, std::memory_order_release);
+                            s_drive_deadline.store(xTaskGetTickCount() + pdMS_TO_TICKS(1100), std::memory_order_release);
+                        } else if (phase == 4) tilt = 100;
+                        else if (phase == 5) tilt = 0;
+                        else if (phase == 6) {
+                            s_drive_left.store(-65, std::memory_order_release);
+                            s_drive_right.store(65, std::memory_order_release);
+                            s_drive_deadline.store(xTaskGetTickCount() + pdMS_TO_TICKS(1100), std::memory_order_release);
+                        }
                         break;
                     }
                     default:

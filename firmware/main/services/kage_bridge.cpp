@@ -270,8 +270,8 @@ static void dispatch_command(const char *command) {
         robot_eyes_set_behavior(ROBOT_BEHAVIOR_CELEBRATE, 2500);
     }
     else if (std::strcmp(command, "explore") == 0) {
-        robot_motion_behavior(ROBOT_BEHAVIOR_EXPLORE, 3000);
-        robot_eyes_set_behavior(ROBOT_BEHAVIOR_EXPLORE, 3000);
+        robot_motion_behavior(ROBOT_BEHAVIOR_EXPLORE, 10000);
+        robot_eyes_set_behavior(ROBOT_BEHAVIOR_EXPLORE, 10000);
     }
     else if (std::strcmp(command, "pan_l") == 0) {
         robot_servo_nudge(ROBOT_PAN_LEFT);
