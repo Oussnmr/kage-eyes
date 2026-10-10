@@ -60,7 +60,9 @@ static bool s_second_press_candidate;
 static int64_t s_last_tap_us;
 static int64_t s_last_frame_us;
 static float s_time;
-static float s_next_blink = 2.0f;
+// Natural idle blinking: keep it sparse on the small display so it does not
+// look like the eyes are constantly flickering.
+static float s_next_blink = 6.0f;
 static float s_blink_time = -1.0f;
 static int s_blinks_left;
 static float s_next_gaze = 1.0f;
@@ -460,7 +462,7 @@ static void animate(lv_timer_t *) {
             if (--s_blinks_left > 0) s_blink_time = -0.09f;
             else {
                 s_blink_time = -1.0f;
-                s_next_blink = 3.0f + random_unit() * 2.7f;
+                s_next_blink = 6.0f + random_unit() * 5.0f;
             }
         } else {
             closure = s_blink_time < CLOSE_S
@@ -471,7 +473,7 @@ static void animate(lv_timer_t *) {
         s_next_blink -= dt;
         if (s_next_blink <= 0.0f) {
             s_blink_time = 0.0f;
-            s_blinks_left = random_unit() < 0.25f ? 2 : 1;
+            s_blinks_left = 1;
         }
     }
 
@@ -664,7 +666,9 @@ static void animate(lv_timer_t *) {
     static float mouth_smoothed = 0.0f;
     const int level = s_mouth_level.load();
     const float mouth_target = static_cast<float>(level) / 1000.0f;
-    const float mouth_rate = mouth_target > mouth_smoothed ? 0.92f : 0.52f;
+    // Follow speech envelope quickly; a slow release would visibly lag behind
+    // the TTS and make the mouth keep moving after audio has stopped.
+    const float mouth_rate = mouth_target > mouth_smoothed ? 0.98f : 0.86f;
     mouth_smoothed += (mouth_target - mouth_smoothed) * mouth_rate;
     const bool voice_speaking = assistant_state == ASSISTANT_SPEAKING ||
                                 s_voice_active.load() || level > 20;
