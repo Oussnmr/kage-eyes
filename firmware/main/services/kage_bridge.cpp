@@ -182,7 +182,9 @@ static void dispatch_command(const char *command) {
         else if (std::strcmp(behavior_name, "gentle") == 0) behavior = ROBOT_BEHAVIOR_GENTLE;
         else if (std::strcmp(behavior_name, "explore") == 0) behavior = ROBOT_BEHAVIOR_EXPLORE;
         if (behavior != ROBOT_BEHAVIOR_NEUTRAL) {
-            robot_motion_behavior(behavior, behavior == ROBOT_BEHAVIOR_EXPLORE ? 3000 : 1500);
+            // Conversational cues affect the face only.  Moving a servo while
+            // the assistant starts listening can disturb the robot's power and
+            // Wi-Fi; physical motion remains reserved for explicit commands.
             robot_eyes_set_behavior(behavior, behavior == ROBOT_BEHAVIOR_EXPLORE ? 3000 : 1500);
         }
         return;
@@ -428,14 +430,8 @@ static void hold_voice_task(void *) {
 static void dispatch_assistant_state(const char *assistant_state) {
     if (!assistant_state) return;
     if (std::strcmp(assistant_state, "idle") == 0) robot_eyes_assistant_idle();
-    else if (std::strcmp(assistant_state, "listening") == 0) {
-        robot_eyes_assistant_listening();
-        robot_motion_behavior(ROBOT_BEHAVIOR_LISTENING, 1200);
-    }
-    else if (std::strcmp(assistant_state, "thinking") == 0) {
-        robot_eyes_assistant_thinking();
-        robot_motion_behavior(ROBOT_BEHAVIOR_THINKING, 1800);
-    }
+    else if (std::strcmp(assistant_state, "listening") == 0) robot_eyes_assistant_listening();
+    else if (std::strcmp(assistant_state, "thinking") == 0) robot_eyes_assistant_thinking();
     else if (std::strcmp(assistant_state, "speaking") == 0) robot_eyes_assistant_speaking();
     else if (std::strcmp(assistant_state, "error") == 0) robot_eyes_assistant_error();
     else if (std::strcmp(assistant_state, "offline") == 0) robot_eyes_assistant_offline();

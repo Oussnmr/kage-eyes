@@ -5,7 +5,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
-#include <initializer_list>
 
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -127,17 +126,6 @@ static void set_face_color(uint32_t color) {
     lv_obj_set_style_bg_color(s_left_eye, lv_color_hex(color), 0);
     lv_obj_set_style_bg_color(s_right_eye, lv_color_hex(color), 0);
     lv_obj_set_style_bg_color(s_mouth, lv_color_hex(color), 0);
-}
-
-static uint32_t blend_color(uint32_t first, uint32_t second, float amount) {
-    amount = std::max(0.0f, std::min(1.0f, amount));
-    uint32_t result = 0;
-    for (int shift : {16, 8, 0}) {
-        const int a = static_cast<int>((first >> shift) & 0xFFU);
-        const int b = static_cast<int>((second >> shift) & 0xFFU);
-        result |= static_cast<uint32_t>(a + static_cast<int>((b - a) * amount)) << shift;
-    }
-    return result;
 }
 
 static void wake_up(bool blink_if_awake) {
@@ -551,7 +539,7 @@ static void animate(lv_timer_t *) {
     float bob = sinf(s_time * 2.20f) * 11.0f + sinf(s_time * 0.65f) * 2.0f;
     uint32_t base_face_color = CYAN;
     if (s_angry) {
-        base_face_color = CYAN;
+        base_face_color = RED;
     } else if (assistant_state == ASSISTANT_LISTENING) {
         base_face_color = GREEN;
     } else if (assistant_state == ASSISTANT_THINKING) {
@@ -582,9 +570,6 @@ static void animate(lv_timer_t *) {
     } else {
         base_face_color = CYAN;
     }
-    static float angry_mix = 0.0f;
-    angry_mix = approach(angry_mix, s_angry ? 1.0f : 0.0f, std::min(1.0f, dt * 3.0f));
-
     const int center_y = SCREEN_H / 2 + static_cast<int>(bob) + gaze_y;
     const int drive_left = s_drive_left.load();
     const int drive_right = s_drive_right.load();
@@ -594,22 +579,16 @@ static void animate(lv_timer_t *) {
         if (average < -10 && !s_angry) base_face_color = ORANGE;
         if (abs(turn) > 35 && abs(average) < 25) gaze_x += turn > 0 ? -12 : 12;
     }
-    set_face_color(blend_color(base_face_color, RED, angry_mix));
+    set_face_color(base_face_color);
     const int left_center_x = SCREEN_W / 2 - EYE_OFFSET_X + gaze_x;
     const int right_center_x = SCREEN_W / 2 + EYE_OFFSET_X + gaze_x;
-    // Keep the signature red color, but replace the harsh triangular plates
-    // with the robot's normal rounded eyes, gently narrowed and angled.
-    show_angry_eyes(false);
-    if (angry_mix > 0.01f) {
-        left_height = static_cast<int>(left_height * (1.0f - 0.20f * angry_mix));
-        right_height = static_cast<int>(right_height * (1.0f - 0.20f * angry_mix));
-    }
+    show_angry_eyes(s_angry);
     set_geometry(s_left_eye, left_center_x - left_width / 2, center_y - left_height / 2,
                  left_width, left_height);
     set_geometry(s_right_eye, right_center_x - right_width / 2, center_y - right_height / 2,
                  right_width, right_height);
-    lv_obj_set_style_transform_rotation(s_left_eye, static_cast<int>(angry_mix * -70.0f), 0);
-    lv_obj_set_style_transform_rotation(s_right_eye, static_cast<int>(angry_mix * 70.0f), 0);
+    lv_obj_set_style_transform_rotation(s_left_eye, 0, 0);
+    lv_obj_set_style_transform_rotation(s_right_eye, 0, 0);
     if (s_angry) {
         set_angry_geometry(s_angry_left, s_angry_left_stripes, false,
                            left_center_x, center_y, left_height);
