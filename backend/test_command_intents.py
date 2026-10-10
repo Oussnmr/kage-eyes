@@ -20,6 +20,12 @@ class CommandIntentTests(unittest.TestCase):
             "Kage, explore": ("robot", "explore"),
             "Kage, regarde autour de toi": ("robot", "explore"),
             "Kage, danse": ("robot", "dance"),
+            "Kage, fais un 360": ("robot", "360"),
+            "Kage, tourne sur toi-même": ("robot", "360"),
+            "Kage, regarde à gauche": ("robot", "pan_l"),
+            "Kage, regarde à droite": ("robot", "pan_r"),
+            "Kage, regarde en haut": ("robot", "tilt_u"),
+            "Kage, regarde en bas": ("robot", "tilt_d"),
         }
         for phrase, expected in cases.items():
             with self.subTest(phrase=phrase):

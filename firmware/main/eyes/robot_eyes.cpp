@@ -99,6 +99,7 @@ enum AssistantState {
 static std::atomic<bool> s_shake_pending{false};
 static std::atomic<bool> s_charge_pending{false};
 static std::atomic<bool> s_activity_pending{false};
+static std::atomic<bool> s_cancel_dizzy_pending{false};
 static std::atomic<int> s_remote_command{REMOTE_NONE};
 static std::atomic<int> s_assistant_state{ASSISTANT_IDLE};
 static std::atomic<int> s_mouth_level{0};
@@ -162,9 +163,13 @@ static void wake_up(bool blink_if_awake) {
     const bool was_sleeping = s_sleep_started >= 0.0f;
     s_sleep_started = -1.0f;
     s_last_activity = s_time;
-    s_wake_started = s_time;
-    s_target_x = 0.0f;
-    s_target_y = 0.0f;
+    // Mouth activity is reported many times per second during TTS. Restarting
+    // the wake transition here made the eyes close/open with every update.
+    if (was_sleeping) {
+        s_wake_started = s_time;
+        s_target_x = 0.0f;
+        s_target_y = 0.0f;
+    }
     if (!was_sleeping && blink_if_awake) {
         s_blink_time = 0.0f;
         s_blinks_left = 1;
@@ -366,6 +371,7 @@ static void animate(lv_timer_t *) {
         behavior = ROBOT_BEHAVIOR_NEUTRAL;
     }
     if (s_activity_pending.exchange(false)) wake_up(false);
+    if (s_cancel_dizzy_pending.exchange(false)) s_dizzy_until = s_time;
     const int remote = s_remote_command.exchange(REMOTE_NONE);
     if (remote != REMOTE_NONE) {
         if (remote == REMOTE_IDLE) {
@@ -854,6 +860,7 @@ void robot_eyes_assistant_error() { s_assistant_state.store(ASSISTANT_ERROR); }
 void robot_eyes_assistant_offline() { s_assistant_state.store(ASSISTANT_OFFLINE); }
 void robot_eyes_set_voice_active(bool active) { s_voice_active.store(active); }
 void robot_eyes_note_activity() { s_activity_pending.store(true); }
+void robot_eyes_cancel_dizzy() { s_cancel_dizzy_pending.store(true); }
 void robot_eyes_set_mouth_level(int level) {
     if (level < 0) level = 0;
     if (level > 1000) level = 1000;

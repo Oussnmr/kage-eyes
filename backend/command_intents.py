@@ -62,14 +62,15 @@ ROBOT_PHRASES = {
         "mode colere", "en colere",
     ),
     "dizzy": (
-        "spin", "spin around", "get dizzy", "act dizzy", "dizzy mode",
-        "tourne sur toi meme", "etourdis toi", "mets toi en mode etourdi",
+        "get dizzy", "act dizzy", "dizzy mode",
+        "etourdis toi", "mets toi en mode etourdi",
     ),
     "360": (
         "360", "three sixty", "three hundred sixty", "three hundred and sixty",
         "trois cent soixante", "tourne a 360", "tourne a trois cent soixante",
         "fais un 360", "fais trois cent soixante", "tourne sur toi meme a 360",
-        "tourne sur toi meme a trois cent soixante",
+        "tourne sur toi meme a trois cent soixante", "tourne sur toi meme",
+        "spin", "spin around",
     ),
     "dance": (
         "dance", "dance for me", "do a dance", "dance on the spot", "please dance",
@@ -88,6 +89,10 @@ ROBOT_PHRASES = {
     "move_v": ("move v", "move vertical", "vertical", "verticale"),
     "move_f": ("move f", "move forward", "en avant"),
     "move_b": ("move b", "move back", "move backward", "en arriere"),
+    "pan_l": ("look left", "regarde gauche", "regarde a gauche", "tourne la tete a gauche"),
+    "pan_r": ("look right", "regarde droite", "regarde a droite", "tourne la tete a droite"),
+    "tilt_u": ("look up", "regarde en haut", "leve la tete"),
+    "tilt_d": ("look down", "regarde en bas", "baisse la tete"),
 }
 
 BACKEND_PHRASES = {

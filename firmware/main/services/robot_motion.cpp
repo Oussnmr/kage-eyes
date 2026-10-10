@@ -302,19 +302,27 @@ static void drive_watchdog_task(void *) {
                 s_drive_right.store(0, std::memory_order_release);
                 s_drive_deadline.store(0, std::memory_order_release);
             } else {
-                const uint32_t phase = (elapsed / pdMS_TO_TICKS(360)) % 4U;
-                if (phase == 0U) {
-                    requested_left = 80;
-                    requested_right = -80;
-                } else if (phase == 1U) {
-                    requested_left = 80;
-                    requested_right = 80;
-                } else if (phase == 2U) {
-                    requested_left = -80;
-                    requested_right = 80;
+                if (elapsed < pdMS_TO_TICKS(1200)) {
+                    // Start with a few clear left/right pivots.
+                    const bool left = ((elapsed / pdMS_TO_TICKS(300)) % 2U) == 0U;
+                    requested_left = left ? -80 : 80;
+                    requested_right = -requested_left;
                 } else {
-                    requested_left = -80;
-                    requested_right = -80;
+                    const uint32_t phase = ((elapsed - pdMS_TO_TICKS(1200)) /
+                                            pdMS_TO_TICKS(360)) % 4U;
+                    if (phase == 0U) {
+                        requested_left = 80;
+                        requested_right = 80;
+                    } else if (phase == 1U) {
+                        requested_left = -80;
+                        requested_right = 80;
+                    } else if (phase == 2U) {
+                        requested_left = -80;
+                        requested_right = -80;
+                    } else {
+                        requested_left = 80;
+                        requested_right = -80;
+                    }
                 }
                 s_drive_deadline.store(now + DRIVE_WATCHDOG, std::memory_order_release);
             }
@@ -363,6 +371,8 @@ static void behavior_task(void *) {
     int active_behavior = ROBOT_BEHAVIOR_NEUTRAL;
     int applied_pan = 1000;
     int applied_tilt = 1000;
+    int applied_drive_left = 1000;
+    int applied_drive_right = 1000;
     for (;;) {
         const uint32_t generation = s_behavior_generation.load(std::memory_order_acquire);
         if (generation != seen_generation) {
@@ -370,6 +380,7 @@ static void behavior_task(void *) {
             active_behavior = s_behavior.load(std::memory_order_acquire);
             started = xTaskGetTickCount();
             applied_pan = applied_tilt = 1000;
+            applied_drive_left = applied_drive_right = 1000;
         }
         if (active_behavior != ROBOT_BEHAVIOR_NEUTRAL &&
             !s_calibration_mode.load(std::memory_order_acquire)) {
@@ -382,9 +393,15 @@ static void behavior_task(void *) {
                     set_behavior_pose(0, 0);
                     applied_pan = applied_tilt = 0;
                 }
+                s_drive_left.store(0, std::memory_order_release);
+                s_drive_right.store(0, std::memory_order_release);
+                s_drive_deadline.store(0, std::memory_order_release);
+                applied_drive_left = applied_drive_right = 0;
             } else {
                 int pan = 0;
                 int tilt = 0;
+                int drive_left = 0;
+                int drive_right = 0;
                 switch (active_behavior) {
                     case ROBOT_BEHAVIOR_AFFIRM:
                         tilt = (elapsed_ms % 900U) < 240U ? 35 : 0;
@@ -423,25 +440,32 @@ static void behavior_task(void *) {
                         pan = -30;
                         break;
                     case ROBOT_BEHAVIOR_EXPLORE: {
-                        // One axis at a time, with a centre pause between poses.
-                        // This avoids the simultaneous full-range MG90 current
-                        // peaks that can brown out Wi-Fi during exploration.
-                        const uint32_t phase = (elapsed_ms / 1250U) % 8U;
-                        // Alternate a stopped head scan with a short, bounded
-                        // track movement. Never drive tracks and servos in the
-                        // same phase, so the robot appears to search naturally.
-                        if (phase == 0) pan = -100;
-                        else if (phase == 1) pan = 0;
-                        else if (phase == 2) {
-                            s_drive_left.store(70, std::memory_order_release);
-                            s_drive_right.store(70, std::memory_order_release);
-                            s_drive_deadline.store(xTaskGetTickCount() + pdMS_TO_TICKS(1100), std::memory_order_release);
-                        } else if (phase == 4) tilt = 100;
-                        else if (phase == 5) tilt = 0;
-                        else if (phase == 6) {
-                            s_drive_left.store(-65, std::memory_order_release);
-                            s_drive_right.store(65, std::memory_order_release);
-                            s_drive_deadline.store(xTaskGetTickCount() + pdMS_TO_TICKS(1100), std::memory_order_release);
+                        // Start from the recorded zero, then alternate long
+                        // track movements, full stops and one servo axis at a
+                        // time. Servo poses use 75% of the calibrated range;
+                        // tracks never run during a head movement.
+                        if (elapsed_ms < 1500U) {
+                            // Return to recorded zero (or remain there).
+                        } else if (elapsed_ms < 4500U) {
+                            drive_left = 100;
+                            drive_right = 100;
+                        } else if (elapsed_ms < 6000U) {
+                            // Full stop before moving the head.
+                        } else if (elapsed_ms < 7500U) {
+                            pan = -75;
+                        } else if (elapsed_ms < 9000U) {
+                            // Pan back to zero and wait.
+                        } else if (elapsed_ms < 10500U) {
+                            tilt = 75;
+                        } else if (elapsed_ms < 12000U) {
+                            // Tilt back to zero and wait.
+                        } else if (elapsed_ms < 15000U) {
+                            drive_left = 100;
+                            drive_right = -100;
+                        } else if (elapsed_ms < 16500U) {
+                            // Full stop before the final look.
+                        } else {
+                            pan = 75;
                         }
                         break;
                     }
@@ -454,6 +478,18 @@ static void behavior_task(void *) {
                     applied_pan = pan;
                     applied_tilt = tilt;
                 }
+                if (drive_left || drive_right) {
+                    s_drive_left.store(drive_left, std::memory_order_release);
+                    s_drive_right.store(drive_right, std::memory_order_release);
+                    s_drive_deadline.store(xTaskGetTickCount() + DRIVE_WATCHDOG,
+                                           std::memory_order_release);
+                } else if (applied_drive_left || applied_drive_right) {
+                    s_drive_left.store(0, std::memory_order_release);
+                    s_drive_right.store(0, std::memory_order_release);
+                    s_drive_deadline.store(0, std::memory_order_release);
+                }
+                applied_drive_left = drive_left;
+                applied_drive_right = drive_right;
             }
         }
         vTaskDelay(pdMS_TO_TICKS(40));
@@ -755,7 +791,7 @@ void robot_motion_behavior(int behavior, int duration_ms) {
     if (behavior <= ROBOT_BEHAVIOR_NEUTRAL || behavior > ROBOT_BEHAVIOR_EXPLORE) return;
     if (!ensure_behavior_task()) return;
     if (duration_ms < 100) duration_ms = 100;
-    if (duration_ms > 3000) duration_ms = 3000;
+    if (duration_ms > 20000) duration_ms = 20000;
     s_behavior_duration_ms.store(static_cast<uint16_t>(duration_ms), std::memory_order_release);
     s_behavior.store(behavior, std::memory_order_release);
     s_behavior_generation.fetch_add(1, std::memory_order_acq_rel);

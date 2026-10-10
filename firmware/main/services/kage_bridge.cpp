@@ -152,6 +152,7 @@ static void update_info(bool reachable, int status, uint32_t sequence,
 static void dispatch_command(const char *command) {
     if (!command) return;
     robot_eyes_note_activity();
+    if (std::strcmp(command, "dizzy") != 0) robot_eyes_cancel_dizzy();
     if (std::strcmp(command, "dance") != 0) robot_motion_stop_dance();
     int first = 0;
     int second = 0;
@@ -270,23 +271,23 @@ static void dispatch_command(const char *command) {
         robot_eyes_set_behavior(ROBOT_BEHAVIOR_CELEBRATE, 2500);
     }
     else if (std::strcmp(command, "explore") == 0) {
-        robot_motion_behavior(ROBOT_BEHAVIOR_EXPLORE, 10000);
-        robot_eyes_set_behavior(ROBOT_BEHAVIOR_EXPLORE, 10000);
+        robot_motion_behavior(ROBOT_BEHAVIOR_EXPLORE, 18000);
+        robot_eyes_set_behavior(ROBOT_BEHAVIOR_EXPLORE, 18000);
     }
     else if (std::strcmp(command, "pan_l") == 0) {
-        robot_servo_nudge(ROBOT_PAN_LEFT);
+        robot_servo_pose(-1, 0);
         robot_eyes_set_manual_look(-1, 0);
     }
     else if (std::strcmp(command, "pan_r") == 0) {
-        robot_servo_nudge(ROBOT_PAN_RIGHT);
+        robot_servo_pose(1, 0);
         robot_eyes_set_manual_look(1, 0);
     }
     else if (std::strcmp(command, "tilt_u") == 0) {
-        robot_servo_nudge(ROBOT_TILT_UP);
+        robot_servo_pose(0, 0);
         robot_eyes_set_manual_look(0, -1);
     }
     else if (std::strcmp(command, "tilt_d") == 0) {
-        robot_servo_nudge(ROBOT_TILT_DOWN);
+        robot_servo_pose(0, 1);
         robot_eyes_set_manual_look(0, 1);
     }
     else {
