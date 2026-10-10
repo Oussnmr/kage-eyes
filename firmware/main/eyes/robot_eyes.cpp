@@ -134,7 +134,7 @@ static void set_face_color(uint32_t color) {
     lv_obj_set_style_bg_color(s_mouth, lv_color_hex(color), 0);
 }
 
-static void update_speed_lines(bool visible, int speed, int center_y) {
+static void update_speed_lines(bool visible, int speed, int center_y, uint32_t color) {
     if (!visible) {
         for (auto *line : s_speed_lines) {
             lv_obj_set_style_opa(line, LV_OPA_TRANSP, 0);
@@ -150,6 +150,7 @@ static void update_speed_lines(bool visible, int speed, int center_y) {
                             : 66 - width - static_cast<int>(travel);
         const int y = center_y + (row == 0 ? -31 : 25);
         set_geometry(s_speed_lines[i], x, y, width, 8);
+        lv_obj_set_style_bg_color(s_speed_lines[i], lv_color_hex(color), 0);
         const int opacity = 150 + static_cast<int>((34.0f - travel) * 3.0f);
         lv_obj_set_style_opa(s_speed_lines[i], static_cast<lv_opa_t>(std::min(255, opacity)), 0);
     }
@@ -622,7 +623,7 @@ static void animate(lv_timer_t *) {
     }
     const int center_y = SCREEN_H / 2 + static_cast<int>(bob) + gaze_y;
     set_face_color(base_face_color);
-    update_speed_lines(drive_active && forward > 12, std::max(0, forward), center_y);
+    update_speed_lines(drive_active && forward > 12, std::max(0, forward), center_y, base_face_color);
     const int left_center_x = SCREEN_W / 2 - EYE_OFFSET_X + gaze_x;
     const int right_center_x = SCREEN_W / 2 + EYE_OFFSET_X + gaze_x;
     show_angry_eyes(s_angry);
@@ -663,8 +664,11 @@ static void animate(lv_timer_t *) {
     static float mouth_smoothed = 0.0f;
     const int level = s_mouth_level.load();
     const float mouth_target = static_cast<float>(level) / 1000.0f;
-    mouth_smoothed += (mouth_target - mouth_smoothed) * 0.76f;
-    if (!s_angry && assistant_state == ASSISTANT_SPEAKING && level > 35) {
+    const float mouth_rate = mouth_target > mouth_smoothed ? 0.92f : 0.52f;
+    mouth_smoothed += (mouth_target - mouth_smoothed) * mouth_rate;
+    const bool voice_speaking = assistant_state == ASSISTANT_SPEAKING ||
+                                s_voice_active.load() || level > 20;
+    if (!s_angry && voice_speaking && level > 20) {
         const float voice_pulse = std::min(1.0f, mouth_smoothed);
         set_geometry(s_mouth, mouth_x, mouth_y - static_cast<int>(voice_pulse * 11.0f),
                      mouth_w, mouth_h + static_cast<int>(voice_pulse * 22.0f));

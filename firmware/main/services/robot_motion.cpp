@@ -95,6 +95,8 @@ static std::atomic<uint32_t> s_behavior_generation{0};
 static std::atomic<uint16_t> s_behavior_duration_ms{1200};
 static std::atomic<bool> s_dance_active{false};
 static std::atomic<uint32_t> s_dance_started{0};
+static std::atomic<bool> s_spin360_active{false};
+static std::atomic<uint32_t> s_spin360_started{0};
 static std::atomic<bool> s_behavior_task_started{false};
 
 static bool pca_init();
@@ -273,7 +275,20 @@ static void drive_watchdog_task(void *) {
         const uint32_t now = xTaskGetTickCount();
         int requested_left = s_drive_left.load(std::memory_order_acquire);
         int requested_right = s_drive_right.load(std::memory_order_acquire);
-        if (s_dance_active.load(std::memory_order_acquire)) {
+        if (s_spin360_active.load(std::memory_order_acquire)) {
+            const uint32_t elapsed = now - s_spin360_started.load(std::memory_order_acquire);
+            if (elapsed >= pdMS_TO_TICKS(2500)) {
+                s_spin360_active.store(false, std::memory_order_release);
+                requested_left = requested_right = 0;
+                s_drive_left.store(0, std::memory_order_release);
+                s_drive_right.store(0, std::memory_order_release);
+                s_drive_deadline.store(0, std::memory_order_release);
+            } else {
+                requested_left = 100;
+                requested_right = -100;
+                s_drive_deadline.store(now + DRIVE_WATCHDOG, std::memory_order_release);
+            }
+        } else if (s_dance_active.load(std::memory_order_acquire)) {
             const uint32_t elapsed = now - s_dance_started.load(std::memory_order_acquire);
             if (elapsed >= pdMS_TO_TICKS(5000)) {
                 s_dance_active.store(false, std::memory_order_release);
@@ -283,7 +298,7 @@ static void drive_watchdog_task(void *) {
                 s_drive_deadline.store(0, std::memory_order_release);
             } else {
                 const bool clockwise = ((elapsed / pdMS_TO_TICKS(360)) % 2U) == 0;
-                requested_left = clockwise ? 52 : -52;
+                requested_left = clockwise ? 80 : -80;
                 requested_right = -requested_left;
                 s_drive_deadline.store(now + DRIVE_WATCHDOG, std::memory_order_release);
             }
@@ -395,7 +410,7 @@ static void behavior_task(void *) {
                         // One axis at a time, with a centre pause between poses.
                         // This avoids the simultaneous full-range MG90 current
                         // peaks that can brown out Wi-Fi during exploration.
-                        const uint32_t phase = (elapsed_ms / 500U) % 6U;
+                        const uint32_t phase = (elapsed_ms / 750U) % 6U;
                         if (phase == 0) pan = -45;
                         else if (phase == 2) tilt = 35;
                         else if (phase == 4) pan = 45;
@@ -725,8 +740,19 @@ void robot_motion_start_dance(void) {
     s_dance_active.store(true, std::memory_order_release);
 }
 
+void robot_motion_start_360(void) {
+    if (s_calibration_mode.load(std::memory_order_acquire)) return;
+    s_dance_active.store(false, std::memory_order_release);
+    s_behavior.store(ROBOT_BEHAVIOR_NEUTRAL, std::memory_order_release);
+    s_behavior_generation.fetch_add(1, std::memory_order_acq_rel);
+    s_spin360_started.store(xTaskGetTickCount(), std::memory_order_release);
+    s_spin360_active.store(true, std::memory_order_release);
+}
+
 void robot_motion_stop_dance(void) {
-    if (!s_dance_active.exchange(false, std::memory_order_acq_rel)) return;
+    const bool was_dancing = s_dance_active.exchange(false, std::memory_order_acq_rel);
+    const bool was_spinning = s_spin360_active.exchange(false, std::memory_order_acq_rel);
+    if (!was_dancing && !was_spinning) return;
     s_drive_left.store(0, std::memory_order_release);
     s_drive_right.store(0, std::memory_order_release);
     s_drive_deadline.store(0, std::memory_order_release);

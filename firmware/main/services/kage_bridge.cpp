@@ -264,6 +264,11 @@ static void dispatch_command(const char *command) {
         robot_motion_start_dance();
         robot_eyes_set_behavior(ROBOT_BEHAVIOR_CELEBRATE, 3000);
     }
+    else if (std::strcmp(command, "360") == 0) {
+        robot_motion_start_360();
+        robot_eyes_set_drive_state(0, -100);
+        robot_eyes_set_behavior(ROBOT_BEHAVIOR_CELEBRATE, 2500);
+    }
     else if (std::strcmp(command, "explore") == 0) {
         robot_motion_behavior(ROBOT_BEHAVIOR_EXPLORE, 3000);
         robot_eyes_set_behavior(ROBOT_BEHAVIOR_EXPLORE, 3000);

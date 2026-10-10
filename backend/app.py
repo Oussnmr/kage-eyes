@@ -54,7 +54,7 @@ VALID_COMMANDS = {
     "move_h", "move_v", "move_f", "move_b",
     "drive_f", "drive_b", "drive_l", "drive_r", "motion_stop",
     "pan_l", "pan_r", "tilt_u", "tilt_d",
-    "dance", "explore",
+    "dance", "explore", "360",
 }
 VALID_ASSISTANT_STATES = {"idle", "listening", "thinking", "speaking", "error", "offline"}
 VALID_BEHAVIORS = {
