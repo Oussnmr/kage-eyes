@@ -151,6 +151,7 @@ static void update_info(bool reachable, int status, uint32_t sequence,
 
 static void dispatch_command(const char *command) {
     if (!command) return;
+    robot_eyes_note_activity();
     if (std::strcmp(command, "dance") != 0) robot_motion_stop_dance();
     int first = 0;
     int second = 0;

@@ -1,5 +1,6 @@
 #include "robot_motion.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -99,6 +100,7 @@ static std::atomic<bool> s_behavior_task_started{false};
 static bool pca_init();
 static esp_err_t pca_channel(uint8_t channel, uint16_t pulse, bool full_off);
 static bool servo_position(uint8_t channel, uint16_t micros);
+static uint16_t clamp_servo(int value);
 
 static bool valid_saved_zeros(uint16_t pan, uint16_t tilt) {
     return pan >= SERVO_MIN_US + PAN_POSE_MAX_OFFSET_US &&
@@ -309,16 +311,34 @@ static void drive_watchdog_task(void *) {
     }
 }
 
+static void set_behavior_pose(int pan_percent, int tilt_percent) {
+    pan_percent = std::max(-100, std::min(100, pan_percent));
+    tilt_percent = std::max(0, std::min(100, tilt_percent));
+    const int pan_offset = PAN_POSE_MAX_OFFSET_US *
+                           s_pan_range.load(std::memory_order_acquire) / 100;
+    const int tilt_offset = TILT_POSE_MAX_OFFSET_US *
+                            s_tilt_range.load(std::memory_order_acquire) / 100;
+    const int pan = static_cast<int>(s_pan_zero_us.load(std::memory_order_acquire)) +
+                    pan_offset * pan_percent / 100;
+    const int tilt = static_cast<int>(s_tilt_zero_us.load(std::memory_order_acquire)) +
+                     tilt_offset * tilt_percent / 100;
+    s_pan_target_us.store(clamp_servo(pan), std::memory_order_release);
+    s_tilt_target_us.store(clamp_servo(tilt), std::memory_order_release);
+}
+
 static void behavior_task(void *) {
     uint32_t seen_generation = 0;
     uint32_t started = 0;
     int active_behavior = ROBOT_BEHAVIOR_NEUTRAL;
+    int applied_pan = 1000;
+    int applied_tilt = 1000;
     for (;;) {
         const uint32_t generation = s_behavior_generation.load(std::memory_order_acquire);
         if (generation != seen_generation) {
             seen_generation = generation;
             active_behavior = s_behavior.load(std::memory_order_acquire);
             started = xTaskGetTickCount();
+            applied_pan = applied_tilt = 1000;
         }
         if (active_behavior != ROBOT_BEHAVIOR_NEUTRAL &&
             !s_calibration_mode.load(std::memory_order_acquire)) {
@@ -327,61 +347,72 @@ static void behavior_task(void *) {
             if (elapsed_ms >= duration) {
                 active_behavior = ROBOT_BEHAVIOR_NEUTRAL;
                 s_behavior.store(ROBOT_BEHAVIOR_NEUTRAL, std::memory_order_release);
-                robot_servo_pose(0, 0);
+                if (applied_pan != 0 || applied_tilt != 0) {
+                    set_behavior_pose(0, 0);
+                    applied_pan = applied_tilt = 0;
+                }
             } else {
                 int pan = 0;
                 int tilt = 0;
                 switch (active_behavior) {
                     case ROBOT_BEHAVIOR_AFFIRM:
-                        tilt = (elapsed_ms % 900U) < 240U ? 1 : 0;
+                        tilt = (elapsed_ms % 900U) < 240U ? 35 : 0;
                         break;
                     case ROBOT_BEHAVIOR_LISTENING:
-                        tilt = 1;
+                        tilt = 25;
                         break;
                     case ROBOT_BEHAVIOR_DENY: {
                         const uint32_t phase = (elapsed_ms / 300U) % 3U;
-                        pan = phase == 0 ? -1 : (phase == 1 ? 1 : 0);
+                        pan = phase == 0 ? -45 : (phase == 1 ? 45 : 0);
                         break;
                     }
                     case ROBOT_BEHAVIOR_THINKING:
                     case ROBOT_BEHAVIOR_SARCASTIC:
-                        if (elapsed_ms < 750U) { pan = -1; tilt = 1; }
+                        if (elapsed_ms < 750U) pan = -35;
                         break;
                     case ROBOT_BEHAVIOR_AMUSED:
                     case ROBOT_BEHAVIOR_HAPPY:
                     case ROBOT_BEHAVIOR_CELEBRATE:
                     case ROBOT_BEHAVIOR_SATISFIED:
                     case ROBOT_BEHAVIOR_GENTLE:
-                        tilt = (elapsed_ms % 1200U) < 260U ? 1 : 0;
+                        tilt = (elapsed_ms % 1200U) < 260U ? 30 : 0;
                         break;
                     case ROBOT_BEHAVIOR_CURIOUS:
                     case ROBOT_BEHAVIOR_SURPRISED:
-                        if (elapsed_ms < 650U) { pan = 1; tilt = 1; }
+                        if (elapsed_ms < 650U) pan = 35;
                         break;
                     case ROBOT_BEHAVIOR_CONFUSED:
-                        pan = ((elapsed_ms / 450U) % 2U) ? 1 : -1;
-                        tilt = 1;
+                        pan = ((elapsed_ms / 450U) % 2U) ? 35 : -35;
                         break;
                     case ROBOT_BEHAVIOR_WORRIED:
                     case ROBOT_BEHAVIOR_WARNING:
-                        tilt = 1;
+                        tilt = 30;
                         break;
                     case ROBOT_BEHAVIOR_SAD:
-                        pan = -1;
+                        pan = -30;
                         break;
                     case ROBOT_BEHAVIOR_EXPLORE: {
-                        const uint32_t phase = (elapsed_ms / 500U) % 4U;
-                        pan = phase == 0 ? -1 : (phase == 2 ? 1 : 0);
-                        tilt = (phase == 1 || phase == 3) ? 1 : 0;
+                        // One axis at a time, with a centre pause between poses.
+                        // This avoids the simultaneous full-range MG90 current
+                        // peaks that can brown out Wi-Fi during exploration.
+                        const uint32_t phase = (elapsed_ms / 500U) % 6U;
+                        if (phase == 0) pan = -45;
+                        else if (phase == 2) tilt = 35;
+                        else if (phase == 4) pan = 45;
                         break;
                     }
                     default:
                         break;
                 }
-                robot_servo_pose(pan, tilt);
+                // Unlike the old 50 Hz loop, publish only when the pose changes.
+                if (pan != applied_pan || tilt != applied_tilt) {
+                    set_behavior_pose(pan, tilt);
+                    applied_pan = pan;
+                    applied_tilt = tilt;
+                }
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(20));
+        vTaskDelay(pdMS_TO_TICKS(40));
     }
 }
 

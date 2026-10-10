@@ -21,6 +21,7 @@ constexpr int MOUTH_W = 46;
 constexpr int MOUTH_H = 7;
 constexpr int MOUTH_Y = 258;
 constexpr int THINKING_DOT_COUNT = 3;
+constexpr int SPEED_LINE_COUNT = 4;
 constexpr int FRAME_MS = 33;
 constexpr float IDLE_BEFORE_SLEEP_S = 22.0f;
 constexpr float SLEEP_DURATION_S = 22.0f;
@@ -40,6 +41,7 @@ static lv_obj_t *s_left_eye;
 static lv_obj_t *s_right_eye;
 static lv_obj_t *s_mouth;
 static lv_obj_t *s_thinking_dots[THINKING_DOT_COUNT];
+static lv_obj_t *s_speed_lines[SPEED_LINE_COUNT];
 static lv_obj_t *s_sleep_z[3];
 static lv_obj_t *s_angry_left;
 static lv_obj_t *s_angry_right;
@@ -94,6 +96,7 @@ enum AssistantState {
 
 static std::atomic<bool> s_shake_pending{false};
 static std::atomic<bool> s_charge_pending{false};
+static std::atomic<bool> s_activity_pending{false};
 static std::atomic<int> s_remote_command{REMOTE_NONE};
 static std::atomic<int> s_assistant_state{ASSISTANT_IDLE};
 static std::atomic<int> s_mouth_level{0};
@@ -121,12 +124,35 @@ static float smoothstep(float value) {
     return value * value * (3.0f - 2.0f * value);
 }
 
+static void set_geometry(lv_obj_t *eye, int x, int y, int width, int height);
+
 static void set_face_color(uint32_t color) {
     if (color == s_face_color) return;
     s_face_color = color;
     lv_obj_set_style_bg_color(s_left_eye, lv_color_hex(color), 0);
     lv_obj_set_style_bg_color(s_right_eye, lv_color_hex(color), 0);
     lv_obj_set_style_bg_color(s_mouth, lv_color_hex(color), 0);
+}
+
+static void update_speed_lines(bool visible, int speed, int center_y) {
+    if (!visible) {
+        for (auto *line : s_speed_lines) {
+            lv_obj_set_style_opa(line, LV_OPA_TRANSP, 0);
+        }
+        return;
+    }
+    const float travel = fmodf(s_time * (90.0f + speed * 1.1f), 34.0f);
+    for (int i = 0; i < SPEED_LINE_COUNT; ++i) {
+        const bool right = i >= 2;
+        const int row = i % 2;
+        const int width = 22 + row * 7;
+        const int x = right ? 382 + static_cast<int>(travel)
+                            : 66 - width - static_cast<int>(travel);
+        const int y = center_y + (row == 0 ? -31 : 25);
+        set_geometry(s_speed_lines[i], x, y, width, 8);
+        const int opacity = 150 + static_cast<int>((34.0f - travel) * 3.0f);
+        lv_obj_set_style_opa(s_speed_lines[i], static_cast<lv_opa_t>(std::min(255, opacity)), 0);
+    }
 }
 
 static void wake_up(bool blink_if_awake) {
@@ -336,6 +362,7 @@ static void animate(lv_timer_t *) {
         s_behavior_until_us.store(0);
         behavior = ROBOT_BEHAVIOR_NEUTRAL;
     }
+    if (s_activity_pending.exchange(false)) wake_up(false);
     const int remote = s_remote_command.exchange(REMOTE_NONE);
     if (remote != REMOTE_NONE) {
         if (remote == REMOTE_IDLE) {
@@ -385,9 +412,14 @@ static void animate(lv_timer_t *) {
         if (!s_angry) s_charge_until = s_time + CHARGE_DURATION_S;
     }
 
-    if (s_sleep_started >= 0.0f && assistant_state != ASSISTANT_IDLE) wake_up(false);
+    const bool drive_active = now_us - s_drive_updated_us.load() < 500000;
+    const bool manual_active = now_us - s_manual_look_updated_us.load() < 1800000;
+    const bool action_active = assistant_state != ASSISTANT_IDLE ||
+                               behavior != ROBOT_BEHAVIOR_NEUTRAL ||
+                               drive_active || manual_active || s_mouth_level.load() > 0;
+    if (s_sleep_started >= 0.0f && action_active) wake_up(false);
 
-    if (!s_angry && assistant_state == ASSISTANT_IDLE && s_sleep_started < 0.0f && s_time >= s_dizzy_until &&
+    if (!s_angry && !action_active && assistant_state == ASSISTANT_IDLE && s_sleep_started < 0.0f && s_time >= s_dizzy_until &&
         s_time >= s_charge_until && s_time - s_last_activity >= IDLE_BEFORE_SLEEP_S) {
         s_sleep_started = s_time;
         s_target_x = 0.0f;
@@ -572,21 +604,25 @@ static void animate(lv_timer_t *) {
     } else {
         base_face_color = CYAN;
     }
-    const int center_y = SCREEN_H / 2 + static_cast<int>(bob) + gaze_y;
     const int forward = s_drive_forward.load();
     const int turn = s_drive_turn.load();
-    if (now_us - s_drive_updated_us.load() < 500000) {
+    if (drive_active) {
         const int speed = std::max(abs(forward), abs(turn));
         if (abs(turn) > 12) gaze_x += turn > 0 ? -18 : 18;
         if (forward > 12) gaze_y -= 7;
-        else if (forward < -12) gaze_y += 10;
+        else if (forward < -12) {
+            gaze_y += 10;
+            if (!s_angry) base_face_color = ORANGE;
+        }
         if (speed > 35) {
             const float focus = 1.0f - std::min(0.18f, (speed - 35) / 360.0f);
             left_height = std::max(34, static_cast<int>(left_height * focus));
             right_height = std::max(34, static_cast<int>(right_height * focus));
         }
     }
+    const int center_y = SCREEN_H / 2 + static_cast<int>(bob) + gaze_y;
     set_face_color(base_face_color);
+    update_speed_lines(drive_active && forward > 12, std::max(0, forward), center_y);
     const int left_center_x = SCREEN_W / 2 - EYE_OFFSET_X + gaze_x;
     const int right_center_x = SCREEN_W / 2 + EYE_OFFSET_X + gaze_x;
     show_angry_eyes(s_angry);
@@ -627,7 +663,7 @@ static void animate(lv_timer_t *) {
     static float mouth_smoothed = 0.0f;
     const int level = s_mouth_level.load();
     const float mouth_target = static_cast<float>(level) / 1000.0f;
-    mouth_smoothed += (mouth_target - mouth_smoothed) * 0.48f;
+    mouth_smoothed += (mouth_target - mouth_smoothed) * 0.76f;
     if (!s_angry && assistant_state == ASSISTANT_SPEAKING && level > 35) {
         const float voice_pulse = std::min(1.0f, mouth_smoothed);
         set_geometry(s_mouth, mouth_x, mouth_y - static_cast<int>(voice_pulse * 11.0f),
@@ -664,6 +700,18 @@ static lv_obj_t *create_mouth(lv_obj_t *parent) {
     return mouth;
 }
 
+static lv_obj_t *create_speed_line(lv_obj_t *parent) {
+    lv_obj_t *line = lv_obj_create(parent);
+    lv_obj_remove_style_all(line);
+    lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(line, lv_color_hex(CYAN), 0);
+    lv_obj_set_style_radius(line, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_opa(line, LV_OPA_TRANSP, 0);
+    lv_obj_clear_flag(line, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(line, LV_OBJ_FLAG_SCROLLABLE);
+    return line;
+}
+
 static lv_obj_t *create_angry_eye(lv_obj_t *parent, lv_obj_t **stripes) {
     lv_obj_t *container = lv_obj_create(parent);
     lv_obj_remove_style_all(container);
@@ -697,6 +745,7 @@ void robot_eyes_begin(lv_obj_t *parent) {
     s_left_eye = create_eye(parent);
     s_right_eye = create_eye(parent);
     s_mouth = create_mouth(parent);
+    for (auto &line : s_speed_lines) line = create_speed_line(parent);
     for (int i = 0; i < THINKING_DOT_COUNT; ++i) {
         s_thinking_dots[i] = lv_obj_create(parent);
         lv_obj_remove_style_all(s_thinking_dots[i]);
@@ -796,15 +845,18 @@ void robot_eyes_assistant_speaking() { s_assistant_state.store(ASSISTANT_SPEAKIN
 void robot_eyes_assistant_error() { s_assistant_state.store(ASSISTANT_ERROR); }
 void robot_eyes_assistant_offline() { s_assistant_state.store(ASSISTANT_OFFLINE); }
 void robot_eyes_set_voice_active(bool active) { s_voice_active.store(active); }
+void robot_eyes_note_activity() { s_activity_pending.store(true); }
 void robot_eyes_set_mouth_level(int level) {
     if (level < 0) level = 0;
     if (level > 1000) level = 1000;
     s_mouth_level.store(level);
+    if (level > 0) robot_eyes_note_activity();
 }
 void robot_eyes_set_drive_state(int forward_percent, int turn_percent) {
     s_drive_forward.store(std::max(-100, std::min(100, forward_percent)));
     s_drive_turn.store(std::max(-100, std::min(100, turn_percent)));
     s_drive_updated_us.store((forward_percent || turn_percent) ? esp_timer_get_time() : 0);
+    if (forward_percent || turn_percent) robot_eyes_note_activity();
 }
 void robot_eyes_set_manual_look(int horizontal, int vertical) {
     horizontal = std::max(-1, std::min(1, horizontal));
@@ -812,10 +864,12 @@ void robot_eyes_set_manual_look(int horizontal, int vertical) {
     s_manual_look_x.store(horizontal);
     s_manual_look_y.store(vertical);
     s_manual_look_updated_us.store((horizontal || vertical) ? esp_timer_get_time() : 0);
+    if (horizontal || vertical) robot_eyes_note_activity();
 }
 void robot_eyes_set_behavior(int behavior, int duration_ms) {
     if (behavior < ROBOT_BEHAVIOR_NEUTRAL || behavior > ROBOT_BEHAVIOR_EXPLORE) return;
     duration_ms = std::max(100, std::min(3000, duration_ms));
     s_behavior.store(behavior);
     s_behavior_until_us.store(esp_timer_get_time() + static_cast<int64_t>(duration_ms) * 1000);
+    if (behavior != ROBOT_BEHAVIOR_NEUTRAL) robot_eyes_note_activity();
 }
