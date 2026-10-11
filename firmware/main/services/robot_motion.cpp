@@ -34,6 +34,7 @@ constexpr uint32_t PWM_MAX = (1U << 10) - 1U;
 constexpr uint32_t TEST_DUTY = PWM_MAX;  // Full-power diagnostic pulse, wheels raised.
 constexpr TickType_t MOTOR_PULSE = pdMS_TO_TICKS(1000);
 constexpr TickType_t DRIVE_WATCHDOG = pdMS_TO_TICKS(400);
+constexpr TickType_t EXPLORE_SERVO_PAUSE = pdMS_TO_TICKS(1000);
 
 constexpr uint8_t PCA_ADDRESS = 0x40;
 constexpr uint8_t PCA_MODE1 = 0x00;
@@ -83,6 +84,8 @@ static uint16_t s_pan_us = SERVO_CENTER_US;
 static uint16_t s_tilt_us = TILT_OUTER_SAFE_US;
 static std::atomic<uint16_t> s_pan_target_us{SERVO_CENTER_US};
 static std::atomic<uint16_t> s_tilt_target_us{TILT_OUTER_SAFE_US};
+static std::atomic<bool> s_pan_settled{true};
+static std::atomic<bool> s_tilt_settled{true};
 static std::atomic<uint16_t> s_pan_zero_us{SERVO_CENTER_US};
 static std::atomic<uint16_t> s_tilt_zero_us{TILT_OUTER_SAFE_US};
 static std::atomic<bool> s_calibration_mode{false};
@@ -103,6 +106,7 @@ static bool pca_init();
 static esp_err_t pca_channel(uint8_t channel, uint16_t pulse, bool full_off);
 static bool servo_position(uint8_t channel, uint16_t micros);
 static uint16_t clamp_servo(int value);
+static uint16_t clamp_tilt(int value);
 
 static bool valid_saved_zeros(uint16_t pan, uint16_t tilt) {
     return pan >= SERVO_MIN_US + PAN_POSE_MAX_OFFSET_US &&
@@ -225,7 +229,7 @@ static uint16_t servo_step_us() {
     // Explore keeps the full calibrated pose range but moves the head more
     // deliberately, independently of the user's global servo setting.
     if (s_behavior.load(std::memory_order_acquire) == ROBOT_BEHAVIOR_EXPLORE) {
-        speed = std::min<uint16_t>(speed, 75);
+        speed = 75;
     }
     // 10..100% maps to 4..28 us per 20 ms. The default 50% is 14 us,
     // matching the previously tested movement speed.
@@ -248,12 +252,24 @@ static void servo_smooth_task(void *) {
         const bool moving = s_pan_us != pan_target || s_tilt_us != tilt_target;
         if (moving && pca_init()) {
             const uint16_t step = servo_step_us();
-            const uint16_t next_pan = step_toward(s_pan_us, pan_target, step);
-            const uint16_t next_tilt = step_toward(s_tilt_us, tilt_target, step);
-            if (next_pan != s_pan_us) (void)servo_position(PCA_HORIZONTAL_CHANNEL, next_pan);
-            if (next_tilt != s_tilt_us) (void)servo_position(PCA_VERTICAL_CHANNEL, next_tilt);
-            s_pan_us = next_pan;
-            s_tilt_us = next_tilt;
+            const bool explore = s_behavior.load(std::memory_order_acquire) == ROBOT_BEHAVIOR_EXPLORE;
+            if (explore) {
+                // Explore moves only one physical axis at a time.
+                if (s_pan_us != pan_target) {
+                    const uint16_t next_pan = step_toward(s_pan_us, pan_target, step);
+                    if (servo_position(PCA_HORIZONTAL_CHANNEL, next_pan)) s_pan_us = next_pan;
+                } else if (s_tilt_us != tilt_target) {
+                    const uint16_t next_tilt = step_toward(s_tilt_us, tilt_target, step);
+                    if (servo_position(PCA_VERTICAL_CHANNEL, next_tilt)) s_tilt_us = next_tilt;
+                }
+            } else {
+                const uint16_t next_pan = step_toward(s_pan_us, pan_target, step);
+                const uint16_t next_tilt = step_toward(s_tilt_us, tilt_target, step);
+                if (next_pan != s_pan_us && servo_position(PCA_HORIZONTAL_CHANNEL, next_pan)) s_pan_us = next_pan;
+                if (next_tilt != s_tilt_us && servo_position(PCA_VERTICAL_CHANNEL, next_tilt)) s_tilt_us = next_tilt;
+            }
+            s_pan_settled.store(s_pan_us == s_pan_target_us.load(std::memory_order_acquire), std::memory_order_release);
+            s_tilt_settled.store(s_tilt_us == s_tilt_target_us.load(std::memory_order_acquire), std::memory_order_release);
             settled_since = 0;
         } else if (s_pca && s_calibration_mode.load(std::memory_order_acquire)) {
             // Keep both channels energized while the user performs the fine
@@ -262,6 +278,8 @@ static void servo_smooth_task(void *) {
             (void)servo_position(PCA_VERTICAL_CHANNEL, s_tilt_us);
             settled_since = 0;
         } else if (s_pca) {
+            s_pan_settled.store(s_pan_us == pan_target, std::memory_order_release);
+            s_tilt_settled.store(s_tilt_us == tilt_target, std::memory_order_release);
             const TickType_t now = xTaskGetTickCount();
             if (!settled_since) settled_since = now;
             if (now - settled_since >= SERVO_RELEASE_DELAY) {
@@ -282,7 +300,7 @@ static void drive_watchdog_task(void *) {
         int requested_right = s_drive_right.load(std::memory_order_acquire);
         if (s_spin360_active.load(std::memory_order_acquire)) {
             const uint32_t elapsed = now - s_spin360_started.load(std::memory_order_acquire);
-            if (elapsed >= pdMS_TO_TICKS(2500)) {
+            if (elapsed >= pdMS_TO_TICKS(3000)) {
                 s_spin360_active.store(false, std::memory_order_release);
                 requested_left = requested_right = 0;
                 s_drive_left.store(0, std::memory_order_release);
@@ -368,6 +386,26 @@ static void set_behavior_pose(int pan_percent, int tilt_percent) {
     s_tilt_target_us.store(clamp_servo(tilt), std::memory_order_release);
 }
 
+static void set_behavior_pan(int pan_percent) {
+    pan_percent = std::max(-100, std::min(100, pan_percent));
+    const int offset = PAN_POSE_MAX_OFFSET_US * s_pan_range.load(std::memory_order_acquire) / 100;
+    const uint16_t target = clamp_servo(static_cast<int>(s_pan_zero_us.load(std::memory_order_acquire)) +
+                                        offset * pan_percent / 100);
+    if (target != s_pan_target_us.load(std::memory_order_acquire))
+        s_pan_settled.store(false, std::memory_order_release);
+    s_pan_target_us.store(target, std::memory_order_release);
+}
+
+static void set_behavior_tilt(int tilt_percent) {
+    tilt_percent = std::max(0, std::min(100, tilt_percent));
+    const int offset = TILT_POSE_MAX_OFFSET_US * s_tilt_range.load(std::memory_order_acquire) / 100;
+    const uint16_t target = clamp_tilt(static_cast<int>(s_tilt_zero_us.load(std::memory_order_acquire)) +
+                                       offset * tilt_percent / 100);
+    if (target != s_tilt_target_us.load(std::memory_order_acquire))
+        s_tilt_settled.store(false, std::memory_order_release);
+    s_tilt_target_us.store(target, std::memory_order_release);
+}
+
 static void behavior_task(void *) {
     uint32_t seen_generation = 0;
     uint32_t started = 0;
@@ -376,6 +414,16 @@ static void behavior_task(void *) {
     int applied_tilt = 1000;
     int applied_drive_left = 1000;
     int applied_drive_right = 1000;
+    int explore_stage = 0;
+    bool explore_stage_issued = false;
+    TickType_t explore_stage_started = 0;
+    TickType_t explore_settled_at = 0;
+    auto enter_explore_stage = [&](int stage) {
+        explore_stage = stage;
+        explore_stage_issued = false;
+        explore_stage_started = xTaskGetTickCount();
+        explore_settled_at = 0;
+    };
     for (;;) {
         const uint32_t generation = s_behavior_generation.load(std::memory_order_acquire);
         if (generation != seen_generation) {
@@ -384,11 +432,125 @@ static void behavior_task(void *) {
             started = xTaskGetTickCount();
             applied_pan = applied_tilt = 1000;
             applied_drive_left = applied_drive_right = 1000;
+            enter_explore_stage(0);
+            if (active_behavior == ROBOT_BEHAVIOR_EXPLORE) {
+                event_log_add("Explore started; homing pan then tilt");
+                ESP_LOGI(TAG, "Explore started; homing one servo axis at a time");
+            }
         }
         if (active_behavior != ROBOT_BEHAVIOR_NEUTRAL &&
             !s_calibration_mode.load(std::memory_order_acquire)) {
             const uint32_t elapsed_ms = (xTaskGetTickCount() - started) * 1000U / configTICK_RATE_HZ;
             const uint32_t duration = s_behavior_duration_ms.load(std::memory_order_acquire);
+            if (active_behavior == ROBOT_BEHAVIOR_EXPLORE) {
+                const TickType_t now = xTaskGetTickCount();
+                const auto settled_for_pause = [&](bool settled) {
+                    if (!settled) {
+                        explore_settled_at = 0;
+                        return false;
+                    }
+                    if (!explore_settled_at) explore_settled_at = now;
+                    return now - explore_settled_at >= EXPLORE_SERVO_PAUSE;
+                };
+                const auto stop_tracks = [&]() {
+                    s_drive_left.store(0, std::memory_order_release);
+                    s_drive_right.store(0, std::memory_order_release);
+                    s_drive_deadline.store(0, std::memory_order_release);
+                };
+                if (elapsed_ms >= duration || explore_stage >= 12) {
+                    stop_tracks();
+                    active_behavior = ROBOT_BEHAVIOR_NEUTRAL;
+                    s_behavior.store(ROBOT_BEHAVIOR_NEUTRAL, std::memory_order_release);
+                    event_log_add("Explore complete; tracks stopped");
+                    ESP_LOGI(TAG, "Explore complete");
+                    vTaskDelay(pdMS_TO_TICKS(40));
+                    continue;
+                }
+                switch (explore_stage) {
+                    case 0: // Pan to its recorded zero first.
+                        if (!explore_stage_issued) {
+                            stop_tracks();
+                            set_behavior_pan(0);
+                            explore_stage_issued = true;
+                            event_log_add("Explore: pan to saved zero");
+                        }
+                        if (settled_for_pause(s_pan_settled.load(std::memory_order_acquire))) enter_explore_stage(1);
+                        break;
+                    case 1: // Then tilt, never concurrently with pan.
+                        if (!explore_stage_issued) {
+                            set_behavior_tilt(0);
+                            explore_stage_issued = true;
+                            event_log_add("Explore: tilt to saved zero");
+                        }
+                        if (settled_for_pause(s_tilt_settled.load(std::memory_order_acquire))) enter_explore_stage(2);
+                        break;
+                    case 2:
+                        if (!explore_stage_issued) {
+                            s_drive_left.store(100, std::memory_order_release);
+                            s_drive_right.store(-100, std::memory_order_release);
+                            explore_stage_issued = true;
+                            event_log_add("Explore: tracks forward 100%%");
+                        }
+                        s_drive_deadline.store(now + DRIVE_WATCHDOG, std::memory_order_release);
+                        if (now - explore_stage_started >= pdMS_TO_TICKS(3000)) { stop_tracks(); enter_explore_stage(3); }
+                        break;
+                    case 3:
+                        stop_tracks();
+                        if (now - explore_stage_started >= pdMS_TO_TICKS(1000)) enter_explore_stage(4);
+                        break;
+                    case 4:
+                        if (!explore_stage_issued) { set_behavior_pan(-75); explore_stage_issued = true; event_log_add("Explore: pan left"); }
+                        if (settled_for_pause(s_pan_settled.load(std::memory_order_acquire))) enter_explore_stage(5);
+                        break;
+                    case 5:
+                        if (!explore_stage_issued) { set_behavior_pan(0); explore_stage_issued = true; event_log_add("Explore: pan center"); }
+                        if (settled_for_pause(s_pan_settled.load(std::memory_order_acquire))) enter_explore_stage(6);
+                        break;
+                    case 6:
+                        if (!explore_stage_issued) { set_behavior_tilt(75); explore_stage_issued = true; event_log_add("Explore: tilt up"); }
+                        if (settled_for_pause(s_tilt_settled.load(std::memory_order_acquire))) enter_explore_stage(7);
+                        break;
+                    case 7:
+                        if (!explore_stage_issued) { set_behavior_tilt(0); explore_stage_issued = true; event_log_add("Explore: tilt zero"); }
+                        if (settled_for_pause(s_tilt_settled.load(std::memory_order_acquire))) enter_explore_stage(8);
+                        break;
+                    case 8:
+                        if (!explore_stage_issued) {
+                            // Mirrored tracks turn right with equal PWM signs.
+                            s_drive_left.store(100, std::memory_order_release);
+                            s_drive_right.store(100, std::memory_order_release);
+                            explore_stage_issued = true;
+                            event_log_add("Explore: pivot right 100%%");
+                        }
+                        s_drive_deadline.store(now + DRIVE_WATCHDOG, std::memory_order_release);
+                        if (now - explore_stage_started >= pdMS_TO_TICKS(3000)) { stop_tracks(); enter_explore_stage(9); }
+                        break;
+                    case 9:
+                        stop_tracks();
+                        if (now - explore_stage_started >= pdMS_TO_TICKS(1000)) enter_explore_stage(10);
+                        break;
+                    case 10:
+                        if (!explore_stage_issued) {
+                            s_drive_left.store(-100, std::memory_order_release);
+                            s_drive_right.store(100, std::memory_order_release);
+                            explore_stage_issued = true;
+                            event_log_add("Explore: tracks reverse 100%%");
+                        }
+                        s_drive_deadline.store(now + DRIVE_WATCHDOG, std::memory_order_release);
+                        if (now - explore_stage_started >= pdMS_TO_TICKS(3000)) { stop_tracks(); enter_explore_stage(11); }
+                        break;
+                    case 11:
+                        stop_tracks();
+                        if (now - explore_stage_started >= pdMS_TO_TICKS(1000)) enter_explore_stage(12);
+                        break;
+                    default:
+                        stop_tracks();
+                        enter_explore_stage(12);
+                        break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(40));
+                continue;
+            }
             if (elapsed_ms >= duration) {
                 active_behavior = ROBOT_BEHAVIOR_NEUTRAL;
                 s_behavior.store(ROBOT_BEHAVIOR_NEUTRAL, std::memory_order_release);
@@ -442,45 +604,8 @@ static void behavior_task(void *) {
                     case ROBOT_BEHAVIOR_SAD:
                         pan = -30;
                         break;
-                    case ROBOT_BEHAVIOR_EXPLORE: {
-                        // Start from the recorded zero, then alternate long
-                        // track movements, full stops and one servo axis at a
-                        // time. Servo poses use 75% of the calibrated range;
-                        // tracks never run during a head movement.
-                        if (elapsed_ms < 1500U) {
-                            // Return to recorded zero (or remain there).
-                        } else if (elapsed_ms < 4500U) {
-                            // A full-power step on both mirrored tracks caused
-                            // a supply dip large enough to drop Wi-Fi. Ramp for
-                            // 600 ms, then keep enough power to move reliably.
-                            const int power = elapsed_ms < 2100U
-                                ? 35 + static_cast<int>((elapsed_ms - 1500U) * 35U / 600U)
-                                : 70;
-                            drive_left = power;
-                            drive_right = -power;
-                        } else if (elapsed_ms < 6000U) {
-                            // Full stop before moving the head.
-                        } else if (elapsed_ms < 7500U) {
-                            pan = -75;
-                        } else if (elapsed_ms < 9000U) {
-                            // Pan back to zero and wait.
-                        } else if (elapsed_ms < 10500U) {
-                            tilt = 75;
-                        } else if (elapsed_ms < 12000U) {
-                            // Tilt back to zero and wait.
-                        } else if (elapsed_ms < 15000U) {
-                            const int power = elapsed_ms < 12600U
-                                ? 35 + static_cast<int>((elapsed_ms - 12000U) * 35U / 600U)
-                                : 70;
-                            drive_left = power;
-                            drive_right = power;
-                        } else if (elapsed_ms < 16500U) {
-                            // Full stop before the final look.
-                        } else {
-                            pan = 75;
-                        }
-                        break;
-                    }
+                    case ROBOT_BEHAVIOR_EXPLORE:
+                        break; // handled by the sequential state machine above
                     default:
                         break;
                 }
@@ -771,6 +896,7 @@ void robot_drive_analog(int left_percent, int right_percent) {
     if (right_percent > 100) right_percent = 100;
     if (right_percent < -100) right_percent = -100;
     s_dance_active.store(false, std::memory_order_release);
+    s_spin360_active.store(false, std::memory_order_release);
     s_behavior.store(ROBOT_BEHAVIOR_NEUTRAL, std::memory_order_release);
     s_behavior_generation.fetch_add(1, std::memory_order_acq_rel);
     s_drive_left.store(left_percent, std::memory_order_release);
@@ -780,6 +906,7 @@ void robot_drive_analog(int left_percent, int right_percent) {
 
 void robot_motion_stop(void) {
     s_dance_active.store(false, std::memory_order_release);
+    s_spin360_active.store(false, std::memory_order_release);
     robot_motion_cancel_behavior();
     s_drive_left.store(0, std::memory_order_release);
     s_drive_right.store(0, std::memory_order_release);
@@ -791,11 +918,23 @@ void robot_motion_stop(void) {
 void robot_motion_cancel_behavior(void) {
     s_behavior.store(ROBOT_BEHAVIOR_NEUTRAL, std::memory_order_release);
     s_behavior_generation.fetch_add(1, std::memory_order_acq_rel);
+    s_dance_active.store(false, std::memory_order_release);
+    s_spin360_active.store(false, std::memory_order_release);
+    s_drive_left.store(0, std::memory_order_release);
+    s_drive_right.store(0, std::memory_order_release);
+    s_drive_deadline.store(0, std::memory_order_release);
+    motors_stop();
 }
 
 void robot_motion_behavior(int behavior, int duration_ms) {
     if (behavior <= ROBOT_BEHAVIOR_NEUTRAL || behavior > ROBOT_BEHAVIOR_EXPLORE) return;
     if (!ensure_behavior_task()) return;
+    s_dance_active.store(false, std::memory_order_release);
+    s_spin360_active.store(false, std::memory_order_release);
+    s_drive_left.store(0, std::memory_order_release);
+    s_drive_right.store(0, std::memory_order_release);
+    s_drive_deadline.store(0, std::memory_order_release);
+    motors_stop();
     if (duration_ms < 100) duration_ms = 100;
     if (duration_ms > 20000) duration_ms = 20000;
     s_behavior_duration_ms.store(static_cast<uint16_t>(duration_ms), std::memory_order_release);
@@ -805,6 +944,7 @@ void robot_motion_behavior(int behavior, int duration_ms) {
 
 void robot_motion_start_dance(void) {
     if (s_calibration_mode.load(std::memory_order_acquire)) return;
+    s_spin360_active.store(false, std::memory_order_release);
     s_behavior.store(ROBOT_BEHAVIOR_NEUTRAL, std::memory_order_release);
     s_behavior_generation.fetch_add(1, std::memory_order_acq_rel);
     s_dance_started.store(xTaskGetTickCount(), std::memory_order_release);

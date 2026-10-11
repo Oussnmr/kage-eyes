@@ -1,6 +1,7 @@
 #include "bsp/esp-bsp.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
@@ -12,6 +13,7 @@
 #include "robot_motion.h"
 
 extern "C" void app_main(void) {
+    ESP_LOGI("kage", "Reset reason: %d", static_cast<int>(esp_reset_reason()));
     // These four pins are connected to the DRV8833.  Drive them low before
     // NVS, Wi-Fi, the display, or any task can delay startup.  Both H-bridges
     // therefore remain in coast/off until an explicit test command arrives.

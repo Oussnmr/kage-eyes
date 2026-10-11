@@ -190,8 +190,8 @@ static void dispatch_command(const char *command) {
             // Generic listening/thinking state changes remain face-only below;
             // this preserves the network fix by avoiding repeated servo work
             // on every assistant-state transition.
-            robot_motion_behavior(behavior, behavior == ROBOT_BEHAVIOR_EXPLORE ? 3000 : 1500);
-            robot_eyes_set_behavior(behavior, behavior == ROBOT_BEHAVIOR_EXPLORE ? 3000 : 1500);
+            robot_motion_behavior(behavior, behavior == ROBOT_BEHAVIOR_EXPLORE ? 20000 : 1500);
+            robot_eyes_set_behavior(behavior, behavior == ROBOT_BEHAVIOR_EXPLORE ? 20000 : 1500);
         }
         return;
     }
@@ -268,11 +268,11 @@ static void dispatch_command(const char *command) {
     else if (std::strcmp(command, "360") == 0) {
         robot_motion_start_360();
         robot_eyes_set_drive_state(0, -100);
-        robot_eyes_set_behavior(ROBOT_BEHAVIOR_CELEBRATE, 2500);
+        robot_eyes_set_behavior(ROBOT_BEHAVIOR_CELEBRATE, 3000);
     }
     else if (std::strcmp(command, "explore") == 0) {
-        robot_motion_behavior(ROBOT_BEHAVIOR_EXPLORE, 18000);
-        robot_eyes_set_behavior(ROBOT_BEHAVIOR_EXPLORE, 18000);
+        robot_motion_behavior(ROBOT_BEHAVIOR_EXPLORE, 20000);
+        robot_eyes_set_behavior(ROBOT_BEHAVIOR_EXPLORE, 20000);
     }
     else if (std::strcmp(command, "pan_l") == 0) {
         robot_servo_pan_pose(-1);
@@ -506,7 +506,7 @@ static void bridge_task(void *) {
         if (!wifi_service_connected()) {
             if (was_reachable) {
                 event_log_add("Backend offline: Wi-Fi lost");
-                robot_motion_stop_dance();
+                robot_motion_stop();
                 robot_eyes_set_drive_state(0, 0);
                 was_reachable = false;
             }
@@ -561,7 +561,7 @@ static void bridge_task(void *) {
         if (!request_ok) {
             if (was_reachable) {
                 event_log_add("Backend offline: %s", request_error);
-                robot_motion_stop_dance();
+                robot_motion_stop();
                 robot_eyes_set_drive_state(0, 0);
             }
             was_reachable = false;
