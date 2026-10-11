@@ -8,6 +8,7 @@
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "services/kage_bridge.h"
+#include "services/robot_motion.h"
 
 namespace {
 constexpr int SCREEN_W = 448;
@@ -51,6 +52,16 @@ static bool s_active;
 static bool s_angry;
 static bool s_angry_visible;
 static std::atomic<bool> s_voice_active{false};
+static std::atomic<int> s_mouth_level_milli{0};
+static std::atomic<int> s_behavior_state{ROBOT_BEHAVIOR_NEUTRAL};
+static std::atomic<int64_t> s_behavior_until_us{0};
+static std::atomic<int> s_drive_left_percent{0};
+static std::atomic<int> s_drive_right_percent{0};
+static std::atomic<int> s_manual_look{0};
+static std::atomic<int64_t> s_drive_state_us{0};
+static std::atomic<int64_t> s_look_state_us{0};
+static float s_angry_mix;
+static float s_mouth_smoothed;
 static int s_tap_count;
 static bool s_hold_touch_active;
 static bool s_second_press_candidate;
@@ -117,6 +128,18 @@ static void set_face_color(uint32_t color) {
     lv_obj_set_style_bg_color(s_left_eye, lv_color_hex(color), 0);
     lv_obj_set_style_bg_color(s_right_eye, lv_color_hex(color), 0);
     lv_obj_set_style_bg_color(s_mouth, lv_color_hex(color), 0);
+}
+
+static uint32_t blend_color(uint32_t first, uint32_t second, float amount) {
+    if (amount < 0.0f) amount = 0.0f;
+    if (amount > 1.0f) amount = 1.0f;
+    uint32_t result = 0;
+    for (int shift : {16, 8, 0}) {
+        const int a = static_cast<int>((first >> shift) & 0xFFU);
+        const int b = static_cast<int>((second >> shift) & 0xFFU);
+        result |= static_cast<uint32_t>(a + static_cast<int>((b - a) * amount)) << shift;
+    }
+    return result;
 }
 
 static void wake_up(bool blink_if_awake) {
@@ -319,6 +342,22 @@ static void animate(lv_timer_t *) {
     s_time += dt;
 
     const int assistant_state = s_assistant_state.load();
+    const int64_t now_us = esp_timer_get_time();
+    int behavior = s_behavior_state.load();
+    if (s_behavior_until_us.load() && now_us >= s_behavior_until_us.load()) {
+        s_behavior_state.store(ROBOT_BEHAVIOR_NEUTRAL);
+        s_behavior_until_us.store(0);
+        behavior = ROBOT_BEHAVIOR_NEUTRAL;
+    }
+    if (s_drive_state_us.load() && now_us - s_drive_state_us.load() > 500000) {
+        s_drive_left_percent.store(0);
+        s_drive_right_percent.store(0);
+        s_drive_state_us.store(0);
+    }
+    if (s_look_state_us.load() && now_us - s_look_state_us.load() > 1800000) {
+        s_manual_look.store(0);
+        s_look_state_us.store(0);
+    }
     const int remote = s_remote_command.exchange(REMOTE_NONE);
     if (remote != REMOTE_NONE) {
         if (remote == REMOTE_IDLE) {
@@ -451,6 +490,35 @@ static void animate(lv_timer_t *) {
         left_height = std::max(30, static_cast<int>(left_height * 0.62f));
         right_height = std::max(30, static_cast<int>(right_height * 0.62f));
     }
+    if (assistant_state != ASSISTANT_THINKING) {
+        if (behavior == ROBOT_BEHAVIOR_AFFIRM || behavior == ROBOT_BEHAVIOR_HAPPY ||
+            behavior == ROBOT_BEHAVIOR_SATISFIED || behavior == ROBOT_BEHAVIOR_GENTLE) {
+            left_height = static_cast<int>(left_height * 0.90f);
+            right_height = left_height;
+        } else if (behavior == ROBOT_BEHAVIOR_CURIOUS || behavior == ROBOT_BEHAVIOR_SARCASTIC) {
+            gaze_x += static_cast<int>(sinf(s_time * 1.3f) * 9.0f) + 12;
+            left_height = static_cast<int>(left_height * 0.92f);
+        } else if (behavior == ROBOT_BEHAVIOR_DENY || behavior == ROBOT_BEHAVIOR_WARNING) {
+            left_height = static_cast<int>(left_height * 0.82f);
+            right_height = left_height;
+        } else if (behavior == ROBOT_BEHAVIOR_SURPRISED) {
+            left_height = static_cast<int>(left_height * 1.08f);
+            right_height = left_height;
+        } else if (behavior == ROBOT_BEHAVIOR_WORRIED || behavior == ROBOT_BEHAVIOR_SAD) {
+            gaze_y += 8;
+            left_height = static_cast<int>(left_height * 0.80f);
+            right_height = left_height;
+        } else if (behavior == ROBOT_BEHAVIOR_CONFUSED) {
+            left_height = static_cast<int>(left_height * 0.92f);
+            right_height = static_cast<int>(right_height * 0.76f);
+        } else if (behavior == ROBOT_BEHAVIOR_EXPLORE) {
+            gaze_x += static_cast<int>(sinf(s_time * 2.0f) * 14.0f);
+        } else if (behavior == ROBOT_BEHAVIOR_CELEBRATE || behavior == ROBOT_BEHAVIOR_AMUSED) {
+            const int bounce = static_cast<int>(fabsf(sinf(s_time * 7.0f)) * 12.0f);
+            left_height = std::max(30, left_height - bounce);
+            right_height = left_height;
+        }
+    }
 
     if (s_time < s_dizzy_until) {
         const float phase = (DIZZY_DURATION_S - (s_dizzy_until - s_time)) * 11.0f;
@@ -464,8 +532,9 @@ static void animate(lv_timer_t *) {
        several frames on the same row, so the gentle bob looked stepped. This
        reaches about 25 px/s without increasing redraw frequency. */
     float bob = sinf(s_time * 2.20f) * 11.0f + sinf(s_time * 0.65f) * 2.0f;
+    s_angry_mix = approach(s_angry_mix, s_angry ? 1.0f : 0.0f, std::min(1.0f, dt * 3.5f));
     if (s_angry) {
-        set_face_color(RED);
+        set_face_color(CYAN);
     } else if (assistant_state == ASSISTANT_LISTENING) {
         set_face_color(GREEN);
     } else if (assistant_state == ASSISTANT_THINKING) {
@@ -474,6 +543,19 @@ static void animate(lv_timer_t *) {
         set_face_color(RED);
     } else if (assistant_state == ASSISTANT_OFFLINE) {
         set_face_color(DIM);
+    } else if (behavior == ROBOT_BEHAVIOR_WARNING || behavior == ROBOT_BEHAVIOR_WORRIED) {
+        set_face_color(ORANGE);
+    } else if (behavior == ROBOT_BEHAVIOR_SAD) {
+        set_face_color(0x68A8FF);
+    } else if (behavior == ROBOT_BEHAVIOR_THINKING || behavior == ROBOT_BEHAVIOR_CONFUSED ||
+               behavior == ROBOT_BEHAVIOR_SARCASTIC) {
+        set_face_color(PURPLE);
+    } else if (behavior == ROBOT_BEHAVIOR_HAPPY || behavior == ROBOT_BEHAVIOR_AMUSED ||
+               behavior == ROBOT_BEHAVIOR_CELEBRATE || behavior == ROBOT_BEHAVIOR_SATISFIED ||
+               behavior == ROBOT_BEHAVIOR_GENTLE) {
+        set_face_color(GREEN);
+    } else if (behavior == ROBOT_BEHAVIOR_SURPRISED) {
+        set_face_color(ORANGE);
     } else if (s_time < s_charge_until) {
         const float remaining = s_charge_until - s_time;
         const float pulse = 0.5f + 0.5f * sinf((CHARGE_DURATION_S - remaining) * 8.0f);
@@ -483,21 +565,32 @@ static void animate(lv_timer_t *) {
     } else {
         set_face_color(CYAN);
     }
+    if (s_angry_mix > 0.001f) set_face_color(blend_color(CYAN, RED, s_angry_mix));
 
     const int center_y = SCREEN_H / 2 + static_cast<int>(bob) + gaze_y;
+    show_angry_eyes(false);
+    const int drive_left = s_drive_left_percent.load();
+    const int drive_right = s_drive_right_percent.load();
+    const int drive_average = (drive_left + drive_right) / 2;
+    const int drive_turn = drive_right - drive_left;
+    const int manual_look = s_manual_look.load();
+    if (manual_look != 0) gaze_x += manual_look * 15;
+    else if (abs(drive_turn) > 35 && abs(drive_average) < 25) gaze_x += drive_turn > 0 ? -13 : 13;
+    if (drive_average < -10 && !s_angry) set_face_color(ORANGE);
+    if (s_angry_mix > 0.01f) {
+        left_height = static_cast<int>(left_height * (1.0f - 0.24f * s_angry_mix));
+        right_height = static_cast<int>(right_height * (1.0f - 0.24f * s_angry_mix));
+        left_width = static_cast<int>(left_width * (1.0f - 0.10f * s_angry_mix));
+        right_width = static_cast<int>(right_width * (1.0f - 0.10f * s_angry_mix));
+    }
     const int left_center_x = SCREEN_W / 2 - EYE_OFFSET_X + gaze_x;
     const int right_center_x = SCREEN_W / 2 + EYE_OFFSET_X + gaze_x;
-    show_angry_eyes(s_angry);
     set_geometry(s_left_eye, left_center_x - left_width / 2, center_y - left_height / 2,
                  left_width, left_height);
     set_geometry(s_right_eye, right_center_x - right_width / 2, center_y - right_height / 2,
                  right_width, right_height);
-    if (s_angry) {
-        set_angry_geometry(s_angry_left, s_angry_left_stripes, false,
-                           left_center_x, center_y, left_height);
-        set_angry_geometry(s_angry_right, s_angry_right_stripes, true,
-                           right_center_x, center_y, right_height);
-    }
+    lv_obj_set_style_transform_rotation(s_left_eye, static_cast<int>(s_angry_mix * 110.0f), 0);
+    lv_obj_set_style_transform_rotation(s_right_eye, static_cast<int>(s_angry_mix * -110.0f), 0);
     int mouth_w = MOUTH_W + static_cast<int>(bob * 0.5f);
     int mouth_y = MOUTH_Y + static_cast<int>(bob);
     int mouth_x = SCREEN_W / 2 - mouth_w / 2;
@@ -506,6 +599,10 @@ static void animate(lv_timer_t *) {
     if (s_expression == 1) mouth_rotation = -45;
     if (s_expression == 2) mouth_w = 62;
     if (s_angry) mouth_w = 54;
+    if (behavior == ROBOT_BEHAVIOR_SURPRISED) { mouth_w = 20; }
+    if (behavior == ROBOT_BEHAVIOR_AMUSED || behavior == ROBOT_BEHAVIOR_HAPPY ||
+        behavior == ROBOT_BEHAVIOR_SATISFIED || behavior == ROBOT_BEHAVIOR_GENTLE) mouth_w = 62;
+    if (behavior == ROBOT_BEHAVIOR_WORRIED || behavior == ROBOT_BEHAVIOR_SAD) mouth_w = 40;
     if (s_time < s_dizzy_until) {
         const float phase = (DIZZY_DURATION_S - (s_dizzy_until - s_time)) * 11.0f;
         mouth_w = 52;
@@ -513,11 +610,16 @@ static void animate(lv_timer_t *) {
         mouth_y += static_cast<int>(cosf(phase * 0.8f) * 4.0f);
         mouth_rotation = static_cast<int>(sinf(phase * 0.55f) * 120.0f);
     }
-    if (!s_angry && assistant_state == ASSISTANT_SPEAKING) {
-        const float voice_pulse = 0.35f + 0.65f * fabsf(sinf(s_time * 15.0f));
+    const float voice_energy = static_cast<float>(s_mouth_level_milli.load()) / 1000.0f;
+    s_mouth_smoothed += (voice_energy - s_mouth_smoothed) * 0.42f;
+    if (!s_angry && assistant_state == ASSISTANT_SPEAKING && voice_energy > 0.035f) {
+        const float voice_pulse = std::min(1.0f, s_mouth_smoothed);
         set_geometry(s_mouth, mouth_x, mouth_y - static_cast<int>(voice_pulse * 11.0f),
                      mouth_w, MOUTH_H + static_cast<int>(voice_pulse * 22.0f));
     } else {
+        if (assistant_state != ASSISTANT_SPEAKING || voice_energy <= 0.035f) {
+            s_mouth_smoothed *= 0.55f;
+        }
         set_geometry(s_mouth, mouth_x, mouth_y, mouth_w, MOUTH_H);
     }
     lv_obj_set_style_transform_rotation(s_mouth, mouth_rotation, 0);
@@ -681,3 +783,30 @@ void robot_eyes_assistant_speaking() { s_assistant_state.store(ASSISTANT_SPEAKIN
 void robot_eyes_assistant_error() { s_assistant_state.store(ASSISTANT_ERROR); }
 void robot_eyes_assistant_offline() { s_assistant_state.store(ASSISTANT_OFFLINE); }
 void robot_eyes_set_voice_active(bool active) { s_voice_active.store(active); }
+void robot_eyes_set_mouth_level(float level) {
+    if (level < 0.0f) level = 0.0f;
+    if (level > 1.0f) level = 1.0f;
+    s_mouth_level_milli.store(static_cast<int>(level * 1000.0f));
+}
+void robot_eyes_set_drive_state(int left_percent, int right_percent) {
+    if (left_percent > 100) left_percent = 100;
+    if (left_percent < -100) left_percent = -100;
+    if (right_percent > 100) right_percent = 100;
+    if (right_percent < -100) right_percent = -100;
+    s_drive_left_percent.store(left_percent);
+    s_drive_right_percent.store(right_percent);
+    s_drive_state_us.store((left_percent || right_percent) ? esp_timer_get_time() : 0);
+}
+void robot_eyes_set_manual_look(int direction) {
+    if (direction < -1) direction = -1;
+    if (direction > 1) direction = 1;
+    s_manual_look.store(direction);
+    s_look_state_us.store(direction ? esp_timer_get_time() : 0);
+}
+void robot_eyes_set_behavior(int behavior, int duration_ms) {
+    if (behavior < ROBOT_BEHAVIOR_NEUTRAL || behavior > ROBOT_BEHAVIOR_EXPLORE) return;
+    if (duration_ms < 100) duration_ms = 100;
+    if (duration_ms > 3000) duration_ms = 3000;
+    s_behavior_state.store(behavior);
+    s_behavior_until_us.store(esp_timer_get_time() + static_cast<int64_t>(duration_ms) * 1000);
+}

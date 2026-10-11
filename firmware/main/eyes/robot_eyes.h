@@ -30,3 +30,7 @@ void robot_eyes_assistant_speaking();
 void robot_eyes_assistant_error();
 void robot_eyes_assistant_offline();
 void robot_eyes_set_voice_active(bool active);
+void robot_eyes_set_mouth_level(float level);
+void robot_eyes_set_drive_state(int left_percent, int right_percent);
+void robot_eyes_set_manual_look(int direction);
+void robot_eyes_set_behavior(int behavior, int duration_ms);

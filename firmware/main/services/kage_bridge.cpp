@@ -1,6 +1,7 @@
 #include "kage_bridge.h"
 
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 
 #include "cJSON.h"
@@ -13,6 +14,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "robot_motion.h"
 #include "wifi_service.h"
 
 namespace {
@@ -24,13 +26,14 @@ constexpr const char *LOCAL_WAKE_URL = "http://192.168.129.157:8000/voice/wake";
 constexpr const char *LOCAL_SLEEP_URL = "http://192.168.129.157:8000/voice/sleep";
 constexpr const char *LOCAL_HOLD_START_URL = "http://192.168.129.157:8000/voice/hold/start";
 constexpr const char *LOCAL_HOLD_STOP_URL = "http://192.168.129.157:8000/voice/hold/stop";
-constexpr TickType_t LOCAL_POLL_DELAY = pdMS_TO_TICKS(500);
+constexpr TickType_t LOCAL_POLL_DELAY = pdMS_TO_TICKS(100);
 constexpr TickType_t REMOTE_POLL_DELAY = pdMS_TO_TICKS(2500);
 
 static KageBridgeInfo s_info = {};
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_last_sequence = UINT32_MAX;
 static uint32_t s_last_assistant_sequence = UINT32_MAX;
+static uint32_t s_last_behavior_sequence = UINT32_MAX;
 static bool s_started;
 
 // The ESP32-S3 should never run the command poll and a voice upload over
@@ -149,11 +152,64 @@ static void update_info(bool reachable, int status, uint32_t sequence,
 
 static void dispatch_command(const char *command) {
     if (!command) return;
-    if (std::strcmp(command, "idle") == 0) robot_eyes_remote_idle();
+    int first = 0;
+    int second = 0;
+    if (std::sscanf(command, "drive:%d:%d", &first, &second) == 2) {
+        robot_motion_cancel_dance();
+        robot_drive_analog(first, second);
+        robot_eyes_set_drive_state(first, second);
+        return;
+    }
+    if (std::sscanf(command, "servo:%d:%d", &first, &second) == 2) {
+        robot_servo_targets(first, second);
+        robot_eyes_set_manual_look(first < 40 ? -1 : first > 60 ? 1 : 0);
+        return;
+    }
+    if (std::sscanf(command, "servo_pose:%d:%d", &first, &second) == 2) {
+        robot_servo_pose(first, second);
+        return;
+    }
+    if (std::sscanf(command, "servo_adjust:%d:%d", &first, &second) == 2) {
+        robot_servo_adjust(first, second);
+        return;
+    }
+    int third = 0;
+    int fourth = 0;
+    if (std::sscanf(command, "motion_config:%d:%d:%d:%d",
+                    &first, &second, &third, &fourth) == 4) {
+        (void)robot_motion_settings(first, second, third, fourth);
+        return;
+    }
+    if (std::strcmp(command, "servo_cal_begin") == 0) {
+        robot_servo_calibration_begin();
+        return;
+    }
+    if (std::strcmp(command, "servo_cal_save") == 0) {
+        (void)robot_servo_calibration_save();
+        return;
+    }
+    if (std::strcmp(command, "dance") == 0) robot_motion_start_dance();
+    else if (std::strcmp(command, "360") == 0) robot_motion_start_spin();
+    else if (std::strcmp(command, "idle") == 0) robot_eyes_remote_idle();
     else if (std::strcmp(command, "blink") == 0) robot_eyes_remote_blink();
     else if (std::strcmp(command, "sleep") == 0) robot_eyes_remote_sleep();
     else if (std::strcmp(command, "angry") == 0) robot_eyes_remote_angry();
     else if (std::strcmp(command, "dizzy") == 0) robot_eyes_remote_dizzy();
+    else if (std::strcmp(command, "move_h") == 0) robot_motion_command(ROBOT_MOVE_HORIZONTAL);
+    else if (std::strcmp(command, "move_v") == 0) robot_motion_command(ROBOT_MOVE_VERTICAL);
+    else if (std::strcmp(command, "move_f") == 0) robot_motion_command(ROBOT_MOVE_FORWARD);
+    else if (std::strcmp(command, "move_b") == 0) robot_motion_command(ROBOT_MOVE_BACKWARD);
+    else if (std::strcmp(command, "drive_f") == 0) { robot_motion_cancel_dance(); robot_drive_hold(ROBOT_DRIVE_FORWARD); robot_eyes_set_drive_state(70, 70); }
+    else if (std::strcmp(command, "drive_b") == 0) { robot_motion_cancel_dance(); robot_drive_hold(ROBOT_DRIVE_BACKWARD); robot_eyes_set_drive_state(-70, -70); }
+    else if (std::strcmp(command, "drive_l") == 0) { robot_motion_cancel_dance(); robot_drive_hold(ROBOT_DRIVE_LEFT); robot_eyes_set_drive_state(-70, 70); }
+    else if (std::strcmp(command, "drive_r") == 0) { robot_motion_cancel_dance(); robot_drive_hold(ROBOT_DRIVE_RIGHT); robot_eyes_set_drive_state(70, -70); }
+    else if (std::strcmp(command, "motion_stop") == 0) {
+        robot_motion_stop(); robot_eyes_set_drive_state(0, 0); robot_eyes_set_manual_look(0);
+    }
+    else if (std::strcmp(command, "pan_l") == 0) { robot_servo_nudge(ROBOT_PAN_LEFT); robot_eyes_set_manual_look(-1); }
+    else if (std::strcmp(command, "pan_r") == 0) { robot_servo_nudge(ROBOT_PAN_RIGHT); robot_eyes_set_manual_look(1); }
+    else if (std::strcmp(command, "tilt_u") == 0) robot_servo_nudge(ROBOT_TILT_UP);
+    else if (std::strcmp(command, "tilt_d") == 0) robot_servo_nudge(ROBOT_TILT_DOWN);
     else {
         ESP_LOGW("kage-bridge", "Unknown command: %s", command);
         event_log_add("Unknown command: %s", command);
@@ -340,6 +396,40 @@ static void apply_assistant_state(const char *assistant_state, uint32_t sequence
     dispatch_assistant_state(assistant_state);
 }
 
+static bool valid_behavior(const char *behavior) {
+    static constexpr const char *allowed[] = {
+        "neutral", "listening", "thinking", "speaking", "affirm", "deny",
+        "amused", "sarcastic", "confused", "warning", "celebrate", "sleep", "wake",
+        "happy", "curious", "surprised", "worried", "sad", "satisfied", "gentle", "explore",
+    };
+    for (const char *item : allowed) if (std::strcmp(item, behavior) == 0) return true;
+    return false;
+}
+
+static void apply_behavior(const char *behavior, uint32_t sequence, int strength, int duration_ms) {
+    if (!behavior || !valid_behavior(behavior) || sequence == s_last_behavior_sequence) return;
+    s_last_behavior_sequence = sequence;
+    strength = strength < 0 ? 0 : strength > 100 ? 100 : strength;
+    duration_ms = duration_ms < 100 ? 100 : duration_ms > 3000 ? 3000 : duration_ms;
+    static constexpr const char *names[] = {
+        "neutral", "listening", "thinking", "speaking", "affirm", "deny",
+        "amused", "sarcastic", "confused", "warning", "celebrate", "sleep", "wake",
+        "happy", "curious", "surprised", "worried", "sad", "satisfied", "gentle", "explore",
+    };
+    RobotBehavior profile = ROBOT_BEHAVIOR_NEUTRAL;
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+        if (std::strcmp(behavior, names[i]) == 0) {
+            profile = static_cast<RobotBehavior>(i);
+            break;
+        }
+    }
+    robot_motion_behavior(profile, strength, duration_ms);
+    robot_eyes_set_behavior(static_cast<int>(profile), duration_ms);
+    ESP_LOGI("kage-bridge", "Behavior #%lu: %s strength=%d duration=%dms",
+             static_cast<unsigned long>(sequence), behavior, strength, duration_ms);
+    event_log_add("Behavior: %s %d%% %dms", behavior, strength, duration_ms);
+}
+
 void apply_command_impl(const char *command, uint32_t sequence) {
     if (!command || !command[0] || std::strcmp(command, "none") == 0) return;
 
@@ -431,6 +521,11 @@ static void bridge_task(void *) {
         cJSON *assistant_state_item = root ? cJSON_GetObjectItem(root, "assistant_state") : nullptr;
         cJSON *assistant_sequence_item = root ? cJSON_GetObjectItem(root, "assistant_sequence") : nullptr;
         cJSON *voice_active_item = root ? cJSON_GetObjectItem(root, "voice_active") : nullptr;
+        cJSON *behavior_item = root ? cJSON_GetObjectItem(root, "behavior") : nullptr;
+        cJSON *behavior_sequence_item = root ? cJSON_GetObjectItem(root, "behavior_sequence") : nullptr;
+        cJSON *behavior_strength_item = root ? cJSON_GetObjectItem(root, "behavior_strength") : nullptr;
+        cJSON *behavior_duration_item = root ? cJSON_GetObjectItem(root, "behavior_duration_ms") : nullptr;
+        cJSON *mouth_level_item = root ? cJSON_GetObjectItem(root, "mouth_level") : nullptr;
         if (!root || !cJSON_IsString(command_item) || !cJSON_IsNumber(sequence_item)) {
             if (root) cJSON_Delete(root);
             if (was_reachable) event_log_add("Backend response invalid");
@@ -456,7 +551,15 @@ static void bridge_task(void *) {
             apply_assistant_state(assistant_state_item->valuestring,
                                   static_cast<uint32_t>(assistant_sequence_item->valuedouble));
         }
+        if (cJSON_IsString(behavior_item) && cJSON_IsNumber(behavior_sequence_item)) {
+            apply_behavior(behavior_item->valuestring,
+                           static_cast<uint32_t>(behavior_sequence_item->valuedouble),
+                           cJSON_IsNumber(behavior_strength_item) ? behavior_strength_item->valueint : 35,
+                           cJSON_IsNumber(behavior_duration_item) ? behavior_duration_item->valueint : 700);
+        }
         robot_eyes_set_voice_active(cJSON_IsTrue(voice_active_item));
+        robot_eyes_set_mouth_level(cJSON_IsNumber(mouth_level_item)
+                                       ? static_cast<float>(mouth_level_item->valuedouble) : 0.0f);
 
         cJSON_Delete(root);
         vTaskDelay(current_poll_delay());
