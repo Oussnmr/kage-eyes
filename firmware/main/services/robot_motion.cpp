@@ -853,6 +853,18 @@ void robot_servo_pose(int pan_state, int tilt_state) {
     s_tilt_target_us.store(clamp_servo(tilt), std::memory_order_release);
 }
 
+void robot_servo_pan_pose(int pan_state) {
+    if (s_calibration_mode.load(std::memory_order_acquire)) return;
+    if (pan_state < -1) pan_state = -1;
+    if (pan_state > 1) pan_state = 1;
+    robot_motion_cancel_behavior();
+    const int pan_offset = PAN_POSE_MAX_OFFSET_US *
+                           s_pan_range.load(std::memory_order_acquire) / 100;
+    const int pan = static_cast<int>(s_pan_zero_us.load(std::memory_order_acquire)) +
+                    pan_offset * pan_state;
+    s_pan_target_us.store(clamp_servo(pan), std::memory_order_release);
+}
+
 void robot_servo_calibration_begin(void) {
     // Energize the last known logical position. The user can then use the
     // fine-adjust arrows to place the mechanism precisely before saving.

@@ -46,6 +46,8 @@ void robot_servo_nudge(RobotServoNudge nudge);
 // firmware owns the smooth trajectory and cable-safe limits.
 void robot_servo_targets(int pan_percent, int tilt_percent);
 void robot_servo_pose(int pan_state, int tilt_state);
+// Move only the horizontal axis and preserve the current vertical target.
+void robot_servo_pan_pose(int pan_state);
 void robot_servo_adjust(int pan_delta_us, int tilt_delta_us);
 void robot_servo_calibration_begin(void);
 bool robot_servo_calibration_save(void);
