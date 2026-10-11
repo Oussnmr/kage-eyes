@@ -62,9 +62,7 @@ static SemaphoreHandle_t http_mutex() {
 }
 
 static TickType_t current_poll_delay() {
-    // Commands must stay on the low-latency LAN path; do not route control
-    // polling through Tailscale/DNS when a secondary Wi-Fi profile is active.
-    return LOCAL_POLL_DELAY;
+    return wifi_service_active_profile_index() == 0 ? LOCAL_POLL_DELAY : REMOTE_POLL_DELAY;
 }
 
 static void copy_text(char *destination, size_t size, const char *source) {
@@ -538,7 +536,7 @@ static void bridge_task(void *) {
         HttpResponse response = {};
         int status = 0;
         const char *request_error = "";
-        const bool on_primary_network = true;
+        const bool on_primary_network = wifi_service_active_profile_index() == 0;
 
         // Give a pending voice upload priority over command polling.
         if (s_voice_network_pending.load(std::memory_order_acquire)) {
