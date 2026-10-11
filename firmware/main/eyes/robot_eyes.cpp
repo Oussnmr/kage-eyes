@@ -883,7 +883,7 @@ void robot_eyes_set_manual_look(int horizontal, int vertical) {
 }
 void robot_eyes_set_behavior(int behavior, int duration_ms) {
     if (behavior < ROBOT_BEHAVIOR_NEUTRAL || behavior > ROBOT_BEHAVIOR_EXPLORE) return;
-    duration_ms = std::max(100, std::min(3000, duration_ms));
+    duration_ms = std::max(100, std::min(20000, duration_ms));
     s_behavior.store(behavior);
     s_behavior_until_us.store(esp_timer_get_time() + static_cast<int64_t>(duration_ms) * 1000);
     if (behavior != ROBOT_BEHAVIOR_NEUTRAL) robot_eyes_note_activity();
