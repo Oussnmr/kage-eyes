@@ -263,7 +263,7 @@ static void dispatch_command(const char *command) {
     }
     else if (std::strcmp(command, "dance") == 0) {
         robot_motion_start_dance();
-        robot_eyes_set_behavior(ROBOT_BEHAVIOR_CELEBRATE, 3000);
+        robot_eyes_set_behavior(ROBOT_BEHAVIOR_NEUTRAL, 100);
     }
     else if (std::strcmp(command, "360") == 0) {
         robot_motion_start_360();
@@ -501,9 +501,13 @@ void apply_command_impl(const char *command, uint32_t sequence) {
 
 static void bridge_task(void *) {
     bool was_reachable = false;
+    bool remote_route_active = false;
+    unsigned failed_polls = 0;
 
     for (;;) {
         if (!wifi_service_connected()) {
+            remote_route_active = false;
+            failed_polls = 0;
             if (was_reachable) {
                 event_log_add("Backend offline: Wi-Fi lost");
                 robot_motion_stop();
@@ -545,20 +549,43 @@ static void bridge_task(void *) {
         if (on_primary_network) {
             request_ok = request_latest(
                 LOCAL_BACKEND_URL, false, &response, &status, &request_error);
-            if (!request_ok && wifi_service_has_api_key()) {
+            if (request_ok) remote_route_active = false;
+            if (!request_ok) {
+                // Retry a missed LAN response before opening a slow DNS/TLS
+                // connection. A single timeout must not cancel motion.
+                if (failed_polls < 2) ++failed_polls;
+                if (failed_polls == 1 || !was_reachable) {
+                    ESP_LOGW("kage-bridge", "Local backend poll failed (%u): HTTP %d %s",
+                             failed_polls, status, request_error);
+                }
+            }
+            if (!request_ok && (!was_reachable || remote_route_active) &&
+                wifi_service_has_api_key()) {
                 request_ok = request_latest(
                     REMOTE_BACKEND_URL, true, &response, &status, &request_error);
+                if (request_ok) remote_route_active = true;
             }
         } else if (wifi_service_has_api_key()) {
             request_ok = request_latest(
                 REMOTE_BACKEND_URL, true, &response, &status, &request_error);
+            if (!request_ok) {
+                if (failed_polls < 2) ++failed_polls;
+                if (failed_polls == 1) {
+                    ESP_LOGW("kage-bridge", "Remote backend poll failed: %s", request_error);
+                }
+            }
         } else {
             request_error = "Remote key missing";
+            failed_polls = 2;
         }
 
         xSemaphoreGive(mutex);
 
         if (!request_ok) {
+            if (was_reachable && failed_polls < 2) {
+                vTaskDelay(current_poll_delay());
+                continue;
+            }
             if (was_reachable) {
                 event_log_add("Backend offline: %s", request_error);
                 ESP_LOGW("kage-bridge", "Backend became unreachable: %s", request_error);
@@ -571,6 +598,8 @@ static void bridge_task(void *) {
             vTaskDelay(current_poll_delay());
             continue;
         }
+
+        failed_polls = 0;
 
         cJSON *root = cJSON_Parse(response.body);
         cJSON *command_item = root ? cJSON_GetObjectItem(root, "command") : nullptr;

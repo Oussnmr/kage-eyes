@@ -9,6 +9,7 @@
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "services/kage_bridge.h"
+#include "services/robot_motion.h"
 
 namespace {
 constexpr int SCREEN_W = 448;
@@ -339,6 +340,7 @@ static void animate(lv_timer_t *) {
         s_behavior_until_us.store(0);
         behavior = ROBOT_BEHAVIOR_NEUTRAL;
     }
+    if (robot_motion_is_dancing()) behavior = ROBOT_BEHAVIOR_CELEBRATE;
     if (s_activity_pending.exchange(false)) wake_up(false);
     if (s_cancel_dizzy_pending.exchange(false)) s_dizzy_until = s_time;
     const int remote = s_remote_command.exchange(REMOTE_NONE);
@@ -595,7 +597,8 @@ static void animate(lv_timer_t *) {
         if (forward > 12) gaze_y -= 7;
         else if (forward < -12) {
             gaze_y += 10;
-            if (!s_angry) base_face_color = ORANGE;
+            if (!s_angry && behavior != ROBOT_BEHAVIOR_CELEBRATE &&
+                behavior != ROBOT_BEHAVIOR_EXPLORE) base_face_color = ORANGE;
         }
         if (speed > 35) {
             const float focus = 1.0f - std::min(0.18f, (speed - 35) / 360.0f);
@@ -635,13 +638,13 @@ static void animate(lv_timer_t *) {
     if (s_sleep_started >= 0.0f) mouth_w = 34;
     if (s_expression == 1) mouth_rotation = -45;
     if (s_expression == 2) mouth_w = 62;
-    if (s_angry) mouth_w = 54;
     if (behavior == ROBOT_BEHAVIOR_SURPRISED) { mouth_w = 18; mouth_h = 16; }
     if (behavior == ROBOT_BEHAVIOR_CONFUSED) mouth_w = 24;
     if (behavior == ROBOT_BEHAVIOR_AMUSED || behavior == ROBOT_BEHAVIOR_HAPPY ||
         behavior == ROBOT_BEHAVIOR_CELEBRATE || behavior == ROBOT_BEHAVIOR_SATISFIED ||
         behavior == ROBOT_BEHAVIOR_GENTLE) mouth_w = 62;
     if (behavior == ROBOT_BEHAVIOR_SAD || behavior == ROBOT_BEHAVIOR_WORRIED) mouth_w = 40;
+    if (s_angry) mouth_w = 54;
     if (s_time < s_dizzy_until) {
         const float phase = (DIZZY_DURATION_S - (s_dizzy_until - s_time)) * 11.0f;
         mouth_w = 52;
@@ -649,7 +652,7 @@ static void animate(lv_timer_t *) {
         mouth_y += static_cast<int>(cosf(phase * 0.8f) * 4.0f);
         mouth_rotation = static_cast<int>(sinf(phase * 0.55f) * 120.0f);
     }
-    const bool dance_smile = behavior == ROBOT_BEHAVIOR_CELEBRATE;
+    const bool dance_smile = !s_angry && behavior == ROBOT_BEHAVIOR_CELEBRATE;
     lv_obj_set_style_opa(s_mouth, dance_smile ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
     lv_obj_set_style_opa(s_smile, dance_smile ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
     if (dance_smile) {
@@ -665,7 +668,7 @@ static void animate(lv_timer_t *) {
     mouth_smoothed += (mouth_target - mouth_smoothed) * mouth_rate;
     const bool voice_speaking = assistant_state == ASSISTANT_SPEAKING ||
                                 s_voice_active.load() || level > 20;
-    if (!s_angry && !dance_smile && voice_speaking && level > 8) {
+    if (!dance_smile && voice_speaking && level > 8) {
         // The PC envelope arrives roughly every 80-100 ms. Add a fast
         // syllable pulse while real audio is present so the mouth articulates
         // several times per spoken word without moving after TTS stops.

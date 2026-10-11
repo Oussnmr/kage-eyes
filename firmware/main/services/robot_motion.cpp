@@ -1038,6 +1038,10 @@ void robot_motion_stop_dance(void) {
     motors_stop();
 }
 
+bool robot_motion_is_dancing(void) {
+    return s_dance_active.load(std::memory_order_acquire);
+}
+
 void robot_servo_targets(int pan_percent, int tilt_percent) {
     robot_motion_cancel_behavior();
     if (pan_percent < 0) pan_percent = 0;

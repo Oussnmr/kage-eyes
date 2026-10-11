@@ -59,4 +59,5 @@ void robot_motion_behavior(int behavior, int duration_ms);
 void robot_motion_cancel_behavior(void);
 void robot_motion_start_dance(void);
 void robot_motion_stop_dance(void);
+bool robot_motion_is_dancing(void);
 void robot_motion_start_360(void);
