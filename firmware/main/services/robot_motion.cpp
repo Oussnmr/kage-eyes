@@ -432,7 +432,8 @@ static void behavior_task(void *) {
         explore_stage_issued = false;
         explore_stage_started = xTaskGetTickCount();
         explore_settled_at = 0;
-        ESP_LOGI(TAG, "Explore stage %d begin", stage);
+        if (active_behavior == ROBOT_BEHAVIOR_EXPLORE)
+            ESP_LOGI(TAG, "Explore stage %d begin", stage);
     };
     for (;;) {
         const uint32_t generation = s_behavior_generation.load(std::memory_order_acquire);
