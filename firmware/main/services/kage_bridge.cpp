@@ -561,6 +561,7 @@ static void bridge_task(void *) {
         if (!request_ok) {
             if (was_reachable) {
                 event_log_add("Backend offline: %s", request_error);
+                ESP_LOGW("kage-bridge", "Backend became unreachable: %s", request_error);
                 robot_motion_stop();
                 robot_eyes_set_drive_state(0, 0);
             }

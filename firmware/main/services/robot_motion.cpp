@@ -35,6 +35,7 @@ constexpr uint32_t TEST_DUTY = PWM_MAX;  // Full-power diagnostic pulse, wheels 
 constexpr TickType_t MOTOR_PULSE = pdMS_TO_TICKS(1000);
 constexpr TickType_t DRIVE_WATCHDOG = pdMS_TO_TICKS(400);
 constexpr TickType_t EXPLORE_SERVO_PAUSE = pdMS_TO_TICKS(1000);
+constexpr TickType_t EXPLORE_SERVO_STAGE_TIMEOUT = pdMS_TO_TICKS(5000);
 
 constexpr uint8_t PCA_ADDRESS = 0x40;
 constexpr uint8_t PCA_MODE1 = 0x00;
@@ -386,21 +387,29 @@ static void set_behavior_pose(int pan_percent, int tilt_percent) {
     s_tilt_target_us.store(clamp_servo(tilt), std::memory_order_release);
 }
 
-static void set_behavior_pan(int pan_percent) {
-    pan_percent = std::max(-100, std::min(100, pan_percent));
+static uint16_t pan_pose_target_us(int pan_state) {
+    pan_state = std::max(-1, std::min(1, pan_state));
     const int offset = PAN_POSE_MAX_OFFSET_US * s_pan_range.load(std::memory_order_acquire) / 100;
-    const uint16_t target = clamp_servo(static_cast<int>(s_pan_zero_us.load(std::memory_order_acquire)) +
-                                        offset * pan_percent / 100);
+    return clamp_servo(static_cast<int>(s_pan_zero_us.load(std::memory_order_acquire)) +
+                       offset * pan_state);
+}
+
+static uint16_t tilt_pose_target_us(int tilt_state) {
+    tilt_state = std::max(0, std::min(1, tilt_state));
+    const int offset = TILT_POSE_MAX_OFFSET_US * s_tilt_range.load(std::memory_order_acquire) / 100;
+    return clamp_servo(static_cast<int>(s_tilt_zero_us.load(std::memory_order_acquire)) +
+                       offset * tilt_state);
+}
+
+static void set_behavior_pan(int pan_state) {
+    const uint16_t target = pan_pose_target_us(pan_state);
     if (target != s_pan_target_us.load(std::memory_order_acquire))
         s_pan_settled.store(false, std::memory_order_release);
     s_pan_target_us.store(target, std::memory_order_release);
 }
 
-static void set_behavior_tilt(int tilt_percent) {
-    tilt_percent = std::max(0, std::min(100, tilt_percent));
-    const int offset = TILT_POSE_MAX_OFFSET_US * s_tilt_range.load(std::memory_order_acquire) / 100;
-    const uint16_t target = clamp_tilt(static_cast<int>(s_tilt_zero_us.load(std::memory_order_acquire)) +
-                                       offset * tilt_percent / 100);
+static void set_behavior_tilt(int tilt_state) {
+    const uint16_t target = tilt_pose_target_us(tilt_state);
     if (target != s_tilt_target_us.load(std::memory_order_acquire))
         s_tilt_settled.store(false, std::memory_order_release);
     s_tilt_target_us.store(target, std::memory_order_release);
@@ -423,6 +432,7 @@ static void behavior_task(void *) {
         explore_stage_issued = false;
         explore_stage_started = xTaskGetTickCount();
         explore_settled_at = 0;
+        ESP_LOGI(TAG, "Explore stage %d begin", stage);
     };
     for (;;) {
         const uint32_t generation = s_behavior_generation.load(std::memory_order_acquire);
@@ -434,8 +444,8 @@ static void behavior_task(void *) {
             applied_drive_left = applied_drive_right = 1000;
             enter_explore_stage(0);
             if (active_behavior == ROBOT_BEHAVIOR_EXPLORE) {
-                event_log_add("Explore started; homing pan then tilt");
-                ESP_LOGI(TAG, "Explore started; homing one servo axis at a time");
+                event_log_add("Explore started; targeting saved pan/tilt zero (estimated)");
+                ESP_LOGI(TAG, "Explore started; servo zero is a commanded target, not sensor feedback");
             }
         }
         if (active_behavior != ROBOT_BEHAVIOR_NEUTRAL &&
@@ -457,6 +467,29 @@ static void behavior_task(void *) {
                     s_drive_right.store(0, std::memory_order_release);
                     s_drive_deadline.store(0, std::memory_order_release);
                 };
+                const auto abort_stalled_servo_stage = [&](const char *axis, bool settled) {
+                    if (settled || now - explore_stage_started < EXPLORE_SERVO_STAGE_TIMEOUT)
+                        return false;
+                    stop_tracks();
+                    motors_stop();
+                    const uint16_t pan_now = s_pan_us;
+                    const uint16_t tilt_now = s_tilt_us;
+                    const uint16_t pan_target = s_pan_target_us.load(std::memory_order_acquire);
+                    const uint16_t tilt_target = s_tilt_target_us.load(std::memory_order_acquire);
+                    // Hold the last PWM values known to have been accepted by
+                    // the PCA; do not issue another guessed home movement.
+                    s_pan_target_us.store(pan_now, std::memory_order_release);
+                    s_tilt_target_us.store(tilt_now, std::memory_order_release);
+                    s_pan_settled.store(true, std::memory_order_release);
+                    s_tilt_settled.store(true, std::memory_order_release);
+                    active_behavior = ROBOT_BEHAVIOR_NEUTRAL;
+                    s_behavior.store(ROBOT_BEHAVIOR_NEUTRAL, std::memory_order_release);
+                    event_log_add("Explore abort: %s stage %d timeout; pan %u->%u tilt %u->%u",
+                                  axis, explore_stage, pan_now, pan_target, tilt_now, tilt_target);
+                    ESP_LOGW(TAG, "Explore abort at servo %s stage %d (pan %u->%u, tilt %u->%u us)",
+                             axis, explore_stage, pan_now, pan_target, tilt_now, tilt_target);
+                    return true;
+                };
                 if (elapsed_ms >= duration || explore_stage >= 12) {
                     stop_tracks();
                     active_behavior = ROBOT_BEHAVIOR_NEUTRAL;
@@ -472,17 +505,23 @@ static void behavior_task(void *) {
                             stop_tracks();
                             set_behavior_pan(0);
                             explore_stage_issued = true;
-                            event_log_add("Explore: pan to saved zero");
+                            event_log_add("Explore stage 0: pan-center key pose -> %u us",
+                                          s_pan_target_us.load(std::memory_order_acquire));
+                            ESP_LOGI(TAG, "Explore stage 0 pan-center target=%u us", s_pan_target_us.load());
                         }
                         if (settled_for_pause(s_pan_settled.load(std::memory_order_acquire))) enter_explore_stage(1);
+                        else abort_stalled_servo_stage("pan-center", s_pan_settled.load(std::memory_order_acquire));
                         break;
                     case 1: // Then tilt, never concurrently with pan.
                         if (!explore_stage_issued) {
                             set_behavior_tilt(0);
                             explore_stage_issued = true;
-                            event_log_add("Explore: tilt to saved zero");
+                            event_log_add("Explore stage 1: tilt-zero key pose -> %u us",
+                                          s_tilt_target_us.load(std::memory_order_acquire));
+                            ESP_LOGI(TAG, "Explore stage 1 tilt-zero target=%u us", s_tilt_target_us.load());
                         }
                         if (settled_for_pause(s_tilt_settled.load(std::memory_order_acquire))) enter_explore_stage(2);
+                        else abort_stalled_servo_stage("tilt-zero", s_tilt_settled.load(std::memory_order_acquire));
                         break;
                     case 2:
                         if (!explore_stage_issued) {
@@ -499,20 +538,48 @@ static void behavior_task(void *) {
                         if (now - explore_stage_started >= pdMS_TO_TICKS(1000)) enter_explore_stage(4);
                         break;
                     case 4:
-                        if (!explore_stage_issued) { set_behavior_pan(-75); explore_stage_issued = true; event_log_add("Explore: pan left"); }
+                        if (!explore_stage_issued) {
+                            set_behavior_pan(-1);
+                            explore_stage_issued = true;
+                            event_log_add("Explore stage 4: pan-left key pose -> %u us",
+                                          s_pan_target_us.load(std::memory_order_acquire));
+                            ESP_LOGI(TAG, "Explore stage 4 pan-left target=%u us", s_pan_target_us.load());
+                        }
                         if (settled_for_pause(s_pan_settled.load(std::memory_order_acquire))) enter_explore_stage(5);
+                        else abort_stalled_servo_stage("pan-left", s_pan_settled.load(std::memory_order_acquire));
                         break;
                     case 5:
-                        if (!explore_stage_issued) { set_behavior_pan(0); explore_stage_issued = true; event_log_add("Explore: pan center"); }
+                        if (!explore_stage_issued) {
+                            set_behavior_pan(0);
+                            explore_stage_issued = true;
+                            event_log_add("Explore stage 5: pan-center key pose -> %u us",
+                                          s_pan_target_us.load(std::memory_order_acquire));
+                            ESP_LOGI(TAG, "Explore stage 5 pan-center target=%u us", s_pan_target_us.load());
+                        }
                         if (settled_for_pause(s_pan_settled.load(std::memory_order_acquire))) enter_explore_stage(6);
+                        else abort_stalled_servo_stage("pan-center", s_pan_settled.load(std::memory_order_acquire));
                         break;
                     case 6:
-                        if (!explore_stage_issued) { set_behavior_tilt(75); explore_stage_issued = true; event_log_add("Explore: tilt up"); }
+                        if (!explore_stage_issued) {
+                            set_behavior_tilt(1);
+                            explore_stage_issued = true;
+                            event_log_add("Explore stage 6: tilt-down key pose -> %u us",
+                                          s_tilt_target_us.load(std::memory_order_acquire));
+                            ESP_LOGI(TAG, "Explore stage 6 tilt-down target=%u us", s_tilt_target_us.load());
+                        }
                         if (settled_for_pause(s_tilt_settled.load(std::memory_order_acquire))) enter_explore_stage(7);
+                        else abort_stalled_servo_stage("tilt-down", s_tilt_settled.load(std::memory_order_acquire));
                         break;
                     case 7:
-                        if (!explore_stage_issued) { set_behavior_tilt(0); explore_stage_issued = true; event_log_add("Explore: tilt zero"); }
+                        if (!explore_stage_issued) {
+                            set_behavior_tilt(0);
+                            explore_stage_issued = true;
+                            event_log_add("Explore stage 7: tilt-zero key pose -> %u us",
+                                          s_tilt_target_us.load(std::memory_order_acquire));
+                            ESP_LOGI(TAG, "Explore stage 7 tilt-zero target=%u us", s_tilt_target_us.load());
+                        }
                         if (settled_for_pause(s_tilt_settled.load(std::memory_order_acquire))) enter_explore_stage(8);
+                        else abort_stalled_servo_stage("tilt-zero", s_tilt_settled.load(std::memory_order_acquire));
                         break;
                     case 8:
                         if (!explore_stage_issued) {
@@ -990,16 +1057,8 @@ void robot_servo_pose(int pan_state, int tilt_state) {
     if (pan_state > 1) pan_state = 1;
     if (tilt_state < 0) tilt_state = 0;
     if (tilt_state > 1) tilt_state = 1;
-    const int pan_offset = PAN_POSE_MAX_OFFSET_US *
-                           s_pan_range.load(std::memory_order_acquire) / 100;
-    const int tilt_offset = TILT_POSE_MAX_OFFSET_US *
-                            s_tilt_range.load(std::memory_order_acquire) / 100;
-    const int pan = static_cast<int>(s_pan_zero_us.load(std::memory_order_acquire)) +
-                    pan_state * pan_offset;
-    const int tilt = static_cast<int>(s_tilt_zero_us.load(std::memory_order_acquire)) +
-                     tilt_state * tilt_offset;
-    s_pan_target_us.store(clamp_servo(pan), std::memory_order_release);
-    s_tilt_target_us.store(clamp_servo(tilt), std::memory_order_release);
+    s_pan_target_us.store(pan_pose_target_us(pan_state), std::memory_order_release);
+    s_tilt_target_us.store(tilt_pose_target_us(tilt_state), std::memory_order_release);
 }
 
 void robot_servo_pan_pose(int pan_state) {
@@ -1007,11 +1066,7 @@ void robot_servo_pan_pose(int pan_state) {
     if (pan_state < -1) pan_state = -1;
     if (pan_state > 1) pan_state = 1;
     robot_motion_cancel_behavior();
-    const int pan_offset = PAN_POSE_MAX_OFFSET_US *
-                           s_pan_range.load(std::memory_order_acquire) / 100;
-    const int pan = static_cast<int>(s_pan_zero_us.load(std::memory_order_acquire)) +
-                    pan_offset * pan_state;
-    s_pan_target_us.store(clamp_servo(pan), std::memory_order_release);
+    s_pan_target_us.store(pan_pose_target_us(pan_state), std::memory_order_release);
 }
 
 void robot_servo_calibration_begin(void) {
