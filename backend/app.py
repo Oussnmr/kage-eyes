@@ -583,11 +583,8 @@ def normalize_kage_name(text: str) -> str:
 
 
 def set_command(command: str) -> int:
-    # Voice, text and control buttons use the same saved motion profiles.
-    if command in {"dance", "360", "explore"} and "studio" in globals():
-        studio.run(command)
-        with state_lock:
-            return state["sequence"]
+    # Keep the web/voice path direct and identical to the original keyboard path.
+    # Studio sequences are launched explicitly from /control/studio/motion/.../run.
     with state_lock:
         state["command"] = command
         state["sequence"] += 1

@@ -111,7 +111,7 @@ def validate_face(body):
             raise HTTPException(400, "Coin invalide")
         points.append([_number(point[0], -90, 90, "X"), _number(point[1], -90, 90, "Y")])
     mouth_style = body.get("mouth_style", "line")
-    if mouth_style not in {"line", "smile"}:
+    if mouth_style not in {"line", "smile", "smile_inverted"}:
         raise HTTPException(400, "Style de bouche invalide")
     return {"name": name, "color": color.upper(), "corners": points,
             "x": _number(body.get("x"), -70, 70, "Position X"),
@@ -172,7 +172,7 @@ class Studio:
             flat = [int(p["color"][1:], 16), p["x"], p["y"], p["radius"],
                     p["mouth_width"], p["mouth_height"], p["mouth_y"]]
             flat.extend(v for point in p["corners"] for v in point)
-            flat.append(1 if p.get("mouth_style") == "smile" else 0)
+            flat.append({"line": 0, "smile": 1, "smile_inverted": 2}.get(p.get("mouth_style"), 0))
             return {"face_rev": self.face_revision, "face": flat}
 
     def run(self, name):
@@ -280,6 +280,22 @@ def register(app, require_key, set_command, current_state):
             studio.active_face = name
             studio.manual_face = True
             studio.face_revision += 1
+        return {"ok": True, "name": name}
+
+    @app.delete("/control/studio/face/{name}")
+    def delete_face(name: str, request: Request):
+        require_key(request)
+        with studio.lock:
+            if name in FACE_DEFAULTS:
+                raise HTTPException(400, "Les profils Kage de base ne peuvent pas être supprimés")
+            if name not in studio.faces:
+                raise HTTPException(404, "Profil introuvable")
+            del studio.faces[name]
+            if studio.active_face == name:
+                studio.active_face = "idle"
+                studio.manual_face = False
+                studio.face_revision += 1
+            _write(FACE_PATH, {k: v for k, v in studio.faces.items() if k not in FACE_DEFAULTS or v != FACE_DEFAULTS[k]})
         return {"ok": True, "name": name}
 
     @app.post("/control/studio/motion")

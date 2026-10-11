@@ -166,10 +166,12 @@ static void draw_custom_eyes(lv_event_t *event) {
                 lv_draw_triangle_dsc_init(&triangle);
                 triangle.color = color;
                 triangle.opa = LV_OPA_COVER;
-                const int index[3] = {0, half + 1, half + 2};
+                const int order[2][4] = {{0, 1, 2, 3}, {0, 3, 2, 1}};
+                const int index[3] = {order[eye][0], order[eye][half + 1], order[eye][half + 2]};
                 for (int point = 0; point < 3; ++point) {
                     const int corner = index[point];
-                    triangle.p[point].x = cx + v[7 + corner * 2] * widths[eye] / EYE_W;
+                    const int mirrored_x = eye == 0 ? v[7 + corner * 2] : -v[7 + corner * 2];
+                    triangle.p[point].x = cx + mirrored_x * widths[eye] / EYE_W;
                     triangle.p[point].y = cy + v[8 + corner * 2] * heights[eye] / EYE_H;
                 }
                 lv_draw_triangle(layer, &triangle);
