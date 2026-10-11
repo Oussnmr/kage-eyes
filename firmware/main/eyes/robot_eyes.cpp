@@ -41,6 +41,12 @@ constexpr uint32_t YELLOW = 0xFFD84A;
 
 static lv_obj_t *s_left_eye;
 static lv_obj_t *s_right_eye;
+static lv_obj_t *s_custom_eye_layer;
+static std::atomic<int> s_custom_face[16];
+static std::atomic<bool> s_custom_face_active{false};
+static int s_custom_left_x = 112, s_custom_right_x = 336, s_custom_center_y = 184;
+static int s_custom_left_w = EYE_W, s_custom_right_w = EYE_W;
+static int s_custom_left_h = EYE_H, s_custom_right_h = EYE_H;
 static lv_obj_t *s_mouth;
 static lv_obj_t *s_smile;
 static lv_obj_t *s_angry_left_brow;
@@ -128,6 +134,49 @@ static float smoothstep(float value) {
 }
 
 static void set_geometry(lv_obj_t *eye, int x, int y, int width, int height);
+
+static void draw_custom_eyes(lv_event_t *event) {
+    if (!s_custom_face_active.load(std::memory_order_acquire)) return;
+    int v[16];
+    for (int i = 0; i < 16; ++i) v[i] = s_custom_face[i].load(std::memory_order_relaxed);
+    lv_layer_t *layer = lv_event_get_layer(event);
+    const lv_color_t color = lv_color_hex(static_cast<uint32_t>(v[0]));
+    const bool rectangle = v[7] == v[13] && v[9] == v[11] &&
+                           v[8] == v[10] && v[12] == v[14];
+    const int centers[2] = {s_custom_left_x, s_custom_right_x};
+    const int widths[2] = {s_custom_left_w, s_custom_right_w};
+    const int heights[2] = {s_custom_left_h, s_custom_right_h};
+    for (int eye = 0; eye < 2; ++eye) {
+        const int center_x = centers[eye];
+        const int cx = center_x + v[1], cy = s_custom_center_y + v[2];
+        if (rectangle) {
+            lv_area_t area = {cx + v[7] * widths[eye] / EYE_W,
+                              cy + v[8] * heights[eye] / EYE_H,
+                              cx + v[9] * widths[eye] / EYE_W - 1,
+                              cy + v[12] * heights[eye] / EYE_H - 1};
+            lv_draw_rect_dsc_t rect;
+            lv_draw_rect_dsc_init(&rect);
+            rect.bg_color = color;
+            rect.bg_opa = LV_OPA_COVER;
+            rect.radius = v[3] * std::min(widths[eye], heights[eye]) / EYE_W;
+            lv_draw_rect(layer, &rect, &area);
+        } else {
+            for (int half = 0; half < 2; ++half) {
+                lv_draw_triangle_dsc_t triangle;
+                lv_draw_triangle_dsc_init(&triangle);
+                triangle.color = color;
+                triangle.opa = LV_OPA_COVER;
+                const int index[3] = {0, half + 1, half + 2};
+                for (int point = 0; point < 3; ++point) {
+                    const int corner = index[point];
+                    triangle.p[point].x = cx + v[7 + corner * 2] * widths[eye] / EYE_W;
+                    triangle.p[point].y = cy + v[8 + corner * 2] * heights[eye] / EYE_H;
+                }
+                lv_draw_triangle(layer, &triangle);
+            }
+        }
+    }
+}
 
 static void set_face_color(uint32_t color) {
     if (color == s_face_color) return;
@@ -607,6 +656,8 @@ static void animate(lv_timer_t *) {
         }
     }
     const int center_y = SCREEN_H / 2 + static_cast<int>(bob) + gaze_y;
+    const bool custom_face = s_custom_face_active.load(std::memory_order_acquire);
+    if (custom_face) base_face_color = static_cast<uint32_t>(s_custom_face[0].load());
     set_face_color(base_face_color);
     update_speed_lines(drive_active && forward > 12, std::max(0, forward), center_y, base_face_color);
     const int left_center_x = SCREEN_W / 2 - EYE_OFFSET_X + gaze_x;
@@ -622,7 +673,17 @@ static void animate(lv_timer_t *) {
                  left_width, left_height);
     set_geometry(s_right_eye, right_center_x - right_width / 2, center_y - right_height / 2,
                  right_width, right_height);
-    const bool angry_brows = s_angry;
+    s_custom_left_x = left_center_x;
+    s_custom_right_x = right_center_x;
+    s_custom_center_y = center_y;
+    s_custom_left_w = left_width;
+    s_custom_right_w = right_width;
+    s_custom_left_h = left_height;
+    s_custom_right_h = right_height;
+    lv_obj_set_style_opa(s_left_eye, custom_face ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+    lv_obj_set_style_opa(s_right_eye, custom_face ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+    lv_obj_invalidate(s_custom_eye_layer);
+    const bool angry_brows = s_angry && !custom_face;
     const int brow_y = center_y - left_height / 2 - 1;
     set_geometry(s_angry_left_brow,
                  left_center_x + left_width / 2 - 21, brow_y, 23, 14);
@@ -645,6 +706,12 @@ static void animate(lv_timer_t *) {
         behavior == ROBOT_BEHAVIOR_GENTLE) mouth_w = 62;
     if (behavior == ROBOT_BEHAVIOR_SAD || behavior == ROBOT_BEHAVIOR_WORRIED) mouth_w = 40;
     if (s_angry) mouth_w = 54;
+    if (custom_face) {
+        mouth_w = s_custom_face[4].load();
+        mouth_h = s_custom_face[5].load();
+        mouth_y = s_custom_face[6].load();
+        mouth_x = SCREEN_W / 2 - mouth_w / 2;
+    }
     if (s_time < s_dizzy_until) {
         const float phase = (DIZZY_DURATION_S - (s_dizzy_until - s_time)) * 11.0f;
         mouth_w = 52;
@@ -652,7 +719,10 @@ static void animate(lv_timer_t *) {
         mouth_y += static_cast<int>(cosf(phase * 0.8f) * 4.0f);
         mouth_rotation = static_cast<int>(sinf(phase * 0.55f) * 120.0f);
     }
-    const bool dance_smile = !s_angry && behavior == ROBOT_BEHAVIOR_CELEBRATE;
+    const bool dance_smile = custom_face ? s_custom_face[15].load() == 1 :
+                             (!s_angry && behavior == ROBOT_BEHAVIOR_CELEBRATE);
+    lv_obj_set_style_arc_color(s_smile, lv_color_hex(custom_face ? base_face_color : YELLOW),
+                               LV_PART_INDICATOR);
     lv_obj_set_style_opa(s_mouth, dance_smile ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
     lv_obj_set_style_opa(s_smile, dance_smile ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
     if (dance_smile) {
@@ -752,6 +822,14 @@ static lv_obj_t *create_smile(lv_obj_t *parent) {
 }
 }  // namespace
 
+void robot_eyes_set_custom_face(const int *values, size_t count, bool enabled) {
+    s_custom_face_active.store(false, std::memory_order_release);
+    if (!enabled || !values || count != 16) return;
+    for (size_t i = 0; i < 16; ++i)
+        s_custom_face[i].store(values[i], std::memory_order_relaxed);
+    s_custom_face_active.store(true, std::memory_order_release);
+}
+
 void robot_eyes_begin(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(parent, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
@@ -764,6 +842,13 @@ void robot_eyes_begin(lv_obj_t *parent) {
 
     s_left_eye = create_eye(parent);
     s_right_eye = create_eye(parent);
+    s_custom_eye_layer = lv_obj_create(parent);
+    lv_obj_remove_style_all(s_custom_eye_layer);
+    lv_obj_set_size(s_custom_eye_layer, SCREEN_W, SCREEN_H);
+    lv_obj_set_pos(s_custom_eye_layer, 0, 0);
+    lv_obj_clear_flag(s_custom_eye_layer, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(s_custom_eye_layer, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(s_custom_eye_layer, draw_custom_eyes, LV_EVENT_DRAW_MAIN, nullptr);
     s_mouth = create_mouth(parent);
     s_smile = create_smile(parent);
     s_angry_left_brow = create_angry_brow(parent);

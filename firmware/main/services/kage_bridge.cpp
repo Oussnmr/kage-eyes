@@ -33,6 +33,7 @@ static KageBridgeInfo s_info = {};
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_last_sequence = UINT32_MAX;
 static uint32_t s_last_assistant_sequence = UINT32_MAX;
+static uint32_t s_last_face_revision = UINT32_MAX;
 static bool s_started;
 
 // The ESP32-S3 should never run the command poll and a voice upload over
@@ -77,7 +78,7 @@ static void copy_text(char *destination, size_t size, const char *source) {
 }
 
 struct HttpResponse {
-    char body[384];
+    char body[1536];
     size_t length;
 };
 
@@ -154,8 +155,20 @@ static void dispatch_command(const char *command) {
     robot_eyes_note_activity();
     if (std::strcmp(command, "dizzy") != 0) robot_eyes_cancel_dizzy();
     if (std::strcmp(command, "dance") != 0) robot_motion_stop_dance();
+    if (std::strncmp(command, "studioseq:", 10) == 0) {
+        if (!robot_motion_studio_sequence(command + 10))
+            event_log_add("Studio sequence rejected");
+        return;
+    }
     int first = 0;
     int second = 0;
+    int pan = 0, tilt = 0, duration = 0, speed = 0;
+    if (std::sscanf(command, "studio:%d:%d:%d:%d:%d:%d",
+                    &first, &second, &pan, &tilt, &duration, &speed) == 6) {
+        robot_motion_studio_stage(first, second, pan, tilt, duration, speed);
+        robot_eyes_set_drive_state((first - second) / 2, (first + second) / 2);
+        return;
+    }
     if (std::sscanf(command, "drive:%d:%d", &first, &second) == 2) {
         robot_drive_analog(first, second);
         // The web controller compensates for mirrored tracks. Convert its raw
@@ -608,6 +621,8 @@ static void bridge_task(void *) {
         cJSON *assistant_sequence_item = root ? cJSON_GetObjectItem(root, "assistant_sequence") : nullptr;
         cJSON *voice_active_item = root ? cJSON_GetObjectItem(root, "voice_active") : nullptr;
         cJSON *mouth_level_item = root ? cJSON_GetObjectItem(root, "mouth_level") : nullptr;
+        cJSON *face_revision_item = root ? cJSON_GetObjectItem(root, "face_rev") : nullptr;
+        cJSON *face_item = root ? cJSON_GetObjectItem(root, "face") : nullptr;
         if (!root || !cJSON_IsString(command_item) || !cJSON_IsNumber(sequence_item)) {
             if (root) cJSON_Delete(root);
             if (was_reachable) event_log_add("Backend response invalid");
@@ -629,6 +644,23 @@ static void bridge_task(void *) {
         update_info(true, status, sequence, command, "");
 
         apply_command_impl(command, sequence);
+        if (cJSON_IsNumber(face_revision_item) && cJSON_IsArray(face_item) &&
+            cJSON_GetArraySize(face_item) == 16) {
+            const uint32_t face_revision = static_cast<uint32_t>(face_revision_item->valuedouble);
+            if (face_revision != s_last_face_revision) {
+                int values[16] = {};
+                bool valid = true;
+                for (int i = 0; i < 16; ++i) {
+                    cJSON *item = cJSON_GetArrayItem(face_item, i);
+                    if (!cJSON_IsNumber(item)) { valid = false; break; }
+                    values[i] = item->valueint;
+                }
+                if (valid) {
+                    robot_eyes_set_custom_face(values, 16, face_revision != 0);
+                    s_last_face_revision = face_revision;
+                }
+            }
+        }
         if (cJSON_IsString(assistant_state_item) && cJSON_IsNumber(assistant_sequence_item)) {
             apply_assistant_state(assistant_state_item->valuestring,
                                   static_cast<uint32_t>(assistant_sequence_item->valuedouble));
@@ -657,7 +689,7 @@ void kage_bridge_begin(void) {
     s_started = true;
     (void)http_mutex();
     event_log_add("Command bridge starting");
-    xTaskCreate(bridge_task, "kage_bridge", 6144, nullptr, 4, nullptr);
+    xTaskCreate(bridge_task, "kage_bridge", 8192, nullptr, 4, nullptr);
 }
 
 void kage_bridge_toggle_voice(void) {

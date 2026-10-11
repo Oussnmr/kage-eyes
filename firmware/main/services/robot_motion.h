@@ -61,3 +61,7 @@ void robot_motion_start_dance(void);
 void robot_motion_stop_dance(void);
 bool robot_motion_is_dancing(void);
 void robot_motion_start_360(void);
+// Bounded studio stage; servo targets use calibrated zero and existing limits.
+void robot_motion_studio_stage(int left, int right, int pan, int tilt,
+                               int duration_ms, int servo_speed);
+bool robot_motion_studio_sequence(const char *encoded);

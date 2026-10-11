@@ -30,3 +30,22 @@ The firmware prefers the local M920q endpoint on Wi-Fi profile 1 and uses the
 HTTPS Funnel endpoint on profile 2. The HTTPS client validates the server
 certificate with the ESP-IDF certificate bundle; SNTP is started after Wi-Fi
 gets an IP so certificate dates can be checked.
+
+## Kage Studio
+
+Open `/control/studio` from Kage Control. Sign in once with the existing Kage
+key; the browser keeps a signed, 30-day session cookie, including over the
+Tailscale HTTPS address. Tailscale does **not** bypass authentication.
+
+The editor saves named face and motion profiles on the PC in
+`face_studio_profiles.json` and `motion_studio_profiles.json`. It previews the
+448 × 368 display without glow, edits a shared four-corner eye contour for
+both eyes, and exposes a single color and mouth style per face. Motion steps
+include mirrored left/right tracks, individual calibrated pan/tilt servos,
+pauses, and simultaneous motor+servo actions. The STOP control cancels a run.
+The PC sends each complete sequence as one compact command; the ESP32 executes
+the steps locally so even short stages are not skipped by slower remote polls.
+
+Install the corresponding firmware **once** before using Studio on the robot.
+After that, editing and saving profiles on the PC needs no additional flash.
+Do not erase the board's calibration data when updating the firmware.

@@ -59,8 +59,8 @@ VALID_COMMANDS = {
 VALID_ASSISTANT_STATES = {"idle", "listening", "thinking", "speaking", "error", "offline"}
 VALID_BEHAVIORS = {
     "neutral", "listening", "thinking", "speaking", "affirm", "deny",
-    "amused", "sarcastic", "confused", "warning", "celebrate", "happy",
-    "curious", "surprised", "worried", "sad", "satisfied", "gentle", "explore",
+    "amused", "sarcastic", "confused", "warning", "celebrate", "sleep", "wake",
+    "happy", "curious", "surprised", "worried", "sad", "satisfied", "gentle", "explore",
 }
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 OLLAMA_MODEL = "qwen3:4b-instruct-2507-q4_K_M"
@@ -73,6 +73,10 @@ CONTROL_PAGE_PATH = Path(__file__).with_name("control.html")
 CONTROL_MOTION_SETTINGS_PATH = Path(os.getenv(
     "KAGE_MOTION_SETTINGS_PATH",
     str(Path(__file__).with_name("motion_settings.json")),
+))
+CONTROL_FACE_PROFILES_PATH = Path(os.getenv(
+    "KAGE_FACE_PROFILES_PATH",
+    str(Path(__file__).with_name("face_profiles.json")),
 ))
 CONTROL_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
 control_session_lock = threading.Lock()
@@ -99,6 +103,39 @@ def load_motion_settings() -> dict[str, int]:
 
 
 motion_settings = load_motion_settings()
+
+FACE_PROFILE_DEFAULTS = {
+    "name": "default",
+    "eye_width": 32,
+    "eye_height": 42,
+    "eye_roundness": 10,
+    "eye_spacing": 28,
+    "eye_y": 50,
+    "eye_top": 42,
+    "eye_right": 32,
+    "eye_bottom": 42,
+    "eye_left": 32,
+    "mouth_width": 18,
+    "mouth_height": 3,
+    "mouth_roundness": 8,
+    "colors": {
+        "neutral": "#18E6F2", "speaking": "#18E6F2", "dance": "#FFD21F",
+        "explore": "#FFFFFF", "angry": "#FF315A", "sleep": "#8E6CFF",
+    },
+}
+
+
+def load_face_profiles() -> dict[str, dict]:
+    try:
+        saved = json.loads(CONTROL_FACE_PROFILES_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        saved = {}
+    profiles = saved if isinstance(saved, dict) else {}
+    return profiles or {"default": dict(FACE_PROFILE_DEFAULTS)}
+
+
+face_profiles_lock = threading.Lock()
+face_profiles = load_face_profiles()
 
 AUDIO_SAMPLE_RATE = 16000
 AUDIO_CHANNELS = 1
@@ -141,8 +178,12 @@ state = {
     "assistant_sequence": 0,
     "voice_active": False,
     "voice_last_seen": 0.0,
-    "mouth_level": 0,
-    "mouth_updated_at": 0.0,
+    "behavior": "neutral",
+    "behavior_sequence": 0,
+    "behavior_strength": 35,
+    "behavior_duration_ms": 700,
+    "mouth_level": 0.0,
+    "mouth_last_seen": 0.0,
 }
 VOICE_HEARTBEAT_TIMEOUT_SECONDS = 6.0
 backend_lock = threading.Lock()
@@ -519,7 +560,17 @@ def require_kage_key(request: Request) -> None:
         session_valid = bool(session) and expires > now
         if session and not session_valid:
             control_sessions.pop(session, None)
-    if not header_valid and not session_valid:
+    signed_valid = False
+    if session and not session_valid:
+        try:
+            timestamp, nonce, signature = session.split(".", 2)
+            payload = f"{timestamp}.{nonce}"
+            expected = hmac.new(KAGE_API_KEY.encode(), payload.encode(), "sha256").hexdigest()
+            signed_valid = (0 <= time.time() - int(timestamp) <= CONTROL_SESSION_TTL_SECONDS
+                            and hmac.compare_digest(expected, signature))
+        except (ValueError, TypeError):
+            signed_valid = False
+    if not header_valid and not session_valid and not signed_valid:
         raise HTTPException(status_code=401, detail="Clé Kage invalide")
 
 
@@ -532,10 +583,18 @@ def normalize_kage_name(text: str) -> str:
 
 
 def set_command(command: str) -> int:
+    # Voice, text and control buttons use the same saved motion profiles.
+    if command in {"dance", "360", "explore"} and "studio" in globals():
+        studio.run(command)
+        with state_lock:
+            return state["sequence"]
     with state_lock:
         state["command"] = command
         state["sequence"] += 1
-        return state["sequence"]
+        sequence = state["sequence"]
+    if "studio" in globals():
+        studio.note_command(command)
+    return sequence
 
 
 def set_assistant_state(assistant_state: str) -> int:
@@ -546,12 +605,6 @@ def set_assistant_state(assistant_state: str) -> int:
         return state["assistant_sequence"]
 
 
-def set_mouth_level(level: int) -> None:
-    with state_lock:
-        state["mouth_level"] = max(0, min(1000, int(level)))
-        state["mouth_updated_at"] = time.monotonic()
-
-
 def set_voice_active(active: bool) -> bool:
     with state_lock:
         state["voice_active"] = bool(active)
@@ -559,10 +612,25 @@ def set_voice_active(active: bool) -> bool:
         return state["voice_active"]
 
 
+def set_behavior(behavior: str, strength: int = 35, duration_ms: int = 700) -> int:
+    with state_lock:
+        state["behavior"] = behavior
+        state["behavior_strength"] = strength
+        state["behavior_duration_ms"] = duration_ms
+        state["behavior_sequence"] += 1
+        return state["behavior_sequence"]
+
+
+def set_mouth_level(level: float) -> float:
+    level = max(0.0, min(1.0, float(level)))
+    with state_lock:
+        state["mouth_level"] = level
+        state["mouth_last_seen"] = time.monotonic() if level > 0 else 0.0
+    return level
+
+
 def current_state() -> dict:
     with state_lock:
-        if time.monotonic() - state["mouth_updated_at"] > 0.25:
-            state["mouth_level"] = 0
         # Closing the PowerShell host can terminate voice.py before atexit has
         # time to publish its shutdown. A stale heartbeat is authoritative.
         if (state["voice_active"] and state["voice_last_seen"]
@@ -1042,7 +1110,8 @@ async def control_login(request: Request):
     provided = (await request.body()).decode("utf-8", errors="ignore").strip()
     if not KAGE_API_KEY or not hmac.compare_digest(provided, KAGE_API_KEY):
         raise HTTPException(status_code=401, detail="Clé Kage invalide")
-    token = secrets.token_urlsafe(32)
+    payload = f"{int(time.time())}.{secrets.token_urlsafe(12)}"
+    token = payload + "." + hmac.new(KAGE_API_KEY.encode(), payload.encode(), "sha256").hexdigest()
     with control_session_lock:
         control_sessions[token] = time.monotonic() + CONTROL_SESSION_TTL_SECONDS
     response = JSONResponse({"ok": True})
@@ -1064,9 +1133,16 @@ def get_status(request: Request):
         "sequence": current["sequence"],
         "assistant_state": current["assistant_state"],
         "assistant_sequence": current["assistant_sequence"],
-        "mouth_level": current["mouth_level"],
         "conversation_backend": get_conversation_backend(),
         "voice_active": current["voice_active"],
+        "behavior": current["behavior"],
+        "behavior_sequence": current["behavior_sequence"],
+        "behavior_strength": current["behavior_strength"],
+        "behavior_duration_ms": current["behavior_duration_ms"],
+        "mouth_level": current["mouth_level"] if (
+            current["mouth_last_seen"] and time.monotonic() - current["mouth_last_seen"] <= 0.35
+        ) else 0.0,
+        **studio.face_status(),
         "codex_model": os.getenv("KAGE_CODEX_MODEL", "gpt-5.6-luna"),
         "web_pipeline": WEB_PIPELINE_VERSION,
         "codex_web_search": os.getenv("KAGE_CODEX_WEB_SEARCH", "live"),
@@ -1108,6 +1184,58 @@ def get_control_settings(request: Request):
     require_kage_key(request)
     with motion_settings_lock:
         return dict(motion_settings)
+
+
+@app.get("/control/face-profiles")
+def get_face_profiles(request: Request):
+    require_kage_key(request)
+    with face_profiles_lock:
+        return {"profiles": face_profiles}
+
+
+@app.post("/control/face-profiles")
+async def save_face_profile(request: Request):
+    require_kage_key(request)
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Profil invalide")
+    name = str(body.get("name", "")).strip().lower()
+    if not re.fullmatch(r"[a-z0-9_-]{1,32}", name):
+        raise HTTPException(status_code=400, detail="Nom de profil invalide")
+    numeric = {"eye_width": (8, 80), "eye_height": (8, 80),
+               "eye_roundness": (0, 40), "eye_spacing": (0, 80),
+               "eye_y": (15, 85), "mouth_width": (0, 60),
+               "mouth_height": (0, 20), "mouth_roundness": (0, 30),
+               "eye_top": (0, 120), "eye_right": (0, 120),
+               "eye_bottom": (0, 120), "eye_left": (0, 120)}
+    profile = {"name": name}
+    for key, (low, high) in numeric.items():
+        try:
+            value = int(body.get(key, FACE_PROFILE_DEFAULTS[key]))
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"Valeur invalide: {key}")
+        if not low <= value <= high:
+            raise HTTPException(status_code=400, detail=f"Valeur hors limites: {key}")
+        profile[key] = value
+    colors = body.get("colors", {})
+    if not isinstance(colors, dict):
+        raise HTTPException(status_code=400, detail="Couleurs invalides")
+    profile["colors"] = {}
+    for key in FACE_PROFILE_DEFAULTS["colors"]:
+        color = str(colors.get(key, FACE_PROFILE_DEFAULTS["colors"][key])).upper()
+        if not re.fullmatch(r"#[0-9A-F]{6}", color):
+            raise HTTPException(status_code=400, detail=f"Couleur invalide: {key}")
+        profile["colors"][key] = color
+    with face_profiles_lock:
+        CONTROL_FACE_PROFILES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        updated = dict(face_profiles)
+        updated[name] = profile
+        temporary = CONTROL_FACE_PROFILES_PATH.with_suffix(".tmp")
+        temporary.write_text(json.dumps(updated, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(CONTROL_FACE_PROFILES_PATH)
+        face_profiles.clear()
+        face_profiles.update(updated)
+    return {"ok": True, "profile": profile, "profiles": updated}
 
 
 @app.post("/control/settings")
@@ -1192,23 +1320,30 @@ def update_assistant_state(assistant_state: str, request: Request):
     return {"ok": True, "assistant_state": assistant_state, "assistant_sequence": sequence}
 
 
-@app.post("/voice/mouth/{level}")
-def update_mouth_level(level: int, request: Request):
-    require_kage_key(request)
-    if not 0 <= level <= 1000:
-        raise HTTPException(status_code=400, detail="Niveau audio hors limites")
-    set_mouth_level(level)
-    return {"ok": True}
-
-
 @app.post("/behavior/{behavior}")
-def set_behavior(behavior: str, request: Request):
+def update_behavior(behavior: str, request: Request, strength: int = 35, duration_ms: int = 700):
+    """Publish a bounded, interruptible decorative behavior cue.
+
+    Behaviors never command the tracks; the firmware owns the motion profile.
+    """
     require_kage_key(request)
     behavior = behavior.lower().strip()
     if behavior not in VALID_BEHAVIORS:
-        raise HTTPException(status_code=400, detail="Comportement invalide")
-    sequence = set_command(f"behavior:{behavior}")
-    return {"ok": True, "behavior": behavior, "sequence": sequence}
+        raise HTTPException(status_code=400, detail="Behavior invalid")
+    if not 0 <= strength <= 100 or not 100 <= duration_ms <= 3000:
+        raise HTTPException(status_code=400, detail="Behavior bounds invalid")
+    sequence = set_behavior(behavior, strength, duration_ms)
+    return {"ok": True, "behavior": behavior, "behavior_sequence": sequence,
+            "behavior_strength": strength, "behavior_duration_ms": duration_ms}
+
+
+@app.post("/voice/mouth/{level}")
+def update_voice_mouth(level: float, request: Request):
+    """Publish the current TTS audio envelope; stale levels expire quickly."""
+    require_kage_key(request)
+    if not 0.0 <= level <= 1.0:
+        raise HTTPException(status_code=400, detail="Mouth level out of range")
+    return {"ok": True, "mouth_level": set_mouth_level(level)}
 
 
 @app.post("/voice/toggle")
@@ -1247,7 +1382,7 @@ def _launch_voice_direct() -> bool:
                            capture_output=True, text=True, timeout=8, check=True)
         script = ("$host.UI.RawUI.WindowTitle='Kage Voice'; "
                   "$env:KAGE_START_LISTENING='1'; "
-                  "$env:KAGE_SILENCE_AFTER_SPEECH='2.0'; "
+                  "$env:KAGE_SILENCE_AFTER_SPEECH='1.1'; "
                   "$site='C:\\Kage\\venv\\Lib\\site-packages'; "
                   "$env:PYTHONPATH=\"$site;$site\\win32;$site\\win32\\lib;$site\\pywin32_system32;C:\\Kage\"; "
                   "$env:PATH=\"$site\\pywin32_system32;$env:PATH\"; "
@@ -1411,7 +1546,7 @@ def update_voice_session(active: bool, request: Request):
 @app.get("/command/latest")
 def latest_command(request: Request):
     require_kage_key(request)
-    return current_state()
+    return {**current_state(), **studio.face_status()}
 
 
 @app.post("/ask")
@@ -1474,3 +1609,7 @@ async def audio(request: Request):
 
     pcm = await request.body()
     return await run_in_threadpool(process_audio, pcm)
+
+
+from studio_profiles import register as register_studio
+studio = register_studio(app, require_kage_key, set_command, current_state)

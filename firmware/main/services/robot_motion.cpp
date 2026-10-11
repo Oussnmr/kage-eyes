@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 #include "bsp/esp-bsp.h"
 #include "driver/gpio.h"
@@ -16,6 +17,7 @@
 #include "nvs.h"
 
 #include "event_log.h"
+#include "eyes/robot_eyes.h"
 
 namespace {
 constexpr char TAG[] = "robot-motion";
@@ -100,6 +102,19 @@ static std::atomic<uint16_t> s_behavior_duration_ms{1200};
 static std::atomic<bool> s_dance_active{false};
 static std::atomic<uint32_t> s_dance_started{0};
 static std::atomic<bool> s_spin360_active{false};
+static std::atomic<bool> s_studio_active{false};
+static std::atomic<uint32_t> s_studio_deadline{0};
+static std::atomic<uint8_t> s_studio_previous_speed{50};
+struct StudioStep {
+    int8_t left, right, pan;
+    uint8_t tilt, speed;
+    uint16_t duration_ms;
+};
+static StudioStep s_studio_steps[41] = {};
+static uint8_t s_studio_step_count = 0;
+static portMUX_TYPE s_studio_lock = portMUX_INITIALIZER_UNLOCKED;
+static std::atomic<uint32_t> s_studio_generation{0};
+static std::atomic<bool> s_studio_sequence_running{false};
 static std::atomic<uint32_t> s_spin360_started{0};
 static std::atomic<bool> s_behavior_task_started{false};
 
@@ -108,6 +123,12 @@ static esp_err_t pca_channel(uint8_t channel, uint16_t pulse, bool full_off);
 static bool servo_position(uint8_t channel, uint16_t micros);
 static uint16_t clamp_servo(int value);
 static uint16_t clamp_tilt(int value);
+static void cancel_studio_stage() {
+    s_studio_sequence_running.store(false, std::memory_order_release);
+    if (s_studio_active.exchange(false, std::memory_order_acq_rel))
+        s_servo_speed.store(s_studio_previous_speed.load(std::memory_order_acquire),
+                            std::memory_order_release);
+}
 
 static bool valid_saved_zeros(uint16_t pan, uint16_t tilt) {
     return pan >= SERVO_MIN_US + PAN_POSE_MAX_OFFSET_US &&
@@ -295,13 +316,58 @@ static void servo_smooth_task(void *) {
 static void drive_watchdog_task(void *) {
     int applied_left = 1000;
     int applied_right = 1000;
+    StudioStep local_steps[41] = {};
+    uint32_t seen_generation = 0;
+    uint32_t step_deadline = 0;
+    uint8_t next_step = 0, step_count = 0;
     for (;;) {
         const uint32_t now = xTaskGetTickCount();
+        const uint32_t generation = s_studio_generation.load(std::memory_order_acquire);
+        if (generation != seen_generation) {
+            portENTER_CRITICAL(&s_studio_lock);
+            step_count = s_studio_step_count;
+            std::memcpy(local_steps, s_studio_steps, sizeof(local_steps));
+            portEXIT_CRITICAL(&s_studio_lock);
+            seen_generation = generation;
+            next_step = 0;
+            step_deadline = now;
+        }
+        if (s_studio_sequence_running.load(std::memory_order_acquire) &&
+            static_cast<int32_t>(step_deadline - now) <= 0) {
+            if (next_step < step_count) {
+                const StudioStep &step = local_steps[next_step++];
+                robot_motion_studio_stage(step.left, step.right, step.pan, step.tilt,
+                                          step.duration_ms, step.speed);
+                robot_eyes_set_drive_state((step.left - step.right) / 2,
+                                           (step.left + step.right) / 2);
+                step_deadline = now + pdMS_TO_TICKS(std::max(20, static_cast<int>(step.duration_ms)));
+            } else {
+                s_studio_sequence_running.store(false, std::memory_order_release);
+                cancel_studio_stage();
+                s_drive_left.store(0, std::memory_order_release);
+                s_drive_right.store(0, std::memory_order_release);
+                s_drive_deadline.store(0, std::memory_order_release);
+                robot_eyes_set_drive_state(0, 0);
+            }
+        }
         int requested_left = s_drive_left.load(std::memory_order_acquire);
         int requested_right = s_drive_right.load(std::memory_order_acquire);
-        if (s_spin360_active.load(std::memory_order_acquire)) {
+        if (s_studio_active.load(std::memory_order_acquire)) {
+            const uint32_t deadline = s_studio_deadline.load(std::memory_order_acquire);
+            if (static_cast<int32_t>(deadline - now) <= 0) {
+                s_studio_active.store(false, std::memory_order_release);
+                s_servo_speed.store(s_studio_previous_speed.load(std::memory_order_acquire),
+                                    std::memory_order_release);
+                s_drive_left.store(0, std::memory_order_release);
+                s_drive_right.store(0, std::memory_order_release);
+                s_drive_deadline.store(0, std::memory_order_release);
+                requested_left = requested_right = 0;
+            } else {
+                s_drive_deadline.store(now + DRIVE_WATCHDOG, std::memory_order_release);
+            }
+        } else if (s_spin360_active.load(std::memory_order_acquire)) {
             const uint32_t elapsed = now - s_spin360_started.load(std::memory_order_acquire);
-            if (elapsed >= pdMS_TO_TICKS(3000)) {
+            if (elapsed >= pdMS_TO_TICKS(2660)) {
                 s_spin360_active.store(false, std::memory_order_release);
                 requested_left = requested_right = 0;
                 s_drive_left.store(0, std::memory_order_release);
@@ -959,6 +1025,7 @@ void robot_drive_hold(RobotDrive drive) {
 }
 
 void robot_drive_analog(int left_percent, int right_percent) {
+    cancel_studio_stage();
     if (left_percent > 100) left_percent = 100;
     if (left_percent < -100) left_percent = -100;
     if (right_percent > 100) right_percent = 100;
@@ -973,6 +1040,7 @@ void robot_drive_analog(int left_percent, int right_percent) {
 }
 
 void robot_motion_stop(void) {
+    cancel_studio_stage();
     s_dance_active.store(false, std::memory_order_release);
     s_spin360_active.store(false, std::memory_order_release);
     robot_motion_cancel_behavior();
@@ -984,6 +1052,7 @@ void robot_motion_stop(void) {
 }
 
 void robot_motion_cancel_behavior(void) {
+    cancel_studio_stage();
     s_behavior.store(ROBOT_BEHAVIOR_NEUTRAL, std::memory_order_release);
     s_behavior_generation.fetch_add(1, std::memory_order_acq_rel);
     s_dance_active.store(false, std::memory_order_release);
@@ -995,6 +1064,7 @@ void robot_motion_cancel_behavior(void) {
 }
 
 void robot_motion_behavior(int behavior, int duration_ms) {
+    cancel_studio_stage();
     if (behavior <= ROBOT_BEHAVIOR_NEUTRAL || behavior > ROBOT_BEHAVIOR_EXPLORE) return;
     if (!ensure_behavior_task()) return;
     s_dance_active.store(false, std::memory_order_release);
@@ -1011,6 +1081,7 @@ void robot_motion_behavior(int behavior, int duration_ms) {
 }
 
 void robot_motion_start_dance(void) {
+    cancel_studio_stage();
     if (s_calibration_mode.load(std::memory_order_acquire)) return;
     s_spin360_active.store(false, std::memory_order_release);
     s_behavior.store(ROBOT_BEHAVIOR_NEUTRAL, std::memory_order_release);
@@ -1020,6 +1091,7 @@ void robot_motion_start_dance(void) {
 }
 
 void robot_motion_start_360(void) {
+    cancel_studio_stage();
     if (s_calibration_mode.load(std::memory_order_acquire)) return;
     s_dance_active.store(false, std::memory_order_release);
     s_behavior.store(ROBOT_BEHAVIOR_NEUTRAL, std::memory_order_release);
@@ -1040,6 +1112,88 @@ void robot_motion_stop_dance(void) {
 
 bool robot_motion_is_dancing(void) {
     return s_dance_active.load(std::memory_order_acquire);
+}
+
+static int hex_digit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+bool robot_motion_studio_sequence(const char *encoded) {
+    if (!encoded || s_calibration_mode.load(std::memory_order_acquire)) return false;
+    const size_t length = std::strlen(encoded);
+    if (!length || length % 14 != 0 || length / 14 > 41) return false;
+    StudioStep parsed[41] = {};
+    const size_t count = length / 14;
+    int total_ms = 0;
+    for (size_t i = 0; i < count; ++i) {
+        uint8_t bytes[7] = {};
+        for (int b = 0; b < 7; ++b) {
+            const int upper = hex_digit(encoded[i * 14 + b * 2]);
+            const int lower = hex_digit(encoded[i * 14 + b * 2 + 1]);
+            if (upper < 0 || lower < 0) return false;
+            bytes[b] = static_cast<uint8_t>((upper << 4) | lower);
+        }
+        StudioStep &step = parsed[i];
+        step.left = static_cast<int8_t>(bytes[0]);
+        step.right = static_cast<int8_t>(bytes[1]);
+        step.pan = static_cast<int8_t>(bytes[2]);
+        step.tilt = bytes[3];
+        step.speed = bytes[4];
+        step.duration_ms = static_cast<uint16_t>(bytes[5] | (bytes[6] << 8));
+        if (step.left < -100 || step.left > 100 || step.right < -100 || step.right > 100 ||
+            (step.pan != 127 && (step.pan < -100 || step.pan > 100)) ||
+            (step.tilt != 127 && step.tilt > 100) ||
+            step.speed < 10 || step.speed > 100 || step.duration_ms > 3000) return false;
+        total_ms += step.duration_ms;
+    }
+    if (total_ms > 31000) return false;
+    robot_motion_cancel_behavior();
+    portENTER_CRITICAL(&s_studio_lock);
+    std::memcpy(s_studio_steps, parsed, sizeof(parsed));
+    s_studio_step_count = static_cast<uint8_t>(count);
+    portEXIT_CRITICAL(&s_studio_lock);
+    s_studio_sequence_running.store(true, std::memory_order_release);
+    s_studio_generation.fetch_add(1, std::memory_order_acq_rel);
+    return true;
+}
+
+void robot_motion_studio_stage(int left, int right, int pan, int tilt,
+                               int duration_ms, int servo_speed) {
+    if (s_calibration_mode.load(std::memory_order_acquire)) return;
+    left = std::max(-100, std::min(100, left));
+    right = std::max(-100, std::min(100, right));
+    if (pan != 127) pan = std::max(-100, std::min(100, pan));
+    if (tilt != 127) tilt = std::max(0, std::min(100, tilt));
+    duration_ms = std::max(0, std::min(3000, duration_ms));
+    servo_speed = std::max(10, std::min(100, servo_speed));
+    s_dance_active.store(false, std::memory_order_release);
+    s_spin360_active.store(false, std::memory_order_release);
+    s_behavior.store(ROBOT_BEHAVIOR_NEUTRAL, std::memory_order_release);
+    s_behavior_generation.fetch_add(1, std::memory_order_acq_rel);
+    if (!s_studio_active.load(std::memory_order_acquire))
+        s_studio_previous_speed.store(s_servo_speed.load(std::memory_order_acquire),
+                                      std::memory_order_release);
+    s_servo_speed.store(static_cast<uint8_t>(servo_speed), std::memory_order_release);
+    if (pan != 127) {
+        const int offset = PAN_POSE_MAX_OFFSET_US * s_pan_range.load(std::memory_order_acquire) / 100;
+        const int target = s_pan_zero_us.load(std::memory_order_acquire) + offset * pan / 100;
+        s_pan_target_us.store(clamp_servo(target), std::memory_order_release);
+    }
+    if (tilt != 127) {
+        const int offset = TILT_POSE_MAX_OFFSET_US * s_tilt_range.load(std::memory_order_acquire) / 100;
+        const int target = s_tilt_zero_us.load(std::memory_order_acquire) + offset * tilt / 100;
+        s_tilt_target_us.store(clamp_servo(target), std::memory_order_release);
+    }
+    s_drive_left.store(duration_ms > 0 ? left : 0, std::memory_order_release);
+    s_drive_right.store(duration_ms > 0 ? right : 0, std::memory_order_release);
+    const TickType_t now = xTaskGetTickCount();
+    s_drive_deadline.store(duration_ms > 0 ? now + DRIVE_WATCHDOG : 0, std::memory_order_release);
+    s_studio_deadline.store(now + pdMS_TO_TICKS(std::max(20, duration_ms)),
+                            std::memory_order_release);
+    s_studio_active.store(true, std::memory_order_release);
 }
 
 void robot_servo_targets(int pan_percent, int tilt_percent) {
