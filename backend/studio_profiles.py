@@ -282,6 +282,15 @@ def register(app, require_key, set_command, current_state):
             studio.face_revision += 1
         return {"ok": True, "name": name}
 
+    @app.post("/control/studio/face/reset")
+    def reset_face(request: Request):
+        require_key(request)
+        with studio.lock:
+            studio.active_face = "idle"
+            studio.manual_face = False
+            studio.face_revision += 1
+        return {"ok": True, "name": "idle"}
+
     @app.delete("/control/studio/face/{name}")
     def delete_face(name: str, request: Request):
         require_key(request)
