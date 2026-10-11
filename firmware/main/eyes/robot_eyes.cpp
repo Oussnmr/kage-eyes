@@ -43,6 +43,7 @@ static lv_obj_t *s_left_eye;
 static lv_obj_t *s_right_eye;
 static lv_obj_t *s_mouth;
 static lv_obj_t *s_smile_left;
+static lv_obj_t *s_smile_center;
 static lv_obj_t *s_smile_right;
 static lv_obj_t *s_thinking_dots[THINKING_DOT_COUNT];
 static lv_obj_t *s_speed_lines[SPEED_LINE_COUNT];
@@ -140,6 +141,7 @@ static void set_face_color(uint32_t color) {
     lv_obj_set_style_bg_color(s_right_eye, lv_color_hex(color), 0);
     lv_obj_set_style_bg_color(s_mouth, lv_color_hex(color), 0);
     lv_obj_set_style_bg_color(s_smile_left, lv_color_hex(color), 0);
+    lv_obj_set_style_bg_color(s_smile_center, lv_color_hex(color), 0);
     lv_obj_set_style_bg_color(s_smile_right, lv_color_hex(color), 0);
 }
 
@@ -589,6 +591,11 @@ static void animate(lv_timer_t *) {
     uint32_t base_face_color = CYAN;
     if (s_angry) {
         base_face_color = RED;
+    } else if (behavior == ROBOT_BEHAVIOR_CELEBRATE) {
+        // Explicit action colors win over transient assistant states.
+        base_face_color = YELLOW;
+    } else if (behavior == ROBOT_BEHAVIOR_EXPLORE) {
+        base_face_color = WHITE;
     } else if (assistant_state == ASSISTANT_LISTENING) {
         base_face_color = GREEN;
     } else if (assistant_state == ASSISTANT_THINKING) {
@@ -604,10 +611,6 @@ static void animate(lv_timer_t *) {
     } else if (behavior == ROBOT_BEHAVIOR_THINKING || behavior == ROBOT_BEHAVIOR_CONFUSED ||
                behavior == ROBOT_BEHAVIOR_SARCASTIC) {
         base_face_color = PURPLE;
-    } else if (behavior == ROBOT_BEHAVIOR_CELEBRATE) {
-        base_face_color = YELLOW;
-    } else if (behavior == ROBOT_BEHAVIOR_EXPLORE) {
-        base_face_color = WHITE;
     } else if (behavior == ROBOT_BEHAVIOR_HAPPY || behavior == ROBOT_BEHAVIOR_AMUSED ||
                behavior == ROBOT_BEHAVIOR_SATISFIED ||
                behavior == ROBOT_BEHAVIOR_GENTLE) {
@@ -683,13 +686,17 @@ static void animate(lv_timer_t *) {
     const bool dance_smile = behavior == ROBOT_BEHAVIOR_CELEBRATE;
     lv_obj_set_style_opa(s_mouth, dance_smile ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
     lv_obj_set_style_opa(s_smile_left, dance_smile ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    lv_obj_set_style_opa(s_smile_center, dance_smile ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
     lv_obj_set_style_opa(s_smile_right, dance_smile ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
     if (dance_smile) {
         const int bounce = static_cast<int>(fabsf(sinf(s_time * 7.0f)) * 5.0f);
-        set_geometry(s_smile_left, 190, 251 - bounce, 39, 9);
-        set_geometry(s_smile_right, 219, 251 - bounce, 39, 9);
-        lv_obj_set_style_transform_rotation(s_smile_left, 150, 0);
-        lv_obj_set_style_transform_rotation(s_smile_right, -150, 0);
+        // Three overlapping capsules produce a rounded U instead of a sharp V.
+        set_geometry(s_smile_left, 181, 251 - bounce, 38, 9);
+        set_geometry(s_smile_center, 208, 260 - bounce, 32, 9);
+        set_geometry(s_smile_right, 229, 251 - bounce, 38, 9);
+        lv_obj_set_style_transform_rotation(s_smile_left, 120, 0);
+        lv_obj_set_style_transform_rotation(s_smile_center, 0, 0);
+        lv_obj_set_style_transform_rotation(s_smile_right, -120, 0);
     }
     static float mouth_smoothed = 0.0f;
     const int level = s_mouth_level.load();
@@ -795,6 +802,7 @@ void robot_eyes_begin(lv_obj_t *parent) {
     s_right_eye = create_eye(parent);
     s_mouth = create_mouth(parent);
     s_smile_left = create_smile_segment(parent);
+    s_smile_center = create_smile_segment(parent);
     s_smile_right = create_smile_segment(parent);
     for (auto &line : s_speed_lines) line = create_speed_line(parent);
     for (int i = 0; i < THINKING_DOT_COUNT; ++i) {

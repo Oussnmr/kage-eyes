@@ -450,8 +450,14 @@ static void behavior_task(void *) {
                         if (elapsed_ms < 1500U) {
                             // Return to recorded zero (or remain there).
                         } else if (elapsed_ms < 4500U) {
-                            drive_left = 100;
-                            drive_right = -100;
+                            // A full-power step on both mirrored tracks caused
+                            // a supply dip large enough to drop Wi-Fi. Ramp for
+                            // 600 ms, then keep enough power to move reliably.
+                            const int power = elapsed_ms < 2100U
+                                ? 35 + static_cast<int>((elapsed_ms - 1500U) * 35U / 600U)
+                                : 70;
+                            drive_left = power;
+                            drive_right = -power;
                         } else if (elapsed_ms < 6000U) {
                             // Full stop before moving the head.
                         } else if (elapsed_ms < 7500U) {
@@ -463,8 +469,11 @@ static void behavior_task(void *) {
                         } else if (elapsed_ms < 12000U) {
                             // Tilt back to zero and wait.
                         } else if (elapsed_ms < 15000U) {
-                            drive_left = 100;
-                            drive_right = 100;
+                            const int power = elapsed_ms < 12600U
+                                ? 35 + static_cast<int>((elapsed_ms - 12000U) * 35U / 600U)
+                                : 70;
+                            drive_left = power;
+                            drive_right = power;
                         } else if (elapsed_ms < 16500U) {
                             // Full stop before the final look.
                         } else {
