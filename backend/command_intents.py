@@ -91,6 +91,7 @@ ROBOT_PHRASES = {
     "move_b": ("move b", "move back", "move backward", "en arriere"),
     "pan_l": ("look left", "regarde gauche", "regarde a gauche", "tourne la tete a gauche"),
     "pan_r": ("look right", "regarde droite", "regarde a droite", "tourne la tete a droite"),
+    "pan_c": ("look center", "look straight ahead", "regarde au centre", "centre la tete", "remets la tete au centre"),
     "tilt_u": ("look up", "regarde en haut", "leve la tete"),
     "tilt_d": ("look down", "regarde en bas", "baisse la tete"),
 }

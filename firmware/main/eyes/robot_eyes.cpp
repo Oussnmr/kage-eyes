@@ -36,10 +36,14 @@ constexpr uint32_t RED = 0xFF4057;
 constexpr uint32_t PURPLE = 0xB58CFF;
 constexpr uint32_t DIM = 0x3F5260;
 constexpr uint32_t ORANGE = 0xFF9D3D;
+constexpr uint32_t WHITE = 0xF4FAFF;
+constexpr uint32_t YELLOW = 0xFFD84A;
 
 static lv_obj_t *s_left_eye;
 static lv_obj_t *s_right_eye;
 static lv_obj_t *s_mouth;
+static lv_obj_t *s_smile_left;
+static lv_obj_t *s_smile_right;
 static lv_obj_t *s_thinking_dots[THINKING_DOT_COUNT];
 static lv_obj_t *s_speed_lines[SPEED_LINE_COUNT];
 static lv_obj_t *s_sleep_z[3];
@@ -135,6 +139,8 @@ static void set_face_color(uint32_t color) {
     lv_obj_set_style_bg_color(s_left_eye, lv_color_hex(color), 0);
     lv_obj_set_style_bg_color(s_right_eye, lv_color_hex(color), 0);
     lv_obj_set_style_bg_color(s_mouth, lv_color_hex(color), 0);
+    lv_obj_set_style_bg_color(s_smile_left, lv_color_hex(color), 0);
+    lv_obj_set_style_bg_color(s_smile_right, lv_color_hex(color), 0);
 }
 
 static void update_speed_lines(bool visible, int speed, int center_y, uint32_t color) {
@@ -598,8 +604,12 @@ static void animate(lv_timer_t *) {
     } else if (behavior == ROBOT_BEHAVIOR_THINKING || behavior == ROBOT_BEHAVIOR_CONFUSED ||
                behavior == ROBOT_BEHAVIOR_SARCASTIC) {
         base_face_color = PURPLE;
+    } else if (behavior == ROBOT_BEHAVIOR_CELEBRATE) {
+        base_face_color = YELLOW;
+    } else if (behavior == ROBOT_BEHAVIOR_EXPLORE) {
+        base_face_color = WHITE;
     } else if (behavior == ROBOT_BEHAVIOR_HAPPY || behavior == ROBOT_BEHAVIOR_AMUSED ||
-               behavior == ROBOT_BEHAVIOR_CELEBRATE || behavior == ROBOT_BEHAVIOR_SATISFIED ||
+               behavior == ROBOT_BEHAVIOR_SATISFIED ||
                behavior == ROBOT_BEHAVIOR_GENTLE) {
         base_face_color = GREEN;
     } else if (behavior == ROBOT_BEHAVIOR_SURPRISED) {
@@ -634,19 +644,20 @@ static void animate(lv_timer_t *) {
     update_speed_lines(drive_active && forward > 12, std::max(0, forward), center_y, base_face_color);
     const int left_center_x = SCREEN_W / 2 - EYE_OFFSET_X + gaze_x;
     const int right_center_x = SCREEN_W / 2 + EYE_OFFSET_X + gaze_x;
-    show_angry_eyes(s_angry);
+    // Angry now uses the same stable eye objects as the other expressions.
+    // This avoids the old nine-stripe masks while keeping a clear red scowl.
+    show_angry_eyes(false);
+    if (s_angry) {
+        left_height = std::max(38, left_height * 48 / 100);
+        right_height = left_height;
+        gaze_y += 4;
+    }
     set_geometry(s_left_eye, left_center_x - left_width / 2, center_y - left_height / 2,
                  left_width, left_height);
     set_geometry(s_right_eye, right_center_x - right_width / 2, center_y - right_height / 2,
                  right_width, right_height);
-    lv_obj_set_style_transform_rotation(s_left_eye, 0, 0);
-    lv_obj_set_style_transform_rotation(s_right_eye, 0, 0);
-    if (s_angry) {
-        set_angry_geometry(s_angry_left, s_angry_left_stripes, false,
-                           left_center_x, center_y, left_height);
-        set_angry_geometry(s_angry_right, s_angry_right_stripes, true,
-                           right_center_x, center_y, right_height);
-    }
+    lv_obj_set_style_transform_rotation(s_left_eye, s_angry ? 140 : 0, 0);
+    lv_obj_set_style_transform_rotation(s_right_eye, s_angry ? -140 : 0, 0);
     int mouth_w = MOUTH_W + static_cast<int>(bob * 0.5f);
     int mouth_h = MOUTH_H;
     int mouth_y = MOUTH_Y + static_cast<int>(bob);
@@ -669,17 +680,33 @@ static void animate(lv_timer_t *) {
         mouth_y += static_cast<int>(cosf(phase * 0.8f) * 4.0f);
         mouth_rotation = static_cast<int>(sinf(phase * 0.55f) * 120.0f);
     }
+    const bool dance_smile = behavior == ROBOT_BEHAVIOR_CELEBRATE;
+    lv_obj_set_style_opa(s_mouth, dance_smile ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+    lv_obj_set_style_opa(s_smile_left, dance_smile ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    lv_obj_set_style_opa(s_smile_right, dance_smile ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    if (dance_smile) {
+        const int bounce = static_cast<int>(fabsf(sinf(s_time * 7.0f)) * 5.0f);
+        set_geometry(s_smile_left, 190, 251 - bounce, 39, 9);
+        set_geometry(s_smile_right, 219, 251 - bounce, 39, 9);
+        lv_obj_set_style_transform_rotation(s_smile_left, 150, 0);
+        lv_obj_set_style_transform_rotation(s_smile_right, -150, 0);
+    }
     static float mouth_smoothed = 0.0f;
     const int level = s_mouth_level.load();
     const float mouth_target = static_cast<float>(level) / 1000.0f;
     // Follow speech envelope quickly; a slow release would visibly lag behind
     // the TTS and make the mouth keep moving after audio has stopped.
-    const float mouth_rate = mouth_target > mouth_smoothed ? 0.98f : 0.86f;
+    const float mouth_rate = mouth_target > mouth_smoothed ? 1.0f : 0.94f;
     mouth_smoothed += (mouth_target - mouth_smoothed) * mouth_rate;
     const bool voice_speaking = assistant_state == ASSISTANT_SPEAKING ||
                                 s_voice_active.load() || level > 20;
-    if (!s_angry && voice_speaking && level > 20) {
-        const float voice_pulse = std::min(1.0f, mouth_smoothed);
+    if (!s_angry && !dance_smile && voice_speaking && level > 8) {
+        // The PC envelope arrives roughly every 80-100 ms. Add a fast
+        // syllable pulse while real audio is present so the mouth articulates
+        // several times per spoken word without moving after TTS stops.
+        const float chatter = 0.30f + 0.70f * fabsf(sinf(s_time * 25.0f));
+        const float amplified = std::min(1.0f, sqrtf(std::max(0.0f, mouth_smoothed)) * 1.45f);
+        const float voice_pulse = amplified * chatter;
         set_geometry(s_mouth, mouth_x, mouth_y - static_cast<int>(voice_pulse * 11.0f),
                      mouth_w, mouth_h + static_cast<int>(voice_pulse * 22.0f));
     } else {
@@ -712,6 +739,14 @@ static lv_obj_t *create_mouth(lv_obj_t *parent) {
     lv_obj_set_style_transform_pivot_y(mouth, MOUTH_H / 2, 0);
     lv_obj_clear_flag(mouth, LV_OBJ_FLAG_SCROLLABLE);
     return mouth;
+}
+
+static lv_obj_t *create_smile_segment(lv_obj_t *parent) {
+    lv_obj_t *segment = create_mouth(parent);
+    lv_obj_set_style_opa(segment, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_transform_pivot_x(segment, 19, 0);
+    lv_obj_set_style_transform_pivot_y(segment, 4, 0);
+    return segment;
 }
 
 static lv_obj_t *create_speed_line(lv_obj_t *parent) {
@@ -759,6 +794,8 @@ void robot_eyes_begin(lv_obj_t *parent) {
     s_left_eye = create_eye(parent);
     s_right_eye = create_eye(parent);
     s_mouth = create_mouth(parent);
+    s_smile_left = create_smile_segment(parent);
+    s_smile_right = create_smile_segment(parent);
     for (auto &line : s_speed_lines) line = create_speed_line(parent);
     for (int i = 0; i < THINKING_DOT_COUNT; ++i) {
         s_thinking_dots[i] = lv_obj_create(parent);

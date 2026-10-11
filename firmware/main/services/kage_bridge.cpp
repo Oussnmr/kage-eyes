@@ -282,6 +282,10 @@ static void dispatch_command(const char *command) {
         robot_servo_pose(1, 0);
         robot_eyes_set_manual_look(1, 0);
     }
+    else if (std::strcmp(command, "pan_c") == 0) {
+        robot_servo_pose(0, 0);
+        robot_eyes_set_manual_look(0, 0);
+    }
     else if (std::strcmp(command, "tilt_u") == 0) {
         robot_servo_pose(0, 0);
         robot_eyes_set_manual_look(0, -1);

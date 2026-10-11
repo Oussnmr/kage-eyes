@@ -24,6 +24,7 @@ class CommandIntentTests(unittest.TestCase):
             "Kage, tourne sur toi-même": ("robot", "360"),
             "Kage, regarde à gauche": ("robot", "pan_l"),
             "Kage, regarde à droite": ("robot", "pan_r"),
+            "Kage, regarde au centre": ("robot", "pan_c"),
             "Kage, regarde en haut": ("robot", "tilt_u"),
             "Kage, regarde en bas": ("robot", "tilt_d"),
         }

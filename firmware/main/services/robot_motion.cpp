@@ -289,8 +289,11 @@ static void drive_watchdog_task(void *) {
                 s_drive_right.store(0, std::memory_order_release);
                 s_drive_deadline.store(0, std::memory_order_release);
             } else {
+                // The two track motors are mounted as mirrors. A logical
+                // right pivot therefore uses the same raw sign on both PWM
+                // sides (left forward, right backward).
                 requested_left = 100;
-                requested_right = -100;
+                requested_right = 100;
                 s_drive_deadline.store(now + DRIVE_WATCHDOG, std::memory_order_release);
             }
         } else if (s_dance_active.load(std::memory_order_acquire)) {
@@ -306,22 +309,22 @@ static void drive_watchdog_task(void *) {
                     // Start with a few clear left/right pivots.
                     const bool left = ((elapsed / pdMS_TO_TICKS(300)) % 2U) == 0U;
                     requested_left = left ? -80 : 80;
-                    requested_right = -requested_left;
+                    requested_right = requested_left;
                 } else {
                     const uint32_t phase = ((elapsed - pdMS_TO_TICKS(1200)) /
                                             pdMS_TO_TICKS(360)) % 4U;
                     if (phase == 0U) {
                         requested_left = 80;
-                        requested_right = 80;
+                        requested_right = -80;
                     } else if (phase == 1U) {
                         requested_left = -80;
-                        requested_right = 80;
+                        requested_right = -80;
                     } else if (phase == 2U) {
                         requested_left = -80;
-                        requested_right = -80;
+                        requested_right = 80;
                     } else {
                         requested_left = 80;
-                        requested_right = -80;
+                        requested_right = 80;
                     }
                 }
                 s_drive_deadline.store(now + DRIVE_WATCHDOG, std::memory_order_release);
@@ -448,7 +451,7 @@ static void behavior_task(void *) {
                             // Return to recorded zero (or remain there).
                         } else if (elapsed_ms < 4500U) {
                             drive_left = 100;
-                            drive_right = 100;
+                            drive_right = -100;
                         } else if (elapsed_ms < 6000U) {
                             // Full stop before moving the head.
                         } else if (elapsed_ms < 7500U) {
@@ -461,7 +464,7 @@ static void behavior_task(void *) {
                             // Tilt back to zero and wait.
                         } else if (elapsed_ms < 15000U) {
                             drive_left = 100;
-                            drive_right = -100;
+                            drive_right = 100;
                         } else if (elapsed_ms < 16500U) {
                             // Full stop before the final look.
                         } else {
@@ -518,15 +521,9 @@ static void motors_pulse(bool forward) {
         return;
     }
 
-    motors_stop();
-    if (forward) {
-        // OUT2 and OUT4 are the user-marked positive motor leads.
-        set_motor_channel(1, TEST_DUTY);
-        set_motor_channel(3, TEST_DUTY);
-    } else {
-        set_motor_channel(0, TEST_DUTY);
-        set_motor_channel(2, TEST_DUTY);
-    }
+    // Physical motors face opposite directions. Keep this diagnostic aligned
+    // with the logical drive commands used by dance and explore.
+    motors_apply_analog(forward ? 100 : -100, forward ? -100 : 100);
     vTaskDelay(MOTOR_PULSE);
     motors_stop();
 }
@@ -752,10 +749,10 @@ void robot_motion_command(RobotMove move) {
 
 void robot_drive_hold(RobotDrive drive) {
     switch (drive) {
-        case ROBOT_DRIVE_FORWARD: robot_drive_analog(100, 100); break;
-        case ROBOT_DRIVE_BACKWARD: robot_drive_analog(-100, -100); break;
-        case ROBOT_DRIVE_LEFT: robot_drive_analog(-100, 100); break;
-        case ROBOT_DRIVE_RIGHT: robot_drive_analog(100, -100); break;
+        case ROBOT_DRIVE_FORWARD: robot_drive_analog(100, -100); break;
+        case ROBOT_DRIVE_BACKWARD: robot_drive_analog(-100, 100); break;
+        case ROBOT_DRIVE_LEFT: robot_drive_analog(-100, -100); break;
+        case ROBOT_DRIVE_RIGHT: robot_drive_analog(100, 100); break;
     }
 }
 
