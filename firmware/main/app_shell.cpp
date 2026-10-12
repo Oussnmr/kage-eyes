@@ -217,9 +217,9 @@ static void select_bubble(int index) {
 
 static void set_app_activity(AppId app) {
     robot_eyes_set_active(app == APP_ROBOT);
-    /* Voice interaction is available only in the Kage face and Microphone
-       applications. All other screens close the microphone and block uploads. */
-    mic_meter_set_active(app == APP_ROBOT || app == APP_MIC);
+    // Temporary diagnostic mode: keep the Waveshare microphone completely
+    // off, including continuous I2S reads and voice detection.
+    mic_meter_set_active(false);
 }
 
 static lv_obj_t *screen_for(AppId app) {

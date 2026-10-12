@@ -17,6 +17,7 @@ from command_intents import direct_intent, home_intent, looks_like_home_command
 from faster_whisper import WhisperModel
 
 import hmac
+import asyncio
 import json
 import os
 import queue
@@ -46,6 +47,13 @@ try:
 except ImportError:
     pythoncom = None
 
+try:
+    import numpy as np
+    import sounddevice as sounddevice
+except ImportError:
+    np = None
+    sounddevice = None
+
 
 app = FastAPI(title="Kage M920q Backend", docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -70,6 +78,9 @@ KAGE_API_KEY = os.getenv("KAGE_API_KEY", "").strip()
 WEB_PIPELINE_VERSION = "web-progressive-v4.0"
 RESEARCH_MEMORY_TTL_SECONDS = 15 * 60
 CONTROL_PAGE_PATH = Path(__file__).with_name("control.html")
+MICRO_PAGE_PATH = Path(__file__).with_name("micro.html")
+VOICE_WEB_INPUT_PATH = Path(r"C:\Kage\voice_web_input.json")
+VOICE_WEB_EVENTS_PATH = Path(r"C:\Kage\voice_web_events.jsonl")
 CONTROL_MOTION_SETTINGS_PATH = Path(os.getenv(
     "KAGE_MOTION_SETTINGS_PATH",
     str(Path(__file__).with_name("motion_settings.json")),
@@ -194,6 +205,7 @@ VOICE_SLEEP_FLAG = Path(r"C:\Kage\voice_sleep.flag")
 VOICE_HOLD_ACTIVE_FLAG = Path(r"C:\Kage\voice_hold_active.flag")
 VOICE_TEXT_MODE_FLAG = Path(r"C:\Kage\voice_text_mode.flag")
 voice_control_lock = threading.Lock()
+web_tts_lock = threading.Lock()
 voice_action_queue = queue.Queue(maxsize=2)
 research_memory_lock = threading.Lock()
 research_memory = {
@@ -544,6 +556,21 @@ class SpeechRequest(BaseModel):
     voice: str = KAGE_TTS_VOICE
 
 
+class VoiceSettingsRequest(BaseModel):
+    voice: str
+
+
+KOKORO_VOICE_OPTIONS = (
+    ("ff_siwis", "Siwis · français"),
+    ("af_bella", "Bella · anglais US"),
+    ("af_sarah", "Sarah · anglais US"),
+    ("am_michael", "Michael · anglais US"),
+    ("am_puck", "Puck · anglais US"),
+    ("bf_emma", "Emma · anglais UK"),
+    ("bm_george", "George · anglais UK"),
+)
+
+
 class DriveControlRequest(BaseModel):
     left: int
     right: int
@@ -698,6 +725,9 @@ def route_direct_command(message: str):
             "command": "none", "sequence": current["sequence"], "route": "direct",
             "speak": True, "conversation_backend": backend,
         }
+    # Keep direct commands on the low-latency firmware path. Studio sequences
+    # are run only when explicitly launched from the Studio, never implicitly
+    # from a voice/text intent.
     sequence = set_command(value)
     print(json.dumps({"event": "direct_route", "route": value, "latency_ms": 0}, ensure_ascii=False))
     return {
@@ -1039,31 +1069,59 @@ def choose_french_voice(engine) -> None:
             return
 
 
-def speak_reply(text: str) -> None:
-    if not TTS_ENABLED or not text or pyttsx3 is None:
+def selected_kokoro_voice() -> str:
+    try:
+        saved = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        saved = {}
+    return str(saved.get("tts_voice") or KAGE_TTS_VOICE)
+
+
+def speak_reply(text: str, force: bool = False) -> None:
+    """Play the configured Kokoro voice locally without delaying HTTP replies."""
+    if not (TTS_ENABLED or force) or not text:
         return
 
-    com_initialized = False
-    try:
-        if pythoncom is not None:
-            pythoncom.CoInitialize()
-            com_initialized = True
+    def play() -> None:
+        try:
+            # Streamed sentences can arrive faster than they finish speaking.
+            # A single output lane prevents overlapping Kokoro phrases on the PC.
+            with web_tts_lock:
+                if kokoro_service.available and np is not None and sounddevice is not None:
+                    async def render():
+                        chunks = []
+                        async for chunk in kokoro_service.stream_pcm(text, selected_kokoro_voice()):
+                            chunks.append(np.frombuffer(chunk, dtype="<i2"))
+                        return np.concatenate(chunks) if chunks else np.array([], dtype=np.int16)
+                    pcm = asyncio.run(render())
+                    if pcm.size:
+                        sounddevice.play(pcm, 16000)
+                        sounddevice.wait()
+                        return
+                # This is only a fallback when Kokoro is unavailable.
+                if pyttsx3 is None:
+                    return
+                com_initialized = False
+                try:
+                    if pythoncom is not None:
+                        pythoncom.CoInitialize()
+                        com_initialized = True
+                    engine = pyttsx3.init()
+                    choose_french_voice(engine)
+                    engine.setProperty("rate", 185)
+                    engine.say(text)
+                    engine.runAndWait()
+                    engine.stop()
+                finally:
+                    if com_initialized:
+                        pythoncom.CoUninitialize()
+        except Exception as exc:
+            print(f"TTS warning: {exc}")
 
-        engine = pyttsx3.init()
-        choose_french_voice(engine)
-        engine.setProperty("rate", 185)
-        engine.setProperty("volume", 1.0)
-        engine.say(text)
-        engine.runAndWait()
-        engine.stop()
-    except Exception as exc:
-        print(f"TTS warning: {exc}")
-    finally:
-        if com_initialized:
-            pythoncom.CoUninitialize()
+    threading.Thread(target=play, name="kage-web-kokoro", daemon=True).start()
 
 
-def process_audio(pcm: bytes) -> dict:
+def process_audio(pcm: bytes, speak_on_pc: bool | None = None) -> dict:
     request_id = uuid.uuid4().hex[:12]
     started = time.perf_counter()
     print(json.dumps({"event": "request_started", "request_id": request_id,
@@ -1096,8 +1154,8 @@ def process_audio(pcm: bytes) -> dict:
 
     # This is deliberately synchronous. The ESP32 waits for /audio to finish,
     # so it is not listening while the nearby M920q speaker speaks the reply.
-    if result.get("speak", True):
-        speak_reply(result["reply"])
+    if result.get("speak", True) and (speak_on_pc is None or speak_on_pc):
+        speak_reply(result["reply"], force=speak_on_pc is True)
     print(json.dumps({"event": "request_completed", "request_id": request_id,
                       "stt_ms": stt_ms, "route_ms": route_ms,
                       "total_ms": round((time.perf_counter() - started) * 1000, 1),
@@ -1113,6 +1171,115 @@ def control_page():
         CONTROL_PAGE_PATH.read_text(encoding="utf-8"),
         headers={"Cache-Control": "no-store, max-age=0"},
     )
+
+
+@app.get("/control/micro", response_class=HTMLResponse)
+def control_micro_page():
+    return HTMLResponse(
+        MICRO_PAGE_PATH.read_text(encoding="utf-8"),
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@app.get("/control/micro/voices")
+def control_micro_voices(request: Request):
+    require_kage_key(request)
+    return {
+        "current": selected_kokoro_voice(),
+        "voices": [{"id": voice, "label": label} for voice, label in KOKORO_VOICE_OPTIONS],
+    }
+
+
+@app.post("/control/micro/voice")
+def control_micro_voice(body: VoiceSettingsRequest, request: Request):
+    require_kage_key(request)
+    allowed = {voice for voice, _ in KOKORO_VOICE_OPTIONS}
+    if body.voice not in allowed:
+        raise HTTPException(status_code=400, detail="Voix Kokoro inconnue")
+    _save_settings(tts_voice=body.voice)
+    return {"ok": True, "voice": body.voice}
+
+
+@app.post("/control/micro/audio")
+async def control_micro_audio(request: Request, output: str = "phone"):
+    """Accept browser-recorded, 16 kHz signed PCM from Kage Control."""
+    require_kage_key(request)
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type != "application/octet-stream":
+        raise HTTPException(status_code=415, detail="Audio PCM attendu")
+    pcm = await request.body()
+    if not pcm or len(pcm) > MAX_AUDIO_BYTES or len(pcm) % AUDIO_SAMPLE_WIDTH:
+        raise HTTPException(status_code=400, detail="Enregistrement invalide ou trop long (12 s maximum)")
+    if output not in {"phone", "pc"}:
+        raise HTTPException(status_code=400, detail="Sortie audio invalide")
+    return await run_in_threadpool(process_audio, pcm, output == "pc")
+
+
+@app.post("/control/micro/transcribe")
+async def control_micro_transcribe(request: Request):
+    """Browser microphone entry point: same Whisper transcription as Kage Voice."""
+    require_kage_key(request)
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type != "application/octet-stream":
+        raise HTTPException(status_code=415, detail="Audio PCM attendu")
+    pcm = await request.body()
+    if not pcm or len(pcm) > MAX_AUDIO_BYTES or len(pcm) % AUDIO_SAMPLE_WIDTH:
+        raise HTTPException(status_code=400, detail="Enregistrement invalide ou trop long (12 s maximum)")
+    heard = await run_in_threadpool(transcribe_pcm, pcm)
+    if not heard:
+        raise HTTPException(status_code=422, detail="Je n'ai rien compris.")
+    return {"ok": True, "heard": heard}
+
+
+@app.post("/control/micro/submit")
+def control_micro_submit(body: AskRequest, request: Request):
+    """Inject remote text into the existing Kage Voice writing queue."""
+    require_kage_key(request)
+    text = body.message.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Message vide")
+    request_id = uuid.uuid4().hex
+    temporary = VOICE_WEB_INPUT_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"id": request_id, "text": text}, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(VOICE_WEB_INPUT_PATH)
+    return {"ok": True, "id": request_id}
+
+
+@app.get("/control/micro/events")
+def control_micro_events(request: Request, request_id: str, after: int = 0):
+    require_kage_key(request)
+    try:
+        records = [json.loads(line) for line in VOICE_WEB_EVENTS_PATH.read_text(encoding="utf-8").splitlines() if line]
+    except (FileNotFoundError, OSError, ValueError):
+        records = []
+    matching = [record for record in records if record.get("id") == request_id]
+    start = max(0, after)
+    return {"events": matching[start:], "next": len(matching)}
+
+
+@app.post("/control/micro/speech")
+async def control_micro_speech(body: AskRequest, request: Request):
+    """Return one Kokoro sentence using the voice selected in Kage settings."""
+    require_kage_key(request)
+    return await speech(SpeechRequest(text=body.message, voice=selected_kokoro_voice()), request)
+
+
+@app.post("/control/micro/pc-speech")
+def control_micro_pc_speech(body: AskRequest, request: Request):
+    require_kage_key(request)
+    speak_reply(body.message, force=True)
+    return {"ok": True}
+
+
+@app.post("/control/micro/text")
+def control_micro_text(body: AskRequest, request: Request, output: str = "phone"):
+    require_kage_key(request)
+    if output not in {"phone", "pc"}:
+        raise HTTPException(status_code=400, detail="Sortie audio invalide")
+    result = process_message(body.message)
+    if result.get("speak", True) and output == "pc":
+        speak_reply(result["reply"], force=True)
+    return result
 
 
 @app.get("/control/manifest.webmanifest")

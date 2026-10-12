@@ -179,11 +179,17 @@ class Studio:
     def run(self, name):
         with self.lock:
             profile = json.loads(json.dumps(self.motions[name]))
+            total_seconds = sum(s["duration_ms"] for s in profile["steps"]) / 1000 + 0.8
             self.run_id += 1
             run_id = self.run_id
             self.running = name
+            # The motion's selected face is shown only while this motion runs.
             self.active_face = profile["face"] if profile["face"] in self.faces else "idle"
-            self.manual_face = False
+            self.manual_face = True
+            # face_status() expires manual previews.  A motion must therefore
+            # reserve its whole running time, otherwise its face vanishes on
+            # the very next bridge poll.
+            self.preview_until = time.monotonic() + total_seconds + 3.5
             self.face_revision += 1
         encoded = bytearray()
         for step in profile["steps"] + [_step("servo", 800, pan=0, tilt=0)]:
@@ -196,7 +202,6 @@ class Studio:
             encoded.extend((left & 255, right & 255, pan & 255, tilt,
                             step["speed"], duration & 255, duration >> 8))
         command = "studioseq:" + encoded.hex()
-        total_seconds = sum(s["duration_ms"] for s in profile["steps"]) / 1000 + 0.8
         first_issued = threading.Event()
         def worker():
             try:
@@ -222,6 +227,7 @@ class Studio:
                         if self.current_state()["command"] == command:
                             self.set_command("motion_stop")
                         self.active_face = "idle"
+                        self.manual_face = False
                         self.face_revision += 1
                         self.running = ""
         threading.Thread(target=worker, name=f"kage-studio-{name}", daemon=True).start()
