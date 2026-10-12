@@ -21,6 +21,7 @@ from pocketsphinx import LiveSpeech
 from kage_sounds import play_sound, start_loop, stop_loop
 from stt_engine import KageSTT
 from command_intents import is_direct, session_intent
+from personality_mode import NORMAL, ROCKY, ROCKY_WAITING_FR, ROCKY_WAITING_EN
 
 # A detached PowerShell window can default to a legacy Windows code page.
 # Keep status messages from terminating the assistant when they contain accents
@@ -72,10 +73,12 @@ VOICE_WAKE_FLAG = r"C:\Kage\voice_wake.flag"
 VOICE_SLEEP_FLAG = r"C:\Kage\voice_sleep.flag"
 VOICE_HOLD_ACTIVE_FLAG = r"C:\Kage\voice_hold_active.flag"
 VOICE_TEXT_MODE_FLAG = r"C:\Kage\voice_text_mode.flag"
+VOICE_WEB_INPUT_PATH = r"C:\Kage\voice_web_input.json"
+VOICE_WEB_EVENTS_PATH = r"C:\Kage\voice_web_events.jsonl"
 
 # Détection de voix
 BLOCK_MS = 50
-SILENCE_AFTER_SPEECH = float(os.getenv("KAGE_SILENCE_AFTER_SPEECH", "2.0"))
+SILENCE_AFTER_SPEECH = float(os.getenv("KAGE_SILENCE_AFTER_SPEECH", "1.1"))
 MIN_AUDIO_DURATION_MS = float(os.getenv("KAGE_MIN_AUDIO_DURATION_MS", "1200"))
 MAX_RECORD_SECONDS = 12
 PRE_ROLL_SECONDS = 0.30
@@ -91,6 +94,38 @@ WAITING_REPLIES_ENABLED = os.getenv("KAGE_WAITING_REPLIES", "1").strip().lower()
 }
 TEXT_INPUT_QUEUE = queue.Queue()
 TEXT_WINDOW_STARTED = False
+
+
+def publish_web_event(request_id, event_type, **payload):
+    """Expose the existing Kage Voice transcript to the remote companion UI."""
+    if not request_id:
+        return
+    event = {"id": request_id, "type": event_type, **payload}
+    try:
+        with open(VOICE_WEB_EVENTS_PATH, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        print(json.dumps({"event": "web_text_event_error", "error": str(exc)}, ensure_ascii=False))
+
+
+def consume_web_input():
+    """Read one atomically-submitted remote text message, if present."""
+    try:
+        with open(VOICE_WEB_INPUT_PATH, "r", encoding="utf-8") as handle:
+            item = json.load(handle)
+        os.remove(VOICE_WEB_INPUT_PATH)
+        request_id = str(item.get("id", "")).strip()
+        text = str(item.get("text", "")).strip()
+        return (request_id, text) if request_id and text else None
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, TypeError) as exc:
+        print(json.dumps({"event": "web_text_input_error", "error": str(exc)}, ensure_ascii=False))
+        try:
+            os.remove(VOICE_WEB_INPUT_PATH)
+        except OSError:
+            pass
+        return None
 
 
 def _text_input_window():
@@ -145,7 +180,7 @@ print("Moteur STT prêt.")
 # ---------- VOIX DE KAGE ----------
 
 tts = pyttsx3.init()
-tts.setProperty("rate", 185)
+tts.setProperty("rate", 165)
 tts.setProperty("volume", 1.0)
 
 
@@ -176,9 +211,6 @@ request_executor = ThreadPoolExecutor(max_workers=1)
 state_executor = ThreadPoolExecutor(max_workers=1)
 assistant_state_lock = threading.Lock()
 last_assistant_state = None
-mouth_publish_lock = threading.Lock()
-mouth_request_lock = threading.Lock()
-last_mouth_publish_at = 0.0
 
 
 def publish_assistant_state(state):
@@ -206,96 +238,55 @@ def publish_assistant_state(state):
 
 
 def publish_mouth_level(level):
-    """Publish a low-rate audio envelope; stale levels expire on the backend."""
-    global last_mouth_publish_at
-    now = time.monotonic()
-    with mouth_publish_lock:
-        if level and now - last_mouth_publish_at < 0.10:
-            return
-        last_mouth_publish_at = now
-    if not mouth_request_lock.acquire(blocking=False):
-        return
+    """Send a bounded audio envelope without blocking the audio playback path."""
+    level = max(0.0, min(1.0, float(level)))
 
     def publish():
         try:
             request = urllib.request.Request(
-                f"http://127.0.0.1:8000/voice/mouth/{int(level)}",
-                headers={"X-Kage-Key": KAGE_API_KEY}, method="POST",
-            )
-            with urllib.request.urlopen(request, timeout=0.4):
-                pass
-        except Exception:
-            pass
-        finally:
-            mouth_request_lock.release()
-
-    state_executor.submit(publish)
-
-
-def play_audio_with_mouth(samples):
-    """Use the synthesized PCM itself for mouth motion, never a speaking timer."""
-    samples = np.asarray(samples, dtype=np.int16)
-    if samples.size == 0:
-        return
-    stop = threading.Event()
-
-    def meter():
-        started = time.perf_counter()
-        for offset in range(0, samples.size, 1600):  # 100 ms at 16 kHz
-            if stop.is_set():
-                break
-            chunk = samples[offset:offset + 1600].astype(np.float32) / 32768.0
-            rms = float(np.sqrt(np.mean(chunk * chunk))) if chunk.size else 0.0
-            level = int(max(0.0, min(1.0, (rms - 0.008) * 4.0)) * 1000)
-            publish_mouth_level(level)
-            deadline = started + (offset + chunk.size) / 16000.0
-            stop.wait(max(0.0, deadline - time.perf_counter()))
-
-    worker = threading.Thread(target=meter, name="kage-mouth-meter", daemon=True)
-    try:
-        sd.play(samples, samplerate=16000)
-        worker.start()
-        sd.wait()
-    finally:
-        stop.set()
-        worker.join(timeout=0.15)
-        publish_mouth_level(0)
-
-
-def classify_behavior_cue(text):
-    """Recognize only an unambiguous opening cue from the spoken answer."""
-    first = re.split(r"(?<=[.!?])\s+", text.strip(), maxsplit=1)[0].lower()
-    first = re.sub(r"^[^\wÀ-ÿ]+", "", first)
-    if re.match(r"^(yes|oui|absolutely|exactly|correct|bien sûr|tout à fait)\b", first):
-        return "affirm"
-    if re.match(r"^(no|non|not quite|pas du tout|ce n'est pas|ce n’est pas)\b", first):
-        return "deny"
-    if re.match(r"^(let me think|i'm thinking|laisse[- ]moi réfléchir|je réfléchis)\b", first):
-        return "thinking"
-    if re.match(r"^(interesting|c'est intéressant|c’est intéressant|curieux)\b", first):
-        return "curious"
-    if re.match(r"^(great|bravo|félicitations|congratulations)\b", first):
-        return "celebrate"
-    if re.match(r"^(attention|careful|warning|be careful)\b", first):
-        return "warning"
-    if re.match(r"^(haha|ha ha|c'est drôle|c’est drôle|that's funny|that is funny)\b", first):
-        return "amused"
-    return None
-
-
-def publish_behavior_cue(behavior):
-    if not behavior:
-        return
-    def publish():
-        try:
-            request = urllib.request.Request(
-                f"http://127.0.0.1:8000/behavior/{behavior}",
+                f"http://127.0.0.1:8000/voice/mouth/{level:.3f}",
                 headers={"X-Kage-Key": KAGE_API_KEY}, method="POST",
             )
             with urllib.request.urlopen(request, timeout=0.5):
                 pass
         except Exception:
             pass
+
+    state_executor.submit(publish)
+
+
+def classify_behavior_cue(text):
+    """Small local cue classifier: a closed allowlist, with no model call."""
+    normalized = clean_speech_text(text).lower()
+    rules = (
+        ("warning", ("warning", "be careful", "danger", "attention", "prudence", "danger")),
+        ("celebrate", ("done", "success", "congratulations", "bravo", "c'est fait", "terminé", "reussi")),
+        ("amused", ("haha", "that's funny", "c'est drôle", "amusant")),
+        ("affirm", ("exactly", "that's right", "oui,", "exactement", "tout à fait")),
+        ("deny", ("not quite", "that's incorrect", "non,", "pas exactement")),
+        ("confused", ("i'm not sure", "i am not sure", "je ne suis pas sûr", "je ne sais pas")),
+    )
+    for behavior, phrases in rules:
+        if any(phrase in normalized for phrase in phrases):
+            return behavior
+    return None
+
+
+def publish_behavior_cue(behavior):
+    if behavior not in {"affirm", "deny", "amused", "confused", "warning", "celebrate"}:
+        return
+
+    def publish():
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:8000/behavior/{behavior}?strength=35&duration_ms=900",
+                headers={"X-Kage-Key": KAGE_API_KEY}, method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=0.5):
+                pass
+        except Exception:
+            pass
+
     state_executor.submit(publish)
 
 
@@ -375,12 +366,19 @@ WAITING_REPLIES = (
     "Une seconde...",
 )
 WAITING_REPLIES_EN = (
-    "Let me check...",
+    "Let me see...",
     "Give me a moment...",
-    "One moment...",
-    "I'm checking...",
-    "Let me think...",
+    "Hold on a second...",
+    "Let me check...",
+    "Let me think about that...",
+    "I am looking into that right now...",
+    "Let me check that for you...",
+    "Let me process that...",
+    "Sure thing.",
+    "One second...",
 )
+
+WAITING_REPLY_DELAY_SECONDS = float(os.getenv("KAGE_WAITING_REPLY_DELAY", "2.8"))
 
 _waiting_audio = {}
 
@@ -401,21 +399,37 @@ def current_response_language():
     return current_voice_settings()[0]
 
 
+def current_personality_mode():
+    try:
+        with open(SETTINGS_PATH, "r", encoding="utf-8") as settings_file:
+            saved = json.load(settings_file)
+    except (OSError, json.JSONDecodeError):
+        return NORMAL
+    return ROCKY if saved.get("personality_mode") == ROCKY else NORMAL
+
+
 def listening_announcement():
     return "Kagé is listening." if current_response_language() == "en" else "Kagé t'écoute."
 
 def load_waiting_audio():
     _waiting_audio.clear()
-    for phrase in WAITING_REPLIES:
-        path = os.path.join(WAITING_AUDIO_DIR, f"{hashlib.sha1(phrase.encode()).hexdigest()}.wav")
-        try:
-            with wave.open(path, "rb") as wav:
-                if wav.getnchannels() == 1 and wav.getsampwidth() == 2 and wav.getframerate() == 16000:
-                    _waiting_audio[clean_speech_text(phrase)] = np.frombuffer(
-                        wav.readframes(wav.getnframes()), dtype=np.int16
-                    ).copy()
-        except (OSError, EOFError):
-            continue
+    counts = {"fr": 0, "en": 0, "fr_rocky": 0, "en_rocky": 0}
+    for language, phrases in (
+        ("fr", WAITING_REPLIES), ("en", WAITING_REPLIES_EN),
+        ("fr_rocky", ROCKY_WAITING_FR), ("en_rocky", ROCKY_WAITING_EN),
+    ):
+        for phrase in phrases:
+            path = os.path.join(WAITING_AUDIO_DIR, f"{hashlib.sha1(phrase.encode()).hexdigest()}.wav")
+            try:
+                with wave.open(path, "rb") as wav:
+                    if wav.getnchannels() == 1 and wav.getsampwidth() == 2 and wav.getframerate() == 16000:
+                        _waiting_audio[clean_speech_text(phrase)] = np.frombuffer(
+                            wav.readframes(wav.getnframes()), dtype=np.int16
+                        ).copy()
+                        counts[language] += 1
+            except (OSError, EOFError):
+                continue
+    return counts
 SESSION_END_REPLIES = (
     "D'accord, je reste disponible.",
     "Je suis là si tu as besoin de moi.",
@@ -436,9 +450,10 @@ def choose_waiting_reply(text):
     """Choose an opening only if the conversational reply takes at least 3 s."""
     if not WAITING_REPLIES_ENABLED:
         return None
-    return random.choice(
-        WAITING_REPLIES_EN if current_response_language() == "en" else WAITING_REPLIES
-    )
+    language = current_response_language()
+    if current_personality_mode() == ROCKY:
+        return random.choice(ROCKY_WAITING_EN if language == "en" else ROCKY_WAITING_FR)
+    return random.choice(WAITING_REPLIES_EN if language == "en" else WAITING_REPLIES)
 
 
 def wait_for_wake_word(stop_event=None, announce=True, keyphrase=None):
@@ -457,6 +472,9 @@ def wait_for_wake_word(stop_event=None, announce=True, keyphrase=None):
         listener.ad.start()
         while stop_event is None or not stop_event.is_set():
             _start_text_window_if_requested()
+            web_input = consume_web_input()
+            if web_input:
+                return ("web_input", web_input)
             if msvcrt.kbhit():
                 key = msvcrt.getwch().lower()
                 if key == TEXT_MODE_HOTKEY:
@@ -531,10 +549,16 @@ def wait_for_wake_word(stop_event=None, announce=True, keyphrase=None):
 def clean_speech_text(text):
     if not text:
         return ""
-    # Keep Markdown and citation syntax out of spoken audio. The full answer
-    # remains visible in the console, but the voice should read natural prose.
-    text = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", text)
+    # Citations and links are for the written answer only; never read them aloud.
+    # Remove source/reference sections and linked citation labels entirely.
+    text = re.sub(
+        r"(?ims)^\s*(?:#{1,6}\s*)?(?:sources?|references?|citations?|références?|sources et références)\s*:?\s*$.*\Z",
+        "",
+        text,
+    )
+    text = re.sub(r"\[([^\]]+)\]\([^\)]+\)", "", text)
     text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"\[\s*\d+\s*\]", "", text)
     text = re.sub(r"[*_`#]", "", text)
     text = text.replace("«", "").replace("»", "")
     text = text.replace("\u201c", "").replace("\u201d", "")
@@ -600,6 +624,57 @@ def clean_speech_text(text):
         text,
         flags=re.IGNORECASE,
     )
+
+    # Expand common written units so Kokoro pronounces them naturally in both
+    # languages. Do not touch the visible transcript, only the TTS copy.
+    language = current_response_language()
+
+    def unit_words(match):
+        amount = normalize_euro_number(match.group("amount"))
+        value = float(amount)
+        singular = value == 1
+        unit = match.group("unit").lower().replace(".", "")
+        per_second = unit.endswith("/s")
+        unit = unit.removesuffix("/s")
+        data_words = {
+            "kb": ("kilooctet", "kilobyte"), "ko": ("kilooctet", "kilobyte"),
+            "kib": ("kibioctet", "kibibyte"),
+            "mb": ("mégaoctet", "megabyte"), "mo": ("mégaoctet", "megabyte"),
+            "mib": ("mébioctet", "mebibyte"),
+            "gb": ("gigaoctet", "gigabyte"), "go": ("gigaoctet", "gigabyte"),
+            "gib": ("gibioctet", "gibibyte"),
+            "tb": ("téraoctet", "terabyte"), "to": ("téraoctet", "terabyte"),
+            "tib": ("tébioctet", "tebibyte"),
+        }
+        if unit in data_words:
+            word = data_words[unit][0 if language == "fr" else 1]
+            phrase = word if singular else word + "s"
+            rate = " par seconde" if language == "fr" else " per second"
+            return f"{amount} {phrase}{rate if per_second else ''}"
+        if unit in {"kg", "g", "km", "cm", "mm"}:
+            words = {
+                "kg": ("kilogramme", "kilogram"), "g": ("gramme", "gram"),
+                "km": ("kilomètre", "kilometer"), "cm": ("centimètre", "centimeter"),
+                "mm": ("millimètre", "millimeter"),
+            }
+            word = words[unit][0 if language == "fr" else 1]
+            return f"{amount} {word if singular else word + 's'}"
+        if unit in {"°c", "°f"}:
+            scale = "Celsius" if unit == "°c" else "Fahrenheit"
+            word = "degré" if language == "fr" else "degree"
+            return f"{amount} {word if singular else word + 's'} {scale}"
+        if unit in {"lb", "lbs", "pound", "pounds"}:
+            if language == "fr":
+                return f"{amount} {'livre' if singular else 'livres'}"
+            return f"{amount} {'pound' if singular else 'pounds'}"
+        return match.group(0)
+
+    text = re.sub(
+        rf"(?P<amount>{number})\s*(?P<unit>KiB/s|MiB/s|GiB/s|TiB/s|KB/s|Ko/s|MB/s|Mo/s|GB/s|Go/s|TB/s|To/s|KiB|MiB|GiB|TiB|KB|Ko|MB|Mo|GB|Go|TB|To|lbs?\b|pounds?\b|kg\b|g\b|km\b|cm\b|mm\b|°[CF])",
+        unit_words,
+        text,
+        flags=re.IGNORECASE,
+    )
     # A web answer may already say "around" before the currency range. Avoid
     # producing "around around ..." after the speech normalization.
     text = re.sub(r"\baround\s+around\b", "around", text, flags=re.IGNORECASE)
@@ -641,8 +716,7 @@ def speak(text):
     if not text:
         return
     if samples is not None:
-        publish_assistant_state("speaking")
-        play_audio_with_mouth(samples)
+        sd.play(samples, samplerate=16000, blocking=True)
         play_sound("speech_finished")
         return
     if WINDOWS_FRENCH_VOICE_AVAILABLE:
@@ -690,19 +764,19 @@ class SentencePlayback:
     def __init__(self):
         self._lock = threading.Lock()
         self._generation = 0
-        self._behavior_cue_sent = False
         self._sentences = queue.Queue()
         self._audio = queue.Queue()
         self._release_useful = threading.Event()
         self._play_thread = None
         self.active = threading.Event()
+        self._metrics = {}
+        self._behavior_cue_sent = False
 
     def start(self, started_at=None, waiting_reply=None, thinking_cue=False):
         self.stop()
         with self._lock:
             self._generation += 1
             generation = self._generation
-            self._behavior_cue_sent = False
             self._sentences = queue.Queue()
             self._audio = queue.Queue()
             self._release_useful = threading.Event()
@@ -711,6 +785,12 @@ class SentencePlayback:
             release_useful = self._release_useful
             stream_started_at = started_at
             self.active.set()
+            self._metrics = {
+                "queued": [], "played": [], "synthesized_segments": 0,
+                "skipped_segments": 0, "outcome": "running",
+            }
+            self._behavior_cue_sent = False
+            metrics = self._metrics
         first_useful_audio_logged = False
 
         def synthesize_sentences():
@@ -723,13 +803,19 @@ class SentencePlayback:
                 with self._lock:
                     if generation != self._generation:
                         return
-                samples, clean_text = synthesize_speech(sentence)
+                try:
+                    samples, clean_text = synthesize_speech(sentence)
+                except Exception as exc:
+                    print(json.dumps({"event": "tts_segment_error", "error": str(exc)}, ensure_ascii=False))
+                    samples, clean_text = None, sentence
                 with self._lock:
                     if generation != self._generation:
                         return
+                    if useful and samples is not None:
+                        metrics["synthesized_segments"] += 1
                 # The playback worker can now read this audio while this
                 # worker immediately prepares the following sentence.
-                audio.put((samples, clean_text, useful))
+                audio.put((samples, clean_text, useful, sentence))
 
         def play_prepared_audio():
             nonlocal first_useful_audio_logged
@@ -746,9 +832,7 @@ class SentencePlayback:
                     if generation != self._generation:
                         return
                 if samples is not None:
-                    publish_assistant_state("speaking")
-                    play_audio_with_mouth(samples)
-                    publish_assistant_state("thinking")
+                    sd.play(samples, samplerate=16000, blocking=True)
                     waiting_used = True
                 elif clean_text and WINDOWS_FRENCH_VOICE_AVAILABLE:
                     tts.say(clean_text)
@@ -768,13 +852,17 @@ class SentencePlayback:
                     play_thinking_cue()
                 if thinking_cue or waiting_reply:
                     recording_loop = start_loop("recording_loop")
-                play_waiting_reply()
+                # A fast answer should start directly. Only fill a genuinely
+                # long model wait, and use the pre-generated language/voice
+                # clip so the filler does not compete with useful TTS.
+                if waiting_reply and not release_useful.wait(timeout=WAITING_REPLY_DELAY_SECONDS):
+                    play_waiting_reply()
                 while True:
                     prepared = audio.get()
                     if prepared is None:
                         normal_completion = True
                         return
-                    samples, clean_text, useful = prepared
+                    samples, clean_text, useful, original_text = prepared
                     with self._lock:
                         if generation != self._generation:
                             return
@@ -791,13 +879,43 @@ class SentencePlayback:
                         first_useful_audio_logged = True
                         publish_assistant_state("speaking")
                     if samples is not None:
-                        play_audio_with_mouth(samples)
+                        samples_array = np.asarray(samples).reshape(-1)
+                        chunk_size = 1280  # 80 ms at 16 kHz
+                        sample_dtype = "int16" if samples_array.dtype == np.int16 else "float32"
+                        with sd.OutputStream(samplerate=16000, channels=1,
+                                             dtype=sample_dtype) as stream:
+                            for offset in range(0, len(samples_array), chunk_size):
+                                chunk = samples_array[offset:offset + chunk_size]
+                                if samples_array.dtype == np.int16:
+                                    rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2))) / 32768.0
+                                else:
+                                    rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
+                                publish_mouth_level(min(1.0, rms * 5.0))
+                                stream.write(chunk.astype(sample_dtype).reshape(-1, 1))
+                        publish_mouth_level(0.0)
+                        if useful:
+                            with self._lock:
+                                metrics["played"].append(original_text)
                     elif clean_text and WINDOWS_FRENCH_VOICE_AVAILABLE:
+                        publish_mouth_level(0.10)
                         tts.say(clean_text)
                         tts.runAndWait()
+                        publish_mouth_level(0.0)
+                        if useful:
+                            with self._lock:
+                                metrics["played"].append(original_text)
                     elif clean_text:
+                        if useful:
+                            with self._lock:
+                                metrics["skipped_segments"] += 1
                         print(json.dumps({"event": "tts_skipped", "reason": "no_french_voice"}, ensure_ascii=False))
+            except Exception as exc:
+                with self._lock:
+                    if generation == self._generation:
+                        metrics["outcome"] = "playback_error"
+                print(json.dumps({"event": "playback_error", "error": str(exc)}, ensure_ascii=False))
             finally:
+                publish_mouth_level(0.0)
                 stop_loop(recording_loop)
                 if normal_completion:
                     play_sound("speech_finished")
@@ -805,6 +923,8 @@ class SentencePlayback:
                     print(json.dumps({"event": "waiting_reply", "used": waiting_used}, ensure_ascii=False))
                 with self._lock:
                     if generation == self._generation:
+                        if normal_completion and metrics["outcome"] == "running":
+                            metrics["outcome"] = "complete"
                         self.active.clear()
 
         playback_thread = threading.Thread(
@@ -817,10 +937,32 @@ class SentencePlayback:
 
     def enqueue(self, text, useful=False):
         if text and text.strip():
-            if useful and not self._behavior_cue_sent:
-                self._behavior_cue_sent = True
-                publish_behavior_cue(classify_behavior_cue(text))
+            if useful:
+                with self._lock:
+                    self._metrics["queued"].append(text.strip())
+                    if not self._behavior_cue_sent:
+                        self._behavior_cue_sent = True
+                        cue = classify_behavior_cue(text)
+                    else:
+                        cue = None
+                if cue:
+                    publish_behavior_cue(cue)
             self._sentences.put((text.strip(), useful))
+
+    def summary(self):
+        with self._lock:
+            queued = list(self._metrics.get("queued", []))
+            played = list(self._metrics.get("played", []))
+            return {
+                "outcome": self._metrics.get("outcome", "unknown"),
+                "queued_segments": len(queued),
+                "played_segments": len(played),
+                "synthesized_segments": self._metrics.get("synthesized_segments", 0),
+                "skipped_segments": self._metrics.get("skipped_segments", 0),
+                "queued_chars": sum(map(len, queued)),
+                "played_chars": sum(map(len, played)),
+                "all_queued_played": queued == played,
+            }
 
     def finish(self):
         self._sentences.put(None)
@@ -828,8 +970,10 @@ class SentencePlayback:
     def release_useful(self):
         self._release_useful.set()
 
-    def stop(self):
+    def stop(self, reason="interrupted"):
         with self._lock:
+            if self._metrics.get("outcome") == "running":
+                self._metrics["outcome"] = reason
             self._generation += 1
             self.active.clear()
             sentences = self._sentences
@@ -851,7 +995,6 @@ class SentencePlayback:
                 print(json.dumps({"event": "playback_worker_still_active_after_stop"}))
 
 
-MAX_SPOKEN_SENTENCES = 3
 FIRST_SPOKEN_MIN_WORDS = 5
 FIRST_SPOKEN_MAX_WORDS = 8
 
@@ -921,7 +1064,7 @@ def stream_to_kage(text, events):
 
 
 def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_ms=None,
-                                       thinking_cue=True):
+                                       thinking_cue=True, web_request_id=None):
     """Speak sentence chunks while Codex is still generating the remaining reply."""
     stream_started_at = time.perf_counter()
     events = queue.Queue()
@@ -938,6 +1081,7 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
     complete_sentence_count = 0
     streamed_text_received = False
     streamed_audio_queued = False
+    streamed_chars = 0
     stream_started = False
     first_delta_ms = None
     first_sentence_ms = None
@@ -947,6 +1091,7 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
     while not completed:
         if consume_interrupt_request():
             playback.stop()
+            print(json.dumps({"event": "playback_summary", **playback.summary()}, ensure_ascii=False))
             return None, True
         try:
             event = events.get(timeout=0.05)
@@ -956,7 +1101,9 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
         if event_type == "delta":
             delta = event.get("text", "")
             if delta:
+                publish_web_event(web_request_id, "delta", text=delta)
                 streamed_text_received = True
+                streamed_chars += len(delta)
                 if first_delta_ms is None:
                     first_delta_ms = round((time.perf_counter() - stream_started_at) * 1000, 1)
             pending += delta
@@ -965,8 +1112,6 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
                 max_words=FIRST_SPOKEN_MAX_WORDS if complete_sentence_count == 0 else None,
             )
             for sentence in sentences:
-                if complete_sentence_count >= MAX_SPOKEN_SENTENCES:
-                    continue
                 playback.enqueue(sentence, useful=True)
                 streamed_audio_queued = True
                 complete_sentence_count += 1
@@ -979,7 +1124,7 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
         elif event_type == "done":
             completed_ms = round((time.perf_counter() - stream_started_at) * 1000, 1)
             result = event.get("result", {})
-            if pending.strip() and complete_sentence_count < MAX_SPOKEN_SENTENCES:
+            if pending.strip():
                 playback.enqueue(pending, useful=True)
                 streamed_audio_queued = True
                 complete_sentence_count += 1
@@ -994,14 +1139,18 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
                 playback.enqueue(result["reply"], useful=True)
                 playback.release_useful()
             playback.finish()
+            publish_web_event(web_request_id, "done", result=result)
             completed = True
         elif event_type == "error":
-            playback.stop()
+            playback.stop("stream_error")
+            publish_web_event(web_request_id, "error", detail=event.get("detail", "unknown error"))
+            print(json.dumps({"event": "playback_summary", **playback.summary()}, ensure_ascii=False))
             raise RuntimeError(f"Streaming response failed: {event.get('detail', 'unknown error')}")
 
     while playback.active.is_set():
         if consume_interrupt_request():
             playback.stop()
+            print(json.dumps({"event": "playback_summary", **playback.summary()}, ensure_ascii=False))
             return None, True
         time.sleep(0.03)
 
@@ -1012,6 +1161,12 @@ def speak_streaming_reply_with_barge_in(text, waiting_reply=None, transcription_
         "first_sentence_ms": first_sentence_ms,
         "generation_complete_ms": completed_ms,
         "total_until_playback_done_ms": round((time.perf_counter() - stream_started_at) * 1000, 1),
+    }, ensure_ascii=False))
+    print(json.dumps({
+        "event": "playback_summary",
+        "streamed_chars": streamed_chars,
+        "reply_chars": len((result or {}).get("reply", "")),
+        **playback.summary(),
     }, ensure_ascii=False))
     return result or {}, False
 
@@ -1201,7 +1356,7 @@ def send_to_kage(text):
 
 # ---------- BOUCLE ----------
 
-def handle_utterance(wait_for_speech_seconds, simulated_text=None):
+def handle_utterance(wait_for_speech_seconds, simulated_text=None, web_request_id=None):
     try:
         publish_assistant_state("listening")
         recorded = True if simulated_text is not None else record_until_silence(wait_for_speech_seconds)
@@ -1255,6 +1410,7 @@ def handle_utterance(wait_for_speech_seconds, simulated_text=None):
             return True
 
         print(f"📝 Entendu : {text}")
+        publish_web_event(web_request_id, "accepted", text=text)
         if simulated_text is not None:
             print(json.dumps({
                 "event": "stt_result",
@@ -1304,6 +1460,7 @@ def handle_utterance(wait_for_speech_seconds, simulated_text=None):
             # The cue was already played immediately after capture. This call
             # is responsible only for the cached opening and streamed answer.
             thinking_cue=False,
+            web_request_id=web_request_id,
         )
         if was_interrupted:
             # Do not reopen the microphone after stopping speech: otherwise
@@ -1326,8 +1483,12 @@ def handle_utterance(wait_for_speech_seconds, simulated_text=None):
 
 def main():
     """Run one interactive voice loop in the primary Python process only."""
-    load_waiting_audio()
-    print(json.dumps({"event": "waiting_audio", "loaded": len(_waiting_audio)}, ensure_ascii=False))
+    waiting_counts = load_waiting_audio()
+    print(json.dumps({
+        "event": "waiting_audio",
+        "loaded": len(_waiting_audio),
+        "by_language": waiting_counts,
+    }, ensure_ascii=False))
     warm_up_tts()
     publish_voice_session(True)
     start_voice_session_heartbeat()
@@ -1372,8 +1533,22 @@ def main():
                 wake_source = wait_for_wake_word()
             except KeyboardInterrupt:
                 break
+            if wake_source is False:
+                # PortAudio can briefly keep the microphone after a touch or
+                # playback transition. Retry wake-word mode instead of opening
+                # an unintended follow-up listening window.
+                time.sleep(0.35)
+                continue
             if isinstance(wake_source, tuple) and wake_source[0] == "text_input":
                 outcome = handle_utterance(MAX_RECORD_SECONDS, simulated_text=wake_source[1])
+                if outcome == "shutdown":
+                    break
+                continue
+            if isinstance(wake_source, tuple) and wake_source[0] == "web_input":
+                request_id, remote_text = wake_source[1]
+                outcome = handle_utterance(
+                    MAX_RECORD_SECONDS, simulated_text=remote_text, web_request_id=request_id
+                )
                 if outcome == "shutdown":
                     break
                 continue
