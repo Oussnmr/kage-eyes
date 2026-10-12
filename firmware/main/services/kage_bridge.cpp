@@ -26,8 +26,9 @@ constexpr const char *LOCAL_WAKE_URL = "http://192.168.129.157:8000/voice/wake";
 constexpr const char *LOCAL_SLEEP_URL = "http://192.168.129.157:8000/voice/sleep";
 constexpr const char *LOCAL_HOLD_START_URL = "http://192.168.129.157:8000/voice/hold/start";
 constexpr const char *LOCAL_HOLD_STOP_URL = "http://192.168.129.157:8000/voice/hold/stop";
-constexpr TickType_t LOCAL_POLL_DELAY = pdMS_TO_TICKS(100);
+constexpr TickType_t LOCAL_POLL_DELAY = pdMS_TO_TICKS(200);
 constexpr TickType_t REMOTE_POLL_DELAY = pdMS_TO_TICKS(2500);
+constexpr unsigned LOCAL_FAILURE_LIMIT = 4;
 
 static KageBridgeInfo s_info = {};
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -99,28 +100,30 @@ static esp_err_t http_event(esp_http_client_event_t *event) {
     return ESP_OK;
 }
 
-static bool request_latest(const char *url, bool remote, HttpResponse *response,
+static bool request_latest(esp_http_client_handle_t *persistent_client,
+                           const char *url, bool remote, HttpResponse *response,
                            int *status, const char **error) {
-    if (!url || !response || !status || !error) return false;
+    if (!persistent_client || !url || !response || !status || !error) return false;
 
     *response = {};
     *status = 0;
     *error = "";
 
-    esp_http_client_config_t config = {};
-    config.url = url;
-    config.timeout_ms = remote ? 6000 : 1800;
-    config.event_handler = http_event;
-    config.user_data = response;
-    if (remote) {
-        config.crt_bundle_attach = esp_crt_bundle_attach;
+    if (!*persistent_client) {
+        esp_http_client_config_t config = {};
+        config.url = url;
+        config.timeout_ms = remote ? 6000 : 1800;
+        config.event_handler = http_event;
+        config.user_data = response;
+        config.keep_alive_enable = true;
+        if (remote) config.crt_bundle_attach = esp_crt_bundle_attach;
+        *persistent_client = esp_http_client_init(&config);
+        if (!*persistent_client) {
+            *error = "HTTP init failed";
+            return false;
+        }
     }
-
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) {
-        *error = "HTTP init failed";
-        return false;
-    }
+    esp_http_client_handle_t client = *persistent_client;
 
     const char *api_key = wifi_service_api_key();
     if (api_key && api_key[0]) {
@@ -135,8 +138,12 @@ static bool request_latest(const char *url, bool remote, HttpResponse *response,
         *error = "HTTP status error";
     }
 
-    esp_http_client_cleanup(client);
-    return result == ESP_OK && *status == 200;
+    const bool ok = result == ESP_OK && *status == 200;
+    if (!ok) {
+        esp_http_client_cleanup(client);
+        *persistent_client = nullptr;
+    }
+    return ok;
 }
 
 static void update_info(bool reachable, int status, uint32_t sequence,
@@ -514,13 +521,22 @@ void apply_command_impl(const char *command, uint32_t sequence) {
 
 static void bridge_task(void *) {
     bool was_reachable = false;
-    bool remote_route_active = false;
     unsigned failed_polls = 0;
+    HttpResponse response = {};
+    esp_http_client_handle_t local_client = nullptr;
+    esp_http_client_handle_t remote_client = nullptr;
 
     for (;;) {
         if (!wifi_service_connected()) {
-            remote_route_active = false;
             failed_polls = 0;
+            if (local_client) {
+                esp_http_client_cleanup(local_client);
+                local_client = nullptr;
+            }
+            if (remote_client) {
+                esp_http_client_cleanup(remote_client);
+                remote_client = nullptr;
+            }
             if (was_reachable) {
                 event_log_add("Backend offline: Wi-Fi lost");
                 robot_motion_stop();
@@ -533,7 +549,6 @@ static void bridge_task(void *) {
             continue;
         }
 
-        HttpResponse response = {};
         int status = 0;
         const char *request_error = "";
         const bool on_primary_network = wifi_service_active_profile_index() == 0;
@@ -561,41 +576,32 @@ static void bridge_task(void *) {
         bool request_ok = false;
         if (on_primary_network) {
             request_ok = request_latest(
-                LOCAL_BACKEND_URL, false, &response, &status, &request_error);
-            if (request_ok) remote_route_active = false;
+                &local_client, LOCAL_BACKEND_URL, false, &response, &status, &request_error);
             if (!request_ok) {
-                // Retry a missed LAN response before opening a slow DNS/TLS
-                // connection. A single timeout must not cancel motion.
-                if (failed_polls < 2) ++failed_polls;
+                if (failed_polls < LOCAL_FAILURE_LIMIT) ++failed_polls;
                 if (failed_polls == 1 || !was_reachable) {
                     ESP_LOGW("kage-bridge", "Local backend poll failed (%u): HTTP %d %s",
                              failed_polls, status, request_error);
                 }
             }
-            if (!request_ok && (!was_reachable || remote_route_active) &&
-                wifi_service_has_api_key()) {
-                request_ok = request_latest(
-                    REMOTE_BACKEND_URL, true, &response, &status, &request_error);
-                if (request_ok) remote_route_active = true;
-            }
         } else if (wifi_service_has_api_key()) {
             request_ok = request_latest(
-                REMOTE_BACKEND_URL, true, &response, &status, &request_error);
+                &remote_client, REMOTE_BACKEND_URL, true, &response, &status, &request_error);
             if (!request_ok) {
-                if (failed_polls < 2) ++failed_polls;
+                if (failed_polls < LOCAL_FAILURE_LIMIT) ++failed_polls;
                 if (failed_polls == 1) {
                     ESP_LOGW("kage-bridge", "Remote backend poll failed: %s", request_error);
                 }
             }
         } else {
             request_error = "Remote key missing";
-            failed_polls = 2;
+            failed_polls = LOCAL_FAILURE_LIMIT;
         }
 
         xSemaphoreGive(mutex);
 
         if (!request_ok) {
-            if (was_reachable && failed_polls < 2) {
+            if (was_reachable && failed_polls < LOCAL_FAILURE_LIMIT) {
                 vTaskDelay(current_poll_delay());
                 continue;
             }
@@ -622,6 +628,7 @@ static void bridge_task(void *) {
         cJSON *voice_active_item = root ? cJSON_GetObjectItem(root, "voice_active") : nullptr;
         cJSON *mouth_level_item = root ? cJSON_GetObjectItem(root, "mouth_level") : nullptr;
         cJSON *face_revision_item = root ? cJSON_GetObjectItem(root, "face_rev") : nullptr;
+        cJSON *face_active_item = root ? cJSON_GetObjectItem(root, "face_active") : nullptr;
         cJSON *face_item = root ? cJSON_GetObjectItem(root, "face") : nullptr;
         if (!root || !cJSON_IsString(command_item) || !cJSON_IsNumber(sequence_item)) {
             if (root) cJSON_Delete(root);
@@ -644,21 +651,23 @@ static void bridge_task(void *) {
         update_info(true, status, sequence, command, "");
 
         apply_command_impl(command, sequence);
-        if (cJSON_IsNumber(face_revision_item) && cJSON_IsArray(face_item) &&
-            cJSON_GetArraySize(face_item) == 16) {
+        if (cJSON_IsNumber(face_revision_item)) {
             const uint32_t face_revision = static_cast<uint32_t>(face_revision_item->valuedouble);
             if (face_revision != s_last_face_revision) {
-                int values[16] = {};
-                bool valid = true;
-                for (int i = 0; i < 16; ++i) {
-                    cJSON *item = cJSON_GetArrayItem(face_item, i);
-                    if (!cJSON_IsNumber(item)) { valid = false; break; }
-                    values[i] = item->valueint;
+                const bool active = cJSON_IsTrue(face_active_item);
+                if (active && cJSON_IsArray(face_item) && cJSON_GetArraySize(face_item) == 16) {
+                    int values[16] = {};
+                    bool valid = true;
+                    for (int i = 0; i < 16; ++i) {
+                        cJSON *item = cJSON_GetArrayItem(face_item, i);
+                        if (!cJSON_IsNumber(item)) { valid = false; break; }
+                        values[i] = item->valueint;
+                    }
+                    if (valid) robot_eyes_set_custom_face(values, 16, true);
+                } else {
+                    robot_eyes_set_custom_face(nullptr, 0, false);
                 }
-                if (valid) {
-                    robot_eyes_set_custom_face(values, 16, face_revision != 0);
-                    s_last_face_revision = face_revision;
-                }
+                s_last_face_revision = face_revision;
             }
         }
         if (cJSON_IsString(assistant_state_item) && cJSON_IsNumber(assistant_sequence_item)) {

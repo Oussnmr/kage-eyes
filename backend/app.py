@@ -194,6 +194,7 @@ VOICE_SLEEP_FLAG = Path(r"C:\Kage\voice_sleep.flag")
 VOICE_HOLD_ACTIVE_FLAG = Path(r"C:\Kage\voice_hold_active.flag")
 VOICE_TEXT_MODE_FLAG = Path(r"C:\Kage\voice_text_mode.flag")
 voice_control_lock = threading.Lock()
+voice_action_queue = queue.Queue(maxsize=2)
 research_memory_lock = threading.Lock()
 research_memory = {
     "generation": 0,
@@ -204,6 +205,32 @@ research_memory = {
     "ready": None,
     "continuations": 0,
 }
+
+
+def _voice_action_worker() -> None:
+    """Serialize slow Windows process operations away from HTTP responses."""
+    while True:
+        label, action = voice_action_queue.get()
+        try:
+            action()
+        except Exception as exc:
+            print(json.dumps({"event": "voice_action_failed", "action": label,
+                              "error": type(exc).__name__}, ensure_ascii=False))
+        finally:
+            voice_action_queue.task_done()
+
+
+threading.Thread(target=_voice_action_worker, name="kage-voice-control",
+                 daemon=True).start()
+
+
+def queue_voice_action(label: str, action) -> bool:
+    """Queue one bounded voice action; never block a request from Kage."""
+    try:
+        voice_action_queue.put_nowait((label, action))
+        return True
+    except queue.Full:
+        return False
 
 
 def start_background_research(message: str) -> None:
@@ -1347,18 +1374,22 @@ def update_voice_mouth(level: float, request: Request):
 def toggle_voice_from_waveshare(request: Request):
     """Three taps on Kage's face start direct listening, or stop Voice."""
     require_kage_key(request)
-    if _voice_process_count() or current_state()["voice_active"]:
-        closed = _close_voice_processes()
-        play_sound("triple_close")
-        action = "stopped"
-    else:
-        _launch_voice_direct()
-        play_sound("triple_open")
-        action = "started"
-    sequence = set_assistant_state("idle")
-    print(json.dumps({"event": "voice_toggle", "action": action,
-                      "assistant_sequence": sequence}, ensure_ascii=False))
-    return {"ok": True, "action": action, "assistant_sequence": sequence}
+    def apply_toggle():
+        if _voice_process_count() or current_state()["voice_active"]:
+            _close_voice_processes()
+            play_sound("triple_close")
+            action = "stopped"
+        else:
+            _launch_voice_direct()
+            play_sound("triple_open")
+            action = "started"
+        sequence = set_assistant_state("idle")
+        print(json.dumps({"event": "voice_toggle", "action": action,
+                          "assistant_sequence": sequence}, ensure_ascii=False))
+
+    queued = queue_voice_action("toggle", apply_toggle)
+    return {"ok": queued, "action": "queued" if queued else "busy",
+            "assistant_sequence": current_state()["assistant_sequence"]}
 
 
 def _launch_voice_direct() -> bool:
@@ -1422,10 +1453,11 @@ def start_voice_direct(request: Request):
     require_kage_key(request)
     current = current_state()
     if not current["voice_active"]:
-        started = _launch_voice_direct()
-        if started:
-            play_sound("triple_open")
-        return {"ok": True, "action": "started" if started else "starting"}
+        def launch_direct():
+            if _launch_voice_direct():
+                play_sound("triple_open")
+        queued = queue_voice_action("start-direct", launch_direct)
+        return {"ok": queued, "action": "queued" if queued else "busy"}
     if current["assistant_state"] == "idle":
         wake_voice_from_waveshare(request)
         action = "wake"
@@ -1444,9 +1476,10 @@ def start_voice_hold(request: Request):
     VOICE_HOLD_ACTIVE_FLAG.write_text(str(time.time()), encoding="ascii")
     current = current_state()
     if not current["voice_active"]:
-        started = _launch_voice_direct()
-        if started:
-            play_sound("triple_open")
+        def launch_hold():
+            if _launch_voice_direct():
+                play_sound("triple_open")
+        started = queue_voice_action("hold-start", launch_hold)
     elif current["assistant_state"] == "idle":
         play_sound("wake_listening")
         started = False
@@ -1543,7 +1576,16 @@ def update_voice_session(active: bool, request: Request):
 @app.get("/command/latest")
 def latest_command(request: Request):
     require_kage_key(request)
-    return {**current_state(), **studio.face_status()}
+    current = current_state()
+    return {
+        "command": current["command"],
+        "sequence": current["sequence"],
+        "assistant_state": current["assistant_state"],
+        "assistant_sequence": current["assistant_sequence"],
+        "voice_active": current["voice_active"],
+        "mouth_level": current["mouth_level"],
+        **studio.face_status(),
+    }
 
 
 @app.post("/ask")

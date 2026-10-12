@@ -156,24 +156,25 @@ class Studio:
         self.motions = {**MOTION_DEFAULTS, **_read(MOTION_PATH)}
         self.active_face = "idle"
         self.manual_face = False
+        self.preview_until = 0.0
         self.face_revision = 0
         self.run_id = 0
         self.running = ""
 
     def face_status(self):
         with self.lock:
-            if not self.running and not self.manual_face:
-                assistant = self.current_state().get("assistant_state", "idle")
-                target = assistant if assistant in {"speaking", "listening", "thinking"} else "idle"
-                if target != self.active_face and target in self.faces:
-                    self.active_face = target
-                    self.face_revision += 1
+            if self.manual_face and time.monotonic() >= self.preview_until:
+                self.manual_face = False
+                self.active_face = "idle"
+                self.face_revision += 1
+            if not self.manual_face:
+                return {"face_rev": self.face_revision, "face_active": False, "face": []}
             p = self.faces[self.active_face]
             flat = [int(p["color"][1:], 16), p["x"], p["y"], p["radius"],
                     p["mouth_width"], p["mouth_height"], p["mouth_y"]]
             flat.extend(v for point in p["corners"] for v in point)
             flat.append({"line": 0, "smile": 1, "smile_inverted": 2}.get(p.get("mouth_style"), 0))
-            return {"face_rev": self.face_revision, "face": flat}
+            return {"face_rev": self.face_revision, "face_active": True, "face": flat}
 
     def run(self, name):
         with self.lock:
@@ -232,16 +233,18 @@ class Studio:
             self.running = ""
             self.active_face = "idle"
             self.manual_face = False
+            self.preview_until = 0.0
             self.face_revision += 1
             self.set_command("motion_stop")
 
     def note_command(self, command):
-        face = {"angry": "angry", "sleep": "sleep", "idle": "idle"}.get(command)
-        if face and face in self.faces:
+        if command in {"angry", "sleep", "idle", "dance", "explore", "360"}:
             with self.lock:
-                self.active_face = face
-                self.manual_face = command != "idle"
-                self.face_revision += 1
+                if self.manual_face:
+                    self.active_face = "idle"
+                    self.manual_face = False
+                    self.preview_until = 0.0
+                    self.face_revision += 1
 
 
 def register(app, require_key, set_command, current_state):
@@ -279,6 +282,7 @@ def register(app, require_key, set_command, current_state):
                 raise HTTPException(404, "Profil introuvable")
             studio.active_face = name
             studio.manual_face = True
+            studio.preview_until = time.monotonic() + 5.0
             studio.face_revision += 1
         return {"ok": True, "name": name}
 
@@ -288,6 +292,7 @@ def register(app, require_key, set_command, current_state):
         with studio.lock:
             studio.active_face = "idle"
             studio.manual_face = False
+            studio.preview_until = 0.0
             studio.face_revision += 1
         return {"ok": True, "name": "idle"}
 
