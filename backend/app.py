@@ -14,7 +14,7 @@ from web_search import (
 from kage_sounds import play_sound
 from command_intents import direct_intent, home_intent, looks_like_home_command
 
-from faster_whisper import WhisperModel
+WhisperModel = None
 
 import hmac
 import asyncio
@@ -538,13 +538,27 @@ def set_response_language(language: str) -> str:
         response_language = language
         return response_language
 
-print(f"Chargement de Whisper {WHISPER_MODEL_NAME}...")
-whisper_model = WhisperModel(
-    WHISPER_MODEL_NAME,
-    device="cpu",
-    compute_type="int8",
-)
-print(f"Whisper {WHISPER_MODEL_NAME} prêt.")
+whisper_model = None
+whisper_model_lock = threading.Lock()
+
+
+def get_whisper_model():
+    """Load the optional HTTP transcription model only when /audio needs it."""
+    global whisper_model, WhisperModel
+    if whisper_model is None:
+        with whisper_model_lock:
+            if whisper_model is None:
+                if WhisperModel is None:
+                    from faster_whisper import WhisperModel as _WhisperModel
+                    WhisperModel = _WhisperModel
+                print(f"Chargement de Whisper {WHISPER_MODEL_NAME}...")
+                whisper_model = WhisperModel(
+                    WHISPER_MODEL_NAME,
+                    device="cpu",
+                    compute_type="int8",
+                )
+                print(f"Whisper {WHISPER_MODEL_NAME} prêt.")
+    return whisper_model
 
 
 class AskRequest(BaseModel):
@@ -1019,7 +1033,7 @@ def transcribe_pcm(pcm: bytes) -> str:
             wav.setframerate(AUDIO_SAMPLE_RATE)
             wav.writeframes(pcm)
 
-        segments, _ = whisper_model.transcribe(
+        segments, _ = get_whisper_model().transcribe(
             wav_path,
             language="fr",
             task="transcribe",

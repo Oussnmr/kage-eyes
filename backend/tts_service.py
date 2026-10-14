@@ -3,10 +3,7 @@ from collections.abc import AsyncIterator
 
 import numpy as np
 
-try:
-    from kokoro_onnx import Kokoro
-except ImportError:
-    Kokoro = None
+Kokoro = None
 
 
 MODEL_PATH = os.getenv("KAGE_KOKORO_MODEL", r"C:\Kage\models\kokoro\kokoro-v1.0.onnx")
@@ -33,14 +30,28 @@ def language_for_voice(voice: str) -> str:
 class KokoroService:
     def __init__(self):
         self.engine = None
+        self._load_attempted = False
+
+    def _ensure_engine(self):
+        global Kokoro
+        if self._load_attempted:
+            return
+        self._load_attempted = True
+        try:
+            from kokoro_onnx import Kokoro as _Kokoro
+            Kokoro = _Kokoro
+        except ImportError:
+            Kokoro = None
         if Kokoro is not None and os.path.isfile(MODEL_PATH) and os.path.isfile(VOICES_PATH):
             self.engine = Kokoro(MODEL_PATH, VOICES_PATH)
 
     @property
     def available(self) -> bool:
-        return self.engine is not None
+        return (self.engine is not None or
+                (Kokoro is not None and os.path.isfile(MODEL_PATH) and os.path.isfile(VOICES_PATH)))
 
     async def stream_pcm(self, text: str, voice: str = DEFAULT_VOICE) -> AsyncIterator[bytes]:
+        self._ensure_engine()
         if self.engine is None:
             raise RuntimeError("Kokoro TTS indisponible")
         async for samples, sample_rate in self.engine.create_stream(

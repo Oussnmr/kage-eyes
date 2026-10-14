@@ -135,25 +135,75 @@ static lv_obj_t *preview_rect(lv_obj_t *parent, int x, int y, int width, int hei
     return item;
 }
 
+static lv_obj_t *preview_segment(lv_obj_t *parent, int x1, int y1, int x2, int y2,
+                                 int width, uint32_t color) {
+    constexpr float kPi = 3.14159265358979323846f;
+    const float dx = static_cast<float>(x2 - x1);
+    const float dy = static_cast<float>(y2 - y1);
+    const int length = std::max(1, static_cast<int>(std::round(std::hypot(dx, dy))));
+    lv_obj_t *item = preview_rect(parent, (x1 + x2 - length) / 2,
+                                  (y1 + y2 - width) / 2, length, width,
+                                  color, width / 2);
+    lv_obj_set_style_transform_pivot_x(item, length / 2, 0);
+    lv_obj_set_style_transform_pivot_y(item, width / 2, 0);
+    lv_obj_set_style_transform_rotation(
+        item, static_cast<int32_t>(std::lround(std::atan2(dy, dx) * 1800.0f / kPi)), 0);
+    return item;
+}
+
 static void create_typing_preview(lv_obj_t *parent) {
     s_typing_preview = preview_rect(parent, 0, 0, SCREEN_W, SCREEN_H, 0x000000);
     lv_obj_set_style_opa(s_typing_preview, LV_OPA_TRANSP, 0);
-    preview_rect(s_typing_preview, 10, 245, 428, 110, WHITE, 12);
-    preview_rect(s_typing_preview, 16, 251, 416, 98, 0x000000, 7);
-    constexpr int gap = 4, key_w = 37, key_h = 19;
-    for (int row = 0; row < 4; ++row) {
-        for (int col = 0; col < 10; ++col) {
-            if (col == 0 && (row == 1 || row == 2)) continue;
-            preview_rect(s_typing_preview, 19 + col * (key_w + gap),
-                         254 + row * (key_h + gap), key_w, key_h, WHITE, 5);
+    // Keep this overlay in lockstep with simulator/typing_scene.cpp defaults.
+    preview_rect(s_typing_preview, 140, 87, 112, 112, CYAN, 28);
+    preview_rect(s_typing_preview, 313, 87, 112, 112, CYAN, 28);
+    preview_rect(s_typing_preview, 262, 212, 39, 6, CYAN, 3);
+
+    constexpr int x = 10, y = 245, w = 428, h = 110;
+    constexpr int pad = 7, inset = 12, rows = 4, gap = 3, key_gap = 4;
+    constexpr int interior_w = w - 2 * inset, interior_h = h - 2 * inset;
+    constexpr int key_h = (interior_h - (rows - 1) * gap) / rows;
+    preview_rect(s_typing_preview, x, y, w, h, WHITE, 12);
+    preview_rect(s_typing_preview, x + pad, y + pad, w - 2 * pad, h - 2 * pad, 0x000000, 8);
+    for (int row = 0; row < rows; ++row) {
+        const int yy = y + inset + row * (key_h + gap);
+        const int cells = row == 0 ? 5 : 10;
+        int x0 = x + inset;
+        if (row == 0) {
+            constexpr int proportions[] = {1, 1, 5, 1, 1};
+            constexpr int available = interior_w - key_gap * 4;
+            for (int i = 0; i < cells; ++i) {
+                int kw = available * proportions[i] / 9;
+                if (i == cells - 1) kw = x + inset + interior_w - x0;
+                preview_rect(s_typing_preview, x0, yy, kw, key_h, WHITE, 6);
+                x0 += kw + key_gap;
+            }
+        } else {
+            const int available = interior_w - (cells - 1) * key_gap;
+            for (int i = 0; i < cells; ++i) {
+                const int end = x + inset + (available * (i + 1)) / cells + i * key_gap;
+                preview_rect(s_typing_preview, x0, yy, end - x0, key_h, WHITE, 6);
+                x0 = end + key_gap;
+            }
         }
     }
-    preview_rect(s_typing_preview, 19, 277, key_w, key_h * 2 + gap, WHITE, 5);
-    preview_rect(s_typing_preview, 95, 170, 28, 142, CYAN, 14);
-    preview_rect(s_typing_preview, 68, 180, 20, 83, CYAN, 10);
-    for (int finger = 0; finger < 3; ++finger)
-        preview_rect(s_typing_preview, 55 + finger * 18, 169 + (finger == 1 ? -7 : 0),
-                     20, 55, CYAN, 10);
+    preview_rect(s_typing_preview, x + inset, y + inset + key_h + gap,
+                 (interior_w - 9 * key_gap) / 10, key_h * 2 + gap, WHITE, 6);
+
+    // Same raised arm geometry as the simulator's default frame, including its
+    // black negative-space outline.
+    constexpr int sx = 92, sy = 251, tx = 69, ty = 186, thick = 29;
+    const int wrist_x = tx + thick / 5, wrist_y = ty + thick / 2;
+    preview_segment(s_typing_preview, sx, sy, wrist_x, wrist_y, thick + 7, 0x000000);
+    preview_segment(s_typing_preview, sx, sy, wrist_x, wrist_y, thick, CYAN);
+    const int spread = thick / 2 + 2;
+    for (int finger = -1; finger <= 1; ++finger) {
+        const int dx = finger * spread;
+        const int fx = tx + dx;
+        const int fy = ty - (finger == 0 ? 9 : 2);
+        preview_segment(s_typing_preview, wrist_x, wrist_y, fx, fy, thick * 2 / 3 + 7, 0x000000);
+        preview_segment(s_typing_preview, wrist_x, wrist_y, fx, fy, thick * 2 / 3, CYAN);
+    }
 }
 
 static float random_unit() {

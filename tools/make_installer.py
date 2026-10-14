@@ -69,9 +69,15 @@ def main():
     version = a.version or git_version()
     # Keep the exact build timestamp visible on the public installer page.
     # GitHub Actions runs in UTC; display it in the user's Brussels timezone.
-    date = datetime.datetime.now(datetime.timezone.utc).astimezone(
-        ZoneInfo("Europe/Brussels")
-    ).strftime("%Y-%m-%d %H:%M Europe/Brussels")
+    try:
+        zone = ZoneInfo("Europe/Brussels")
+        date = datetime.datetime.now(datetime.timezone.utc).astimezone(zone)
+    except Exception:
+        # Minimal/local Python environments may not ship tzdata. GitHub Actions
+        # has it; keep local installer generation usable with a UTC timestamp.
+        date = datetime.datetime.now(datetime.timezone.utc)
+    date = date.strftime("%Y-%m-%d %H:%M UTC" if date.tzinfo == datetime.timezone.utc
+                         else "%Y-%m-%d %H:%M Europe/Brussels")
     out = a.out
     if os.path.isdir(out):
         shutil.rmtree(out)
