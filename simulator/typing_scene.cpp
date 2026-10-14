@@ -12,7 +12,7 @@ constexpr int DEFAULTS[FIELD_COUNT] = {
     282, 215, 39, 6,                // mouth, just above keyboard
     10, 245, 428, 110,              // keyboard, white with black key gaps
     92, 251, 69, 186,               // arm root and raised fingertips
-    139, 211, 309, 365, 43, 314, 218, 282, 29, // five targets: L/C/R/space/enter
+    139, 211, 309, 224, 43, 314, 218, 282, 29, // five targets: L/C/R/space/enter
     8, 72, 55, 85, 7000           // hover, squint %, up/down and blink time
 };
 int limit(int value, int low, int high) { return std::max(low, std::min(high, value)); }
@@ -123,8 +123,7 @@ void Scene::create_keyboard() {
     for (int row = 0; row < rows; ++row) {
         const int yy = y + inset + row * (key_h + gap);
         const int cells = row == 0 ? 8 : (row == 3 ? 9 : 10);
-        // The broad space bar is on the FAR side, next to the face.
-        // Distribute a long key through the centre of the top row.
+        // The broad space bar is centred on the top row, nearest the face.
         if (row == 0) {
             const int proportions[] = {1, 1, 5, 1, 1};
             constexpr int total = 9;
@@ -147,14 +146,13 @@ void Scene::create_keyboard() {
             }
         }
     }
-    // Fused Enter key at the far left of the two middle rows.
+    // Fused white Enter key at the far left of the two middle rows.
     lv_obj_t *enter = lv_obj_create(keyboard_);
     lv_obj_remove_style_all(enter);
     lv_obj_set_pos(enter, x + inset, y + inset + key_h + gap);
     lv_obj_set_size(enter, std::max(8, (interior_w - 9 * key_gap) / 10), key_h * 2 + gap);
-    lv_obj_set_style_bg_opa(enter, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(enter, 3, 0);
-    lv_obj_set_style_border_color(enter, lv_color_hex(0xFF4057), 0);
+    lv_obj_set_style_bg_opa(enter, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(enter, lv_color_hex(WHITE), 0);
     lv_obj_set_style_radius(enter, 5, 0);
 }
 

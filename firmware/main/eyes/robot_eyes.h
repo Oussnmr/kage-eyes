@@ -39,3 +39,6 @@ void robot_eyes_set_drive_state(int forward_percent, int turn_percent);
 void robot_eyes_set_manual_look(int horizontal, int vertical);
 void robot_eyes_set_behavior(int behavior, int duration_ms);
 void robot_eyes_set_custom_face(const int *values, size_t count, bool enabled);
+
+/* Shows the local LVGL typing layout, then restores the unchanged face. */
+void robot_eyes_preview_typing_layout(int duration_ms);

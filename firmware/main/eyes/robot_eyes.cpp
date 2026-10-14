@@ -56,6 +56,7 @@ static lv_obj_t *s_speed_lines[SPEED_LINE_COUNT];
 static lv_obj_t *s_sleep_z[3];
 static lv_obj_t *s_charge_bolt;
 static lv_obj_t *s_voice_indicator;
+static lv_obj_t *s_typing_preview;
 static lv_timer_t *s_timer;
 static bool s_active;
 static bool s_angry;
@@ -117,7 +118,43 @@ static std::atomic<int64_t> s_drive_updated_us{0};
 static std::atomic<int> s_manual_look_x{0};
 static std::atomic<int> s_manual_look_y{0};
 static std::atomic<int64_t> s_manual_look_updated_us{0};
+static std::atomic<int64_t> s_typing_preview_until_us{0};
 static lv_timer_t *s_tap_timer;
+
+static lv_obj_t *preview_rect(lv_obj_t *parent, int x, int y, int width, int height,
+                              uint32_t color, int radius = 0) {
+    lv_obj_t *item = lv_obj_create(parent);
+    lv_obj_remove_style_all(item);
+    lv_obj_set_pos(item, x, y);
+    lv_obj_set_size(item, width, height);
+    lv_obj_set_style_bg_color(item, lv_color_hex(color), 0);
+    lv_obj_set_style_bg_opa(item, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(item, radius, 0);
+    lv_obj_clear_flag(item, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(item, LV_OBJ_FLAG_SCROLLABLE);
+    return item;
+}
+
+static void create_typing_preview(lv_obj_t *parent) {
+    s_typing_preview = preview_rect(parent, 0, 0, SCREEN_W, SCREEN_H, 0x000000);
+    lv_obj_set_style_opa(s_typing_preview, LV_OPA_TRANSP, 0);
+    preview_rect(s_typing_preview, 10, 245, 428, 110, WHITE, 12);
+    preview_rect(s_typing_preview, 16, 251, 416, 98, 0x000000, 7);
+    constexpr int gap = 4, key_w = 37, key_h = 19;
+    for (int row = 0; row < 4; ++row) {
+        for (int col = 0; col < 10; ++col) {
+            if (col == 0 && (row == 1 || row == 2)) continue;
+            preview_rect(s_typing_preview, 19 + col * (key_w + gap),
+                         254 + row * (key_h + gap), key_w, key_h, WHITE, 5);
+        }
+    }
+    preview_rect(s_typing_preview, 19, 277, key_w, key_h * 2 + gap, WHITE, 5);
+    preview_rect(s_typing_preview, 95, 170, 28, 142, CYAN, 14);
+    preview_rect(s_typing_preview, 68, 180, 20, 83, CYAN, 10);
+    for (int finger = 0; finger < 3; ++finger)
+        preview_rect(s_typing_preview, 55 + finger * 18, 169 + (finger == 1 ? -7 : 0),
+                     20, 55, CYAN, 10);
+}
 
 static float random_unit() {
     return static_cast<float>(esp_random()) / static_cast<float>(UINT32_MAX);
@@ -382,6 +419,16 @@ static void animate(lv_timer_t *) {
     s_last_frame_us = now;
     if (dt > 0.08f) dt = 0.08f;
     s_time += dt;
+
+    // This deadline is evaluated locally: a disconnected M920q cannot leave
+    // the preview stuck over the normal face.
+    const bool show_typing_preview =
+        esp_timer_get_time() < s_typing_preview_until_us.load(std::memory_order_acquire);
+    if (s_typing_preview) {
+        lv_obj_set_style_opa(s_typing_preview,
+                             show_typing_preview ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        if (show_typing_preview) return;
+    }
 
     const int assistant_state = s_assistant_state.load();
     const int64_t now_us = esp_timer_get_time();
@@ -832,6 +879,13 @@ void robot_eyes_set_custom_face(const int *values, size_t count, bool enabled) {
     s_custom_face_active.store(true, std::memory_order_release);
 }
 
+void robot_eyes_preview_typing_layout(int duration_ms) {
+    duration_ms = std::max(1000, std::min(60000, duration_ms));
+    s_typing_preview_until_us.store(esp_timer_get_time() +
+                                    static_cast<int64_t>(duration_ms) * 1000,
+                                    std::memory_order_release);
+}
+
 void robot_eyes_begin(lv_obj_t *parent) {
     lv_obj_set_style_bg_color(parent, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
@@ -882,6 +936,8 @@ void robot_eyes_begin(lv_obj_t *parent) {
     lv_obj_set_pos(s_voice_indicator, 24, 26);
     lv_obj_clear_flag(s_voice_indicator, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_opa(s_voice_indicator, LV_OPA_TRANSP, 0);
+
+    create_typing_preview(parent);
 
     s_charge_bolt = lv_label_create(parent);
     lv_label_set_text(s_charge_bolt, LV_SYMBOL_CHARGE);
