@@ -1,0 +1,68 @@
+name: Kage LVGL typing simulator
+
+on:
+  push:
+    branches: [feature/typing-lvgl-simulator]
+    paths:
+      - simulator/**
+      - backend/typing_simulator.html
+      - backend/typing_simulator_routes.py
+      - .github/workflows/typing-simulator.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate standalone timing engine and web syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -Wall -Wextra -Werror simulator/tests/timeline.cpp -o /tmp/kage-timeline
+          /tmp/kage-timeline
+          python3 -m py_compile backend/typing_simulator_routes.py
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path("backend/typing_simulator.html").read_text(encoding="utf-8")
+          assert source.count("<script>") == 1 and source.count("</script>") == 1
+          Path("/tmp/kage-typing-ui.js").write_text(source.split("<script>",1)[1].split("</script>",1)[0])
+          PY
+          node --check /tmp/kage-typing-ui.js
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.75
+      - name: Build exact firmware LVGL version 9.6.0 in WebAssembly
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v9.6.0 https://github.com/lvgl/lvgl.git /tmp/lvgl-9.6.0
+          emcmake cmake -S simulator -B /tmp/kage-typing-build -DLVGL_SOURCE=/tmp/lvgl-9.6.0 -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/kage-typing-build --parallel 4
+          test -s backend/typing_simulator_dist/kage_lvgl.js
+          test -s backend/typing_simulator_dist/kage_lvgl.wasm
+          node --check backend/typing_simulator_dist/kage_lvgl.js
+      - name: Upload runnable engine
+        uses: actions/upload-artifact@v4
+        with:
+          name: kage-lvgl-typing-engine
+          path: |
+            backend/typing_simulator_dist/kage_lvgl.js
+            backend/typing_simulator_dist/kage_lvgl.wasm
+          if-no-files-found: error
+      - name: Store built artifacts on this isolated feature branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f backend/typing_simulator_dist/kage_lvgl.js backend/typing_simulator_dist/kage_lvgl.wasm
+          if ! git diff --cached --quiet; then
+            git commit -m 'Build Kage LVGL 9.6 WebAssembly preview assets'
+            git push origin HEAD:feature/typing-lvgl-simulator
+          fi
