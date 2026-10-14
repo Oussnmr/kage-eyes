@@ -242,7 +242,8 @@ void Scene::set_frame(int frame) {
 void Scene::reset() {
     forced_ = false;
     timeline_.reset();
-    seconds_ = expression_timer_ = blink_timer_ = squint_current_ = blink_ = 0;
+    seconds_ = expression_timer_ = squint_current_ = blink_ = 0;
+    blink_timer_ = 0.3f;
     refresh_arms();
     update_geometry();
 }
