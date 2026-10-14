@@ -1,0 +1,107 @@
+"""Isolated, authenticated Kage LVGL browser-simulator endpoints.
+
+This module never sends a command to the ESP32 and never mutates face profiles.
+Profiles only store validated geometry (28 integers); they do not execute code.
+"""
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse
+import json
+import os
+from pathlib import Path
+import re
+import tempfile
+import threading
+
+SIM_DIR = Path(__file__).with_name("typing_simulator_dist")
+SIM_PAGE = Path(__file__).with_name("typing_simulator.html")
+PROFILES_PATH = Path(os.getenv(
+    "KAGE_TYPING_PROFILES_PATH",
+    str(Path(__file__).with_name("typing_profiles.json")),
+))
+_guard = threading.RLock()
+_name_pattern = re.compile(r"^[a-zA-Z0-9_-]{1,40}$")
+FIELDS = 28
+
+
+def _load():
+    try:
+        data = json.loads(PROFILES_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items()
+            if _name_pattern.fullmatch(k) and isinstance(v, list)
+            and len(v) == FIELDS and all(type(x) is int for x in v)}
+
+
+def _persist(profiles):
+    PROFILES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    name = None
+    try:
+        with tempfile.NamedTemporaryFile("w", dir=PROFILES_PATH.parent,
+                                         prefix="typing-", suffix=".tmp",
+                                         encoding="utf-8", delete=False) as handle:
+            name = handle.name
+            json.dump(profiles, handle, ensure_ascii=False, indent=2)
+        os.replace(name, PROFILES_PATH)
+    finally:
+        if name and Path(name).exists():
+            os.unlink(name)
+
+
+def make_typing_router(require_kage_key):
+    router = APIRouter()
+
+    @router.get("/control/simulator", response_class=HTMLResponse)
+    def simulator_page():
+        return HTMLResponse(SIM_PAGE.read_text(encoding="utf-8"),
+                            headers={"Cache-Control": "no-store, max-age=0"})
+
+    @router.get("/control/simulator/assets/{filename}")
+    def simulator_asset(filename: str):
+        if filename not in ("kage_lvgl.js", "kage_lvgl.wasm"):
+            raise HTTPException(status_code=404, detail="Asset inconnu")
+        file = SIM_DIR / filename
+        if not file.is_file():
+            raise HTTPException(status_code=503,
+                                detail="LVGL WebAssembly non compilé. Consulte le workflow typing-simulator.")
+        media = "application/wasm" if filename.endswith(".wasm") else "text/javascript"
+        return FileResponse(file, media_type=media,
+                            headers={"Cache-Control": "no-store"})
+
+    @router.get("/control/simulator/profiles")
+    def list_profiles(request: Request):
+        require_kage_key(request)
+        with _guard:
+            return {"profiles": _load()}
+
+    @router.put("/control/simulator/profiles/{name}")
+    def save_profile(name: str, values: list[int], request: Request):
+        require_kage_key(request)
+        if not _name_pattern.fullmatch(name) or name == "default":
+            raise HTTPException(422, "Nom invalide ou réservé")
+        if len(values) != FIELDS or any(type(v) is not int or abs(v) > 20000 for v in values):
+            raise HTTPException(422, "Un profil doit contenir exactement 28 entiers bornés")
+        with _guard:
+            data = _load()
+            if name not in data and len(data) >= 40:
+                raise HTTPException(400, "Nombre maximal de profils atteint")
+            data[name] = values
+            _persist(data)
+        return {"ok": True, "name": name}
+
+    @router.delete("/control/simulator/profiles/{name}")
+    def delete_profile(name: str, request: Request):
+        require_kage_key(request)
+        if not _name_pattern.fullmatch(name) or name == "default":
+            raise HTTPException(422, "Nom invalide ou réservé")
+        with _guard:
+            data = _load()
+            if name not in data:
+                raise HTTPException(404, "Profil introuvable")
+            del data[name]
+            _persist(data)
+        return {"ok": True}
+
+    return router
