@@ -152,7 +152,9 @@ void Scene::draw_arm_event(lv_event_t *event) {
     Scene *self = static_cast<Scene *>(lv_event_get_user_data(event));
     if (!self || !self->typing_) return;
     const bool raised = lv_event_get_current_target(event) == self->arm_back_;
-    if (raised != (self->timeline_.phase() == TypingTimeline::Raised)) return;
+    const bool is_raised = self->forced_ ? self->forced_frame_ == 0 :
+                           self->timeline_.phase() == TypingTimeline::Raised;
+    if (raised != is_raised) return;
     self->draw_arm(lv_event_get_layer(event), raised);
 }
 
@@ -161,7 +163,7 @@ void Scene::draw_arm(lv_layer_t *layer, bool raised) {
     const int sx = settings_[ARM_START_X], sy = settings_[ARM_START_Y];
     int tx = settings_[ARM_LIFT_X], ty = settings_[ARM_LIFT_Y];
     if (!raised) {
-        const int region = timeline_.region();
+        const int region = forced_ ? forced_frame_ - 1 : timeline_.region();
         tx = settings_[region == 0 ? ARM_LEFT_X : region == 1 ? ARM_CENTER_X : ARM_RIGHT_X];
         ty = settings_[ARM_TOUCH_Y];
     }
@@ -185,7 +187,8 @@ void Scene::draw_arm(lv_layer_t *layer, bool raised) {
 
 void Scene::refresh_arms() {
     if (!arm_back_ || !arm_front_) return;
-    const bool raised = timeline_.phase() == TypingTimeline::Raised;
+    const bool raised = forced_ ? forced_frame_ == 0 :
+                         timeline_.phase() == TypingTimeline::Raised;
     if (typing_ && raised) lv_obj_remove_flag(arm_back_, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(arm_back_, LV_OBJ_FLAG_HIDDEN);
     if (typing_ && !raised) lv_obj_remove_flag(arm_front_, LV_OBJ_FLAG_HIDDEN);
@@ -222,12 +225,21 @@ void Scene::update_geometry() {
 }
 
 void Scene::keypress(int region) {
+    forced_ = false;
     if (!typing_) set_mode(true);
     timeline_.press(region);
     refresh_arms();
 }
 
+void Scene::set_frame(int frame) {
+    forced_ = true;
+    forced_frame_ = limit(frame, 0, 3);
+    if (!typing_) set_mode(true);
+    refresh_arms();
+}
+
 void Scene::reset() {
+    forced_ = false;
     timeline_.reset();
     seconds_ = expression_timer_ = blink_timer_ = squint_current_ = blink_ = 0;
     refresh_arms();
@@ -248,7 +260,7 @@ void Scene::tick(int elapsed_ms) {
     else blink_ = 0;
     const auto previous = timeline_.phase();
     timeline_.tick(dt, settings_[UP_MS], settings_[DOWN_MS]);
-    if (previous != timeline_.phase()) refresh_arms();
+    if (!forced_ && previous != timeline_.phase()) refresh_arms();
     update_geometry();
 }
 } // namespace kage_typing
