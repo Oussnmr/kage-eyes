@@ -1,7 +1,7 @@
 """Isolated, authenticated Kage LVGL browser-simulator endpoints.
 
 This module never sends a command to the ESP32 and never mutates face profiles.
-Profiles only store validated geometry (28 integers); they do not execute code.
+Profiles only store validated geometry (32 integers); they do not execute code.
 """
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
@@ -20,7 +20,23 @@ PROFILES_PATH = Path(os.getenv(
 ))
 _guard = threading.RLock()
 _name_pattern = re.compile(r"^[a-zA-Z0-9_-]{1,40}$")
-FIELDS = 28
+FIELDS = 32
+_LEGACY_FIELDS = 28
+
+
+def _normalise_values(values):
+    """Validate current profiles and losslessly upgrade the former 28-field layout."""
+    if not isinstance(values, list) or any(type(value) is not int for value in values):
+        return None
+    if len(values) == _LEGACY_FIELDS:
+        # Original layout ended the arm geometry with left/centre/right X, touch
+        # Y and thickness. Insert the five-region positions without changing the
+        # old values or the animation timings that follow them.
+        values = (values[:21] + [365, 43, values[21], 218, 282, values[22]]
+                  + values[23:])
+    if len(values) != FIELDS or any(abs(value) > 20000 for value in values):
+        return None
+    return values
 
 
 def _load():
@@ -30,9 +46,19 @@ def _load():
         return {}
     if not isinstance(data, dict):
         return {}
-    return {k: v for k, v in data.items()
-            if _name_pattern.fullmatch(k) and isinstance(v, list)
-            and len(v) == FIELDS and all(type(x) is int for x in v)}
+    profiles = {}
+    migrated = False
+    for name, values in data.items():
+        if not _name_pattern.fullmatch(name):
+            continue
+        normalised = _normalise_values(values)
+        if normalised is None:
+            continue
+        migrated |= normalised != values
+        profiles[name] = normalised
+    if migrated:
+        _persist(profiles)
+    return profiles
 
 
 def _persist(profiles):
@@ -81,8 +107,8 @@ def make_typing_router(require_kage_key):
         require_kage_key(request)
         if not _name_pattern.fullmatch(name) or name == "default":
             raise HTTPException(422, "Nom invalide ou réservé")
-        if len(values) != FIELDS or any(type(v) is not int or abs(v) > 20000 for v in values):
-            raise HTTPException(422, "Un profil doit contenir exactement 28 entiers bornés")
+        if _normalise_values(values) is None or len(values) != FIELDS:
+            raise HTTPException(422, "Un profil doit contenir exactement 32 entiers bornés")
         with _guard:
             data = _load()
             if name not in data and len(data) >= 40:
