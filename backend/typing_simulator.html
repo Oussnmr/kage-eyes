@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="fr"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0b1118"><title>Kage · Simulateur LVGL</title>
+<style>
+:root{font-family:system-ui,-apple-system,Segoe UI,sans-serif;color-scheme:dark}
+*{box-sizing:border-box}body{margin:0;background:#0b1118;color:#edf8fc}
+a{color:#4fe3ff}button,input,select,textarea{font:inherit}
+button,select,input[type=number]{border:1px solid #385368;background:#192734;color:#f2fafc;border-radius:10px;padding:9px 12px}
+button{cursor:pointer}button:hover:not(:disabled){border-color:#4fe3ff}button:disabled{opacity:.45;cursor:default}
+button.active{background:#126c7a;border-color:#4fe3ff}button.primary{background:#4fe3ff;border-color:#4fe3ff;color:#04161a;font-weight:750}
+h1{margin:0;font-size:25px}h2{margin:0 0 10px;font-size:17px}
+p{margin:5px 0 11px;color:#a7bdc8;font-size:13px;line-height:1.5}
+.app{max-width:1340px;padding:18px;margin:auto}
+nav,.actions,.modes,.frames{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+nav{margin:10px 0 20px}nav a{border:1px solid #345061;border-radius:10px;padding:8px 12px;text-decoration:none}nav a.current{background:#144b57}
+.layout{display:grid;grid-template-columns:minmax(340px,560px) minmax(360px,1fr);gap:18px;align-items:start}
+.card{background:#141e27;border:1px solid #2d4353;border-radius:18px;padding:17px;margin-bottom:14px}
+.screen-wrap{background:#090c10;border:1px solid #34434c;border-radius:17px;padding:12px;display:grid;place-items:center}
+canvas{display:block;width:100%;max-width:448px;height:auto;aspect-ratio:448/368;background:#000;image-rendering:pixelated;border:1px solid #253c46;border-radius:4px}
+.status{min-height:24px;font-size:12px;color:#b4cdda;margin:7px 0}
+.status.error{color:#ff9e91}.tags{display:flex;gap:8px;flex-wrap:wrap;color:#96b5c0;font-size:11px;margin-top:9px}
+.tags span{padding:5px 8px;background:#101923;border-radius:8px}
+.frames button{min-width:72px}.form-groups{max-height:min(69vh,660px);overflow-y:auto;padding-right:7px}
+fieldset{border:1px solid #2e4252;border-radius:12px;margin:8px 0 14px;padding:12px}
+legend{color:#70dfea;font-weight:700;font-size:13px;padding:0 6px}
+.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+label.field{display:flex;flex-direction:column;gap:5px;color:#b6c8d2;font-size:12px}
+label.field input{width:100%;padding:8px 9px;min-width:0}
+label.inline{display:flex;align-items:center;gap:8px;font-size:13px}
+select{max-width:100%}
+#profile-select{flex:1;min-width:135px}
+#code{width:100%;min-height:215px;padding:12px;border:1px solid #355061;background:#070d12;color:#7ce0eb;border-radius:11px;resize:vertical;tab-size:2;font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
+.meta{font:11px ui-monospace,monospace;color:#8ea6b6}
+.note{border-left:3px solid #4fe3ff;padding:10px 12px;background:#0d2933;font-size:12px;color:#b2dce7}
+kbd{background:#263748;border:1px solid #405667;padding:1px 5px;border-radius:5px}
+@media(max-width:940px){.layout{grid-template-columns:1fr}.form-groups{max-height:none}}
+@media(max-width:540px){.app{padding:10px}.card{padding:12px}.fields{grid-template-columns:1fr}}
+</style>
+</head><body><main class="app">
+<header><h1>Kagé · Simulateur LVGL</h1><p>Moteur graphique LVGL 9.6 compilé en WebAssembly — aucun visage dessiné en HTML.</p></header>
+<nav aria-label="Navigation Kage"><a href="/control">Commandes</a><a href="/control/studio">Studio</a><a href="/control/micro">Micro &amp; chat</a><a class="current" href="/control/simulator">Simulateur</a></nav>
+<div class="layout">
+<div>
+<section class="card"><h2>Écran AMOLED virtuel</h2>
+<div class="screen-wrap"><canvas id="display" width="448" height="368" aria-label="FrameBuffer RVB565 généré par LVGL, 448 par 368 pixels"></canvas></div>
+<div id="status" class="status" role="status">Chargement du moteur LVGL…</div>
+<div class="tags"><span>448 × 368 px</span><span>RGB565</span><span id="fps">— images/s</span><span id="stroke-count">0 frappes</span><span id="pending">0 en attente</span></div>
+</section>
+<section class="card"><h2>Animation / test</h2>
+<div class="modes actions" style="margin-bottom:10px"><button id="idle">Repos</button><button class="active" id="typing">Typing</button><button id="auto">Auto : désactivé</button><button id="double">Double frappe rapide</button></div>
+<p>Chaque nouvelle frappe replace d'abord le bras en position levée, puis le fait redescendre. Les frappes successives restent dans une file, même en cas de double appui.</p>
+<div class="frames"><button id="frame-0">1 · Levé</button><button id="frame-1">2 · Gauche</button><button id="frame-2">3 · Centre</button><button id="frame-3">4 · Droite</button></div>
+<p style="margin-top:12px">Tape sur ton clavier lorsque cette page est ouverte, ou utilise les boutons. Le simulateur ne lit jamais le texte saisi et n'envoie pas de touches au serveur.</p>
+<div class="actions"><button id="press-left">Touche gauche</button><button id="press-mid">Touche centre</button><button id="press-right">Touche droite</button><label class="inline">Auto (ms)<input id="auto-speed" type="number" min="90" max="800" step="10" value="230" style="width:85px"></label></div>
+</section>
+<section class="card"><h2>Profil et historique</h2>
+<div class="actions"><select id="profile-select" aria-label="Profils"><option value="default">Valeurs initiales du code</option></select><button id="save-profile" class="primary">Enregistrer sous…</button><button id="delete-profile">Supprimer</button></div>
+<div class="actions" style="margin-top:12px"><button id="undo" disabled>↶ Annuler</button><button id="redo" disabled>↷ Rétablir</button><button id="reset">Revenir au code initial</button></div>
+<p>Les profils enregistrés sont conservés sur le M920q. Le profil initial est toujours protégé. Les modifications de l'éditeur ne touchent ni à la Waveshare, ni au firmware.</p>
+</section>
+</div>
+<div>
+<section class="card"><h2>Position et dimensions des éléments</h2>
+<p>Toutes les valeurs sont exprimées en pixels de l'écran 448 × 368, sauf les pourcentages et durées.</p>
+<div class="form-groups" id="controls"></div>
+</section>
+<section class="card"><h2>Code C++ correspondant aux réglages</h2>
+<div class="note">Cet extrait C++ utilise le composant LVGL partagé. Les changements de géométrie s'affichent directement grâce à son API WebAssembly, sans recompilation à chaque ajustement. Le firmware ne sera modifié qu'après validation.</div>
+<textarea id="code" readonly spellcheck="false" aria-label="Extrait C++ du profil"></textarea>
+<div class="actions"><button id="copy">Copier C++</button><button id="export">Exporter JSON</button><button id="screenshot">Capturer l'écran</button></div>
+<div class="meta" id="build-id">Version graphique : en attente du moteur</div>
+</section>
+</div>
+</div></main>
+<script>
+'use strict';
+const $=id=>document.getElementById(id),clone=x=>JSON.parse(JSON.stringify(x));
+const WIDTH=448,HEIGHT=368;
+const SCHEMA=[
+['Visage','eye_left_x','Œil gauche · centre X',70,390],
+['Visage','eye_right_x','Œil droit · centre X',70,445],
+['Visage','eye_y','Yeux · centre Y',30,260],
+['Visage','eye_w','Yeux · largeur',20,170],
+['Visage','eye_h','Yeux · hauteur',20,180],
+['Visage','eye_radius','Yeux · rayon des coins',0,75],
+['Bouche','mouth_x','Bouche · centre X',10,440],
+['Bouche','mouth_y','Bouche · Y',20,345],
+['Bouche','mouth_w','Bouche · largeur',5,120],
+['Bouche','mouth_h','Bouche · hauteur',2,26],
+['Clavier','key_x','Clavier · X',0,250],
+['Clavier','key_y','Clavier · Y',160,305],
+['Clavier','key_w','Clavier · largeur',140,448],
+['Clavier','key_h','Clavier · hauteur',60,160],
+['Bras / main','arm_start_x','Départ du bras · X',0,380],
+['Bras / main','arm_start_y','Départ du bras · Y',80,355],
+['Bras / main','arm_lift_x','Doigts levés · X',0,430],
+['Bras / main','arm_lift_y','Doigts levés · Y',30,340],
+['Bras / main','arm_left_x','Frappe gauche · X',0,430],
+['Bras / main','arm_center_x','Frappe centre · X',0,430],
+['Bras / main','arm_right_x','Frappe droite · X',0,445],
+['Bras / main','arm_touch_y','Doigts sur les touches · Y',160,350],
+['Bras / main','arm_thickness','Épaisseur du bras',12,52],
+['Animation','hover_px','Amplitude flottement · px',0,18],
+['Animation','squint_pct','Hauteur yeux plissés · %',45,100],
+['Animation','up_ms','Temps bras levé · ms',20,220],
+['Animation','down_ms','Temps frappe · ms',35,300],
+['Animation','blink_interval_ms','Intervalle clignement · ms',1500,20000]
+];
+let wasm=null,defaults=null,current=null,profiles={},active='default',history=[],cursor=-1;
+let autoTimer=null,autoIndex=0,firstTime=0,renderTime=0,frames=0;
+const canvas=$('display'),ctx=canvas.getContext('2d',{alpha:false}),image=ctx.createImageData(WIDTH,HEIGHT);
+function notify(message,error=false){$('status').textContent=message;$('status').classList.toggle('error',error)}
+function controls(){
+ const groups={};
+ SCHEMA.forEach(([group,key,label,min,max],index)=>{
+   if(!groups[group])groups[group]=[];
+   groups[group].push('<label class="field">'+label+'<input type="number" id="field-'+index+'" step="1" min="'+min+'" max="'+max+'" data-index="'+index+'"></label>');
+ });
+ $('controls').innerHTML=Object.entries(groups).map(([name,fields])=>
+   '<fieldset><legend>'+name+'</legend><div class="fields">'+fields.join('')+'</div></fieldset>').join('');
+ $('controls').addEventListener('input',e=>{
+   const el=e.target;if(!el.dataset.index||!current)return;
+   const idx=Number(el.dataset.index),num=Number(el.value);
+   if(!Number.isInteger(num))return;
+   const [, , ,min,max]=SCHEMA[idx];if(num<min||num>max)return;
+   current[idx]=num;applyConfig();renderCode();
+ });
+ $('controls').addEventListener('change',e=>{
+   if(!e.target.dataset.index||!current)return;
+   const idx=Number(e.target.dataset.index),el=e.target;
+   const [, , ,min,max]=SCHEMA[idx],v=Math.max(min,Math.min(max,Number(el.value)||0));
+   current[idx]=v;el.value=v;applyConfig();pushHistory();renderCode();
+ });
+}
+function syncInputs(){if(!current)return;current.forEach((v,i)=>$('field-'+i).value=v)}
+function applyConfig(){
+ if(!wasm||!current)return;
+ const ptr=wasm._malloc(current.length*4);
+ try{wasm.HEAP32.set(current,ptr/4);wasm._kage_set_config(ptr,current.length)}
+ finally{wasm._free(ptr)}
+}
+function renderCode(){
+ if(!current)return;
+ const pairs=SCHEMA.map((x,i)=>'    '+String(current[i]).padStart(4)+'  // '+x[1]);
+ $('code').value='// Kage Typing · même config pour ESP-IDF et WebAssembly\n'
+   +'// Ordre défini dans simulator/typing_scene.hpp\n'
+   +'static const int typing_geometry[kage_typing::FIELD_COUNT] = {\n'
+   +pairs.map((x,i)=>x+(i===pairs.length-1?'':',')).join('\n')
+   +'\n};\nscene.set_config(typing_geometry, kage_typing::FIELD_COUNT);\n';
+}
+function updateHistoryButtons(){$('undo').disabled=cursor<=0;$('redo').disabled=cursor>=history.length-1}
+function pushHistory(){
+ if(!current)return;
+ if(history[cursor]&&JSON.stringify(current)===JSON.stringify(history[cursor]))return;
+ history.splice(cursor+1);history.push(clone(current));
+ if(history.length>90)history.shift();
+ cursor=history.length-1;updateHistoryButtons();
+}
+function restoreHistory(){current=clone(history[cursor]);syncInputs();applyConfig();renderCode();updateHistoryButtons()}
+function selectProfile(name,values){
+ active=name;current=clone(values);$('profile-select').value=name;
+ history=[clone(current)];cursor=0;syncInputs();applyConfig();renderCode();updateHistoryButtons();
+ $('delete-profile').disabled=name==='default';
+}
+function rebuildDropdown(){
+ const el=$('profile-select');el.replaceChildren();
+ for(const name of ['default',...Object.keys(profiles).sort()]){
+   const option=document.createElement('option');
+   option.value=name;option.textContent=name==='default'?'Valeurs initiales du code':name;
+   el.append(option);
+ }
+ el.value=active;
+}
+async function api(url,options){
+ const r=await fetch(url,{credentials:'same-origin',cache:'no-store',...options});
+ if(!r.ok){const payload=await r.json().catch(()=>({}));throw Error(r.status===401?'Connecte-toi depuis Kage Control.':payload.detail||'HTTP '+r.status)}
+ return r.json();
+}
+async function fetchProfiles(){
+ try{
+   const result=await api('/control/simulator/profiles');
+   profiles=result.profiles||{};rebuildDropdown();
+ }catch(e){notify('Simulateur disponible, mais profils serveur : '+e.message,true)}
+}
+function safeName(name){return /^[A-Za-z0-9_-]{1,40}$/.test(name)&&name!=='default'}
+$('profile-select').onchange=e=>selectProfile(e.target.value,e.target.value==='default'?defaults:profiles[e.target.value]);
+$('save-profile').onclick=async()=>{
+ if(!current)return;
+ const name=prompt('Nom du nouveau profil (lettres, chiffres, - ou _)',active==='default'?'typing-1':active+'-copie');
+ if(name===null)return;
+ if(!safeName(name)){notify('Nom de profil invalide (max. 40 caractères, sans espace).',true);return}
+ if(profiles[name]&&!confirm('Remplacer le profil « '+name+' » ?'))return;
+ try{
+   await api('/control/simulator/profiles/'+encodeURIComponent(name),{
+     method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(current)});
+   profiles[name]=clone(current);active=name;rebuildDropdown();$('delete-profile').disabled=false;
+   notify('Profil « '+name+' » enregistré sur le M920q.');
+ }catch(e){notify('Enregistrement impossible : '+e.message,true)}
+};
+$('delete-profile').onclick=async()=>{
+ if(active==='default')return;
+ if(!confirm('Supprimer définitivement le profil « '+active+' » ?'))return;
+ try{
+   await api('/control/simulator/profiles/'+encodeURIComponent(active),{method:'DELETE'});
+   delete profiles[active];rebuildDropdown();selectProfile('default',defaults);
+   notify('Profil supprimé.');
+ }catch(e){notify('Suppression impossible : '+e.message,true)}
+};
+$('undo').onclick=()=>{if(cursor>0){--cursor;restoreHistory()}};
+$('redo').onclick=()=>{if(cursor<history.length-1){++cursor;restoreHistory()}};
+$('reset').onclick=()=>{if(!defaults)return;current=clone(defaults);syncInputs();applyConfig();renderCode();pushHistory();notify('Valeurs du code initial restaurées dans cet éditeur (profil non écrasé).')};
+document.addEventListener('keydown',e=>{
+ if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'&&!['INPUT','TEXTAREA'].includes(document.activeElement.tagName)){
+   e.preventDefault();(e.shiftKey?$('redo'):$('undo')).click();return;
+ }
+ if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='y'){e.preventDefault();$('redo').click();return}
+ if(e.ctrlKey||e.metaKey||e.altKey||e.isComposing||!wasm)return;
+ if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName))return;
+ if(e.key.length!==1&&e.key!=='Backspace'&&e.key!=='Enter'&&e.key!==' ')return;
+ const key=e.key.toLowerCase();
+ const region='qwertasdfgzxcvb'.includes(key)?0:'yuiophjkl;nm'.includes(key)?1:2;
+ press(region);
+});
+function press(region){
+ if(!wasm)return;
+ wasm._kage_mode(1);wasm._kage_press(region);
+ $('typing').classList.add('active');$('idle').classList.remove('active');
+}
+$('press-left').onclick=()=>press(0);$('press-mid').onclick=()=>press(1);$('press-right').onclick=()=>press(2);
+$('double').onclick=()=>{press(0);setTimeout(()=>press(1),25)};
+$('typing').onclick=()=>{if(wasm)wasm._kage_mode(1);$('typing').classList.add('active');$('idle').classList.remove('active')};
+$('idle').onclick=()=>{stopAuto();if(wasm)wasm._kage_mode(0);$('idle').classList.add('active');$('typing').classList.remove('active')};
+for(let n=0;n<4;n++)$('frame-'+n).onclick=()=>{
+ if(!wasm)return;wasm._kage_frame(n);$('typing').classList.add('active');$('idle').classList.remove('active')
+};
+function stopAuto(){
+ if(autoTimer){clearInterval(autoTimer);autoTimer=null}
+ $('auto').textContent='Auto : désactivé';$('auto').classList.remove('active')
+}
+function startAuto(){
+ stopAuto();
+ const ms=Math.max(90,Math.min(800,Number($('auto-speed').value)||230));
+ autoTimer=setInterval(()=>press((autoIndex++)%3),ms);
+ $('auto').textContent='Auto : activé';$('auto').classList.add('active')
+}
+$('auto').onclick=()=>autoTimer?stopAuto():startAuto();
+$('auto-speed').onchange=()=>{if(autoTimer)startAuto()};
+$('copy').onclick=async()=>{try{await navigator.clipboard.writeText($('code').value);notify('Code copié.')}catch(e){notify('Copie non autorisée : '+e.message,true)}};
+function download(name,text,type){
+ const object=URL.createObjectURL(new Blob([text],{type}));
+ const a=document.createElement('a');a.href=object;a.download=name;a.click();
+ setTimeout(()=>URL.revokeObjectURL(object),3000)
+}
+$('export').onclick=()=>{if(current)download('kage-typing-'+active+'.json',JSON.stringify({
+ schema:'kage-typing-v1',profile:active,geometry:Object.fromEntries(SCHEMA.map((x,i)=>[x[1],current[i]]))
+},null,2),'application/json')};
+$('screenshot').onclick=()=>{const a=document.createElement('a');a.download='kage-typing-'+active+'.png';a.href=canvas.toDataURL('image/png');a.click()};
+function paint(){
+ if(!wasm)return;
+ const bytes=wasm.HEAPU8,p=wasm._kage_framebuffer(),out=image.data;
+ for(let i=0;i<WIDTH*HEIGHT;i++){
+   const offset=p+i*2,v=bytes[offset]|(bytes[offset+1]<<8),k=i*4;
+   out[k]=((v>>11)&31)*255/31;
+   out[k+1]=((v>>5)&63)*255/63;
+   out[k+2]=(v&31)*255/31;
+   out[k+3]=255;
+ }
+ ctx.putImageData(image,0,0);
+ $('stroke-count').textContent=wasm._kage_strokes()+' frappes';
+ $('pending').textContent=wasm._kage_pending()+' en attente';
+}
+function animation(now){
+ if(!wasm)return;
+ const dt=Math.min(100,Math.max(1,Math.round(now-renderTime)));
+ renderTime=now;
+ wasm._kage_tick(dt);
+ paint();
+ frames++;
+ if(now-firstTime>1000){$('fps').textContent=frames+' images/s';firstTime=now;frames=0}
+ requestAnimationFrame(animation);
+}
+async function loadLvgl(){
+ const script=document.createElement('script');
+ script.src='/control/simulator/assets/kage_lvgl.js';
+ script.onerror=()=>notify('Fichier LVGL/WASM absent. Il faut construire les artefacts du workflow « typing-simulator » et les déployer sur le M920q. Aucun faux aperçu HTML ne sera affiché.',true);
+ script.onload=async()=>{
+   try{
+     if(typeof window.createKageLVGL!=='function')throw Error('Chargeur WebAssembly introuvable');
+     wasm=await window.createKageLVGL({locateFile:f=>'/control/simulator/assets/'+f});
+     if(wasm._kage_init()!==1)throw Error('Initialisation LVGL impossible');
+     const n=wasm._kage_field_count();
+     if(n!==SCHEMA.length)throw Error('Schéma C++/Web divergent ('+n+' / '+SCHEMA.length+')');
+     const ptr=wasm._malloc(n*4);
+     try{wasm._kage_defaults(ptr,n);defaults=Array.from(wasm.HEAP32.slice(ptr/4,ptr/4+n))}
+     finally{wasm._free(ptr)}
+     profiles={};active='default';rebuildDropdown();selectProfile('default',defaults);
+     notify('LVGL 9.6 initialisé. Prêt à simuler les frappes.');
+     $('build-id').textContent='Moteur : WebAssembly LVGL 9.6.0 · même source C++ que la cible ESP32';
+     await fetchProfiles();
+     renderTime=performance.now();firstTime=renderTime;requestAnimationFrame(animation);
+   }catch(e){notify('Erreur réelle du moteur LVGL : '+e.message,true)}
+ };
+ document.head.appendChild(script);
+}
+controls();loadLvgl();
+</script></body></html>
