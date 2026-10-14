@@ -26,7 +26,7 @@ target_link_options(kage_lvgl PRIVATE
   "SHELL:-sSTACK_SIZE=524288"
   "SHELL:-sENVIRONMENT=web"
   "SHELL:-sFILESYSTEM=0"
-  "SHELL:-sEXPORTED_FUNCTIONS=['_malloc','_free','_kage_init','_kage_framebuffer','_kage_field_count','_kage_defaults','_kage_set_config','_kage_press','_kage_mode','_kage_reset','_kage_strokes','_kage_pending','_kage_is_raised','_kage_tick']"
+  "SHELL:-sEXPORTED_FUNCTIONS=['_malloc','_free','_kage_init','_kage_framebuffer','_kage_field_count','_kage_defaults','_kage_set_config','_kage_press','_kage_frame','_kage_mode','_kage_reset','_kage_strokes','_kage_pending','_kage_is_raised','_kage_tick']"
   "SHELL:-sEXPORTED_RUNTIME_METHODS=['HEAPU8','HEAP32']"
   "SHELL:-sNO_EXIT_RUNTIME=1"
   "SHELL:-O2"
