@@ -118,11 +118,11 @@ void Scene::create_keyboard() {
     const int interior_w = w - 2 * inset;
     const int interior_h = h - 2 * inset;
     const int rows = 4, gap = std::max(3, h / 29);
+    const int key_gap = std::max(3, w / 90);
     const int key_h = (interior_h - (rows - 1) * gap) / rows;
     for (int row = 0; row < rows; ++row) {
         const int yy = y + inset + row * (key_h + gap);
         const int cells = row == 0 ? 8 : (row == 3 ? 9 : 10);
-        const int key_gap = std::max(3, w / 90);
         // The broad space bar is on the FAR side, next to the face.
         // Distribute a long key through the centre of the top row.
         if (row == 0) {
