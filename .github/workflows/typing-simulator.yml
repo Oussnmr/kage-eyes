@@ -36,7 +36,7 @@ jobs:
       - name: Setup Emscripten
         uses: mymindstorm/setup-emsdk@v14
         with:
-          version: 3.1.75
+          version: latest
       - name: Build exact firmware LVGL version 9.6.0 in WebAssembly
         shell: bash
         run: |
