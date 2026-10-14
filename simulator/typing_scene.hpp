@@ -48,7 +48,7 @@ private:
     int forced_frame_ = 0;
     float seconds_ = 0.0f;
     float expression_timer_ = 0.0f;
-    float blink_timer_ = 0.0f;
+    float blink_timer_ = 0.3f;
     float squint_current_ = 0.0f;
     float blink_ = 0.0f;
 };
