@@ -21,6 +21,7 @@ public:
     void set_config(const int *config, int count);
     void defaults(int *output, int count) const;
     void keypress(int region);
+    void set_frame(int frame); // 0 raised, 1 left, 2 centre, 3 right
     void reset();
     void tick(int elapsed_ms);
     void set_mode(bool typing);
@@ -43,6 +44,8 @@ private:
     int settings_[FIELD_COUNT] = {};
     TypingTimeline timeline_;
     bool typing_ = true;
+    bool forced_ = false;
+    int forced_frame_ = 0;
     float seconds_ = 0.0f;
     float expression_timer_ = 0.0f;
     float blink_timer_ = 0.0f;
