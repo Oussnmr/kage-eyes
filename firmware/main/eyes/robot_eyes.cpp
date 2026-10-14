@@ -135,25 +135,51 @@ static lv_obj_t *preview_rect(lv_obj_t *parent, int x, int y, int width, int hei
     return item;
 }
 
-static lv_obj_t *preview_segment(lv_obj_t *parent, int x1, int y1, int x2, int y2,
-                                 int width, uint32_t color) {
-    constexpr float kPi = 3.14159265358979323846f;
-    const float dx = static_cast<float>(x2 - x1);
-    const float dy = static_cast<float>(y2 - y1);
-    const int length = std::max(1, static_cast<int>(std::round(std::hypot(dx, dy))));
-    lv_obj_t *item = preview_rect(parent, (x1 + x2 - length) / 2,
-                                  (y1 + y2 - width) / 2, length, width,
-                                  color, width / 2);
-    lv_obj_set_style_transform_pivot_x(item, length / 2, 0);
-    lv_obj_set_style_transform_pivot_y(item, width / 2, 0);
-    lv_obj_set_style_transform_rotation(
-        item, static_cast<int32_t>(std::lround(std::atan2(dy, dx) * 1800.0f / kPi)), 0);
-    return item;
+// The Waveshare renderer clips transformed LVGL objects before rotating them.
+// Draw the arm straight into the layer, just like simulator/typing_scene.cpp,
+// so the physical display and simulator share the same uncut silhouette.
+static void preview_line(lv_layer_t *layer, int x1, int y1, int x2, int y2,
+                         int width, uint32_t color) {
+    lv_draw_line_dsc_t line;
+    lv_draw_line_dsc_init(&line);
+    line.color = lv_color_hex(color);
+    line.opa = LV_OPA_COVER;
+    line.width = width;
+    line.round_start = 1;
+    line.round_end = 1;
+    line.p1.x = x1;
+    line.p1.y = y1;
+    line.p2.x = x2;
+    line.p2.y = y2;
+    lv_draw_line(layer, &line);
+}
+
+static void draw_typing_preview_arm(lv_event_t *event) {
+    lv_layer_t *layer = lv_event_get_layer(event);
+    if (!layer) return;
+
+    constexpr int sx = 92, sy = 251, tx = 69, ty = 186, thick = 29;
+    constexpr int wrist_x = tx + thick / 5;
+    constexpr int wrist_y = ty + thick / 2;
+    // Black first creates the same clean negative-space outline used by the
+    // simulator, then cyan fills the arm and its three rounded fingers.
+    for (int pass = 0; pass < 2; ++pass) {
+        const uint32_t color = pass == 0 ? 0x000000 : CYAN;
+        const int border = pass == 0 ? 7 : 0;
+        preview_line(layer, sx, sy, wrist_x, wrist_y, thick + border, color);
+        for (int finger = -1; finger <= 1; ++finger) {
+            constexpr int spread = thick / 2 + 2;
+            const int fx = tx + finger * spread;
+            const int fy = ty - (finger == 0 ? 9 : 2);
+            preview_line(layer, wrist_x, wrist_y, fx, fy, thick * 2 / 3 + border, color);
+        }
+    }
 }
 
 static void create_typing_preview(lv_obj_t *parent) {
     s_typing_preview = preview_rect(parent, 0, 0, SCREEN_W, SCREEN_H, 0x000000);
     lv_obj_set_style_opa(s_typing_preview, LV_OPA_TRANSP, 0);
+    lv_obj_add_event_cb(s_typing_preview, draw_typing_preview_arm, LV_EVENT_DRAW_MAIN, nullptr);
     // Keep this overlay in lockstep with simulator/typing_scene.cpp defaults.
     preview_rect(s_typing_preview, 140, 87, 112, 112, CYAN, 28);
     preview_rect(s_typing_preview, 313, 87, 112, 112, CYAN, 28);
@@ -190,20 +216,6 @@ static void create_typing_preview(lv_obj_t *parent) {
     preview_rect(s_typing_preview, x + inset, y + inset + key_h + gap,
                  (interior_w - 9 * key_gap) / 10, key_h * 2 + gap, WHITE, 6);
 
-    // Same raised arm geometry as the simulator's default frame, including its
-    // black negative-space outline.
-    constexpr int sx = 92, sy = 251, tx = 69, ty = 186, thick = 29;
-    const int wrist_x = tx + thick / 5, wrist_y = ty + thick / 2;
-    preview_segment(s_typing_preview, sx, sy, wrist_x, wrist_y, thick + 7, 0x000000);
-    preview_segment(s_typing_preview, sx, sy, wrist_x, wrist_y, thick, CYAN);
-    const int spread = thick / 2 + 2;
-    for (int finger = -1; finger <= 1; ++finger) {
-        const int dx = finger * spread;
-        const int fx = tx + dx;
-        const int fy = ty - (finger == 0 ? 9 : 2);
-        preview_segment(s_typing_preview, wrist_x, wrist_y, fx, fy, thick * 2 / 3 + 7, 0x000000);
-        preview_segment(s_typing_preview, wrist_x, wrist_y, fx, fy, thick * 2 / 3, CYAN);
-    }
 }
 
 static float random_unit() {
