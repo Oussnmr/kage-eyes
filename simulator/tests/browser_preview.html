@@ -1,0 +1,28 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Kage LVGL smoke</title>
+<style>html,body{margin:0;background:#000}canvas{display:block;width:896px;height:736px;image-rendering:pixelated}</style></head>
+<body><canvas id="preview" width="448" height="368"></canvas>
+<script src="../../backend/typing_simulator_dist/kage_lvgl.js"></script>
+<script>
+(async function(){
+ try{
+  const module=await createKageLVGL({locateFile:f=>'../../backend/typing_simulator_dist/'+f});
+  if(module._kage_init()!==1)throw Error('LVGL init');
+  const frame=Math.max(0,Math.min(3,Number(new URLSearchParams(location.search).get('frame'))||0));
+  module._kage_frame(frame);
+  module._kage_tick(40);
+  const data=new ImageData(448,368),px=module.HEAPU8,offset=module._kage_framebuffer();
+  let bright=0,cyan=0,white=0;
+  for(let i=0;i<448*368;i++){
+   const c=px[offset+i*2]|(px[offset+i*2+1]<<8),p=i*4;
+   const r=((c>>11)&31)*255/31,g=((c>>5)&63)*255/63,b=(c&31)*255/31;
+   data.data[p]=r;data.data[p+1]=g;data.data[p+2]=b;data.data[p+3]=255;
+   if(r+g+b>200)bright++;
+   if(g>170&&b>170&&r<175)cyan++;
+   if(r>210&&g>210&&b>210)white++;
+  }
+  document.getElementById('preview').getContext('2d').putImageData(data,0,0);
+  if(bright<10000||cyan<2000||white<1000)throw Error('Insufficient LVGL pixels: '+JSON.stringify({bright,cyan,white}));
+  document.body.setAttribute('data-render-ready','yes');
+ }catch(e){document.body.setAttribute('data-render-error',String(e))}
+})();
+</script></body></html>
