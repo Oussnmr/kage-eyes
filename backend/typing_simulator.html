@@ -226,9 +226,20 @@ document.addEventListener('keydown',e=>{
  const key=e.key.toLowerCase();
  if(key===' '){press(3);return}
  if(key==='enter'){press(4);return}
- const region='qwertasdfgzxcvb'.includes(key)?0:'yuiophjkl;nm'.includes(key)?1:2;
+ const region=keyboardRegion(key,e.code);
  press(region);
 });
+function keyboardRegion(key,code){
+ const red=['Digit1','Digit2','Digit3','Digit4'];
+ const green=['Digit5','Digit6','Digit7'];
+ if(red.includes(code))return 0;
+ if(green.includes(code))return 1;
+ if(/^Digit[890]$/.test(code))return 2;
+ if('azeqsdwxc'.includes(key))return 0;
+ if('rtyfghvbn'.includes(key))return 1;
+ if('uiopjklm'.includes(key))return 2;
+ return 2;
+}
 function press(region){
  if(!wasm)return;
  wasm._kage_mode(1);wasm._kage_press(region);

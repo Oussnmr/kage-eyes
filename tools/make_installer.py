@@ -22,6 +22,7 @@ silently ship a stale offset.
 Web Serial needs a secure context: serve the folder over HTTPS (or from
 http://localhost for a local check: `python3 -m http.server -d installer/dist`)."""
 import argparse, datetime, json, os, shutil, subprocess, sys
+from zoneinfo import ZoneInfo
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_BUILD = os.path.expanduser("~/.cache/pocket-tank/fw-build")
@@ -67,8 +68,10 @@ def main():
 
     version = a.version or git_version()
     # Keep the exact build timestamp visible on the public installer page.
-    # GitHub Actions runs in UTC, so label it explicitly to avoid ambiguity.
-    date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    # GitHub Actions runs in UTC; display it in the user's Brussels timezone.
+    date = datetime.datetime.now(datetime.timezone.utc).astimezone(
+        ZoneInfo("Europe/Brussels")
+    ).strftime("%Y-%m-%d %H:%M Europe/Brussels")
     out = a.out
     if os.path.isdir(out):
         shutil.rmtree(out)
