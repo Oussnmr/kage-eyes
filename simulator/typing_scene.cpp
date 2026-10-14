@@ -12,7 +12,7 @@ constexpr int DEFAULTS[FIELD_COUNT] = {
     282, 215, 39, 6,                // mouth, just above keyboard
     10, 245, 428, 110,              // keyboard, white with black key gaps
     92, 251, 69, 186,               // arm root and raised fingertips
-    139, 211, 309, 224, 43, 314, 218, 282, 29, // five targets: L/C/R/space/enter
+    139, 211, 309, 224, 43, 314, 254, 282, 29, // five targets: L/C/R/space/enter
     8, 72, 55, 85, 7000           // hover, squint %, up/down and blink time
 };
 int limit(int value, int low, int high) { return std::max(low, std::min(high, value)); }

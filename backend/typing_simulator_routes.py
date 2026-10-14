@@ -32,7 +32,7 @@ def _normalise_values(values):
         # Original layout ended the arm geometry with left/centre/right X, touch
         # Y and thickness. Insert the five-region positions without changing the
         # old values or the animation timings that follow them.
-        values = (values[:21] + [224, 43, values[21], 218, 282, values[22]]
+        values = (values[:21] + [224, 43, values[21], 254, 282, values[22]]
                   + values[23:])
     if len(values) != FIELDS or any(abs(value) > 20000 for value in values):
         return None
