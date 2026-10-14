@@ -1843,4 +1843,15 @@ app.include_router(make_typing_router(require_kage_key, set_command))
 # temporary screen for ten seconds, while the text continues to its normal
 # destination and motor/SIKAI controls remain untouched.
 from typing_activity import start as start_typing_activity
-start_typing_activity(lambda: set_command("typing_preview:10000"))
+
+
+def _typing_region(virtual_key: int) -> int:
+    """Map the physical AZERTY/QWERTY keyboard columns to Kage's three zones."""
+    left = {ord(letter) for letter in "QWEASDZXC"}
+    middle = {ord(letter) for letter in "RTYFGHVBN"}
+    return 0 if virtual_key in left else 1 if virtual_key in middle else 2
+
+
+start_typing_activity(
+    lambda virtual_key: set_command(f"typing_preview:10000:{_typing_region(virtual_key)}")
+)

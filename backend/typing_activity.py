@@ -87,7 +87,7 @@ def _listen(on_letter) -> None:
                         # letter is deliberately discarded immediately.
                         if header.type == 1 and not (key.flags & 0x0001) and 0x41 <= key.virtual_key <= 0x5A:
                             try:
-                                on_letter()
+                                on_letter(key.virtual_key)
                             except Exception:
                                 _log.exception("typing activity callback failed")
             return user32.DefWindowProcW(hwnd, message, wparam, lparam)

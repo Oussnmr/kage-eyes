@@ -169,9 +169,9 @@ static void dispatch_command(const char *command) {
     }
     int first = 0;
     int second = 0;
-    int pan = 0, tilt = 0, duration = 0, speed = 0;
-    if (std::sscanf(command, "typing_preview:%d", &duration) == 1) {
-        robot_eyes_preview_typing_layout(duration);
+    int pan = 0, tilt = 0, duration = 0, speed = 0, typing_region = -1;
+    if (std::sscanf(command, "typing_preview:%d:%d", &duration, &typing_region) >= 1) {
+        robot_eyes_preview_typing_layout(duration, typing_region);
         return;
     }
     if (std::sscanf(command, "studio:%d:%d:%d:%d:%d:%d",

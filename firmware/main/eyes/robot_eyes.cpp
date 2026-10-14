@@ -57,6 +57,7 @@ static lv_obj_t *s_sleep_z[3];
 static lv_obj_t *s_charge_bolt;
 static lv_obj_t *s_voice_indicator;
 static lv_obj_t *s_typing_preview;
+static lv_obj_t *s_typing_arm_front;
 static lv_timer_t *s_timer;
 static bool s_active;
 static bool s_angry;
@@ -119,6 +120,8 @@ static std::atomic<int> s_manual_look_x{0};
 static std::atomic<int> s_manual_look_y{0};
 static std::atomic<int64_t> s_manual_look_updated_us{0};
 static std::atomic<int64_t> s_typing_preview_until_us{0};
+static std::atomic<int64_t> s_typing_strike_until_us{0};
+static std::atomic<int> s_typing_region{1};
 static lv_timer_t *s_tap_timer;
 
 static lv_obj_t *preview_rect(lv_obj_t *parent, int x, int y, int width, int height,
@@ -154,17 +157,26 @@ static void preview_line(lv_layer_t *layer, int x1, int y1, int x2, int y2,
     lv_draw_line(layer, &line);
 }
 
-static void draw_typing_preview_arm(lv_event_t *event) {
+static void draw_typing_preview_arm(lv_event_t *event, bool front) {
     // Direct layer drawing is not affected by the transparent preview
     // container, so it must follow the same timeout as the rest of the
     // temporary typing screen.
-    if (esp_timer_get_time() >= s_typing_preview_until_us.load(std::memory_order_acquire)) return;
+    const int64_t now = esp_timer_get_time();
+    if (now >= s_typing_preview_until_us.load(std::memory_order_acquire)) return;
+    const bool striking = now < s_typing_strike_until_us.load(std::memory_order_acquire);
+    if (front != striking) return;
     lv_layer_t *layer = lv_event_get_layer(event);
     if (!layer) return;
 
     constexpr int sx = 92, sy = 251, tx = 69, ty = 186, thick = 29;
-    constexpr int wrist_x = tx + thick / 5;
-    constexpr int wrist_y = ty + thick / 2;
+    int target_x = tx, target_y = ty;
+    if (striking) {
+        constexpr int targets[] = {139, 211, 309};
+        target_x = targets[std::max(0, std::min(2, s_typing_region.load(std::memory_order_relaxed)))];
+        target_y = 314;
+    }
+    const int wrist_x = striking ? target_x - thick / 3 : target_x + thick / 5;
+    const int wrist_y = striking ? target_y - thick / 3 : target_y + thick / 2;
     // Black first creates the same clean negative-space outline used by the
     // simulator, then cyan fills the arm and its three rounded fingers.
     for (int pass = 0; pass < 2; ++pass) {
@@ -173,17 +185,27 @@ static void draw_typing_preview_arm(lv_event_t *event) {
         preview_line(layer, sx, sy, wrist_x, wrist_y, thick + border, color);
         for (int finger = -1; finger <= 1; ++finger) {
             constexpr int spread = thick / 2 + 2;
-            const int fx = tx + finger * spread;
-            const int fy = ty - (finger == 0 ? 9 : 2);
+            const int fx = striking ? target_x + finger * spread + thick / 6
+                                    : target_x + finger * spread;
+            const int fy = striking ? target_y + 8 + (finger == 0 ? 4 : 0)
+                                    : target_y - (finger == 0 ? 9 : 2);
             preview_line(layer, wrist_x, wrist_y, fx, fy, thick * 2 / 3 + border, color);
         }
     }
 }
 
+static void draw_typing_preview_arm_back(lv_event_t *event) {
+    draw_typing_preview_arm(event, false);
+}
+
+static void draw_typing_preview_arm_front(lv_event_t *event) {
+    draw_typing_preview_arm(event, true);
+}
+
 static void create_typing_preview(lv_obj_t *parent) {
     s_typing_preview = preview_rect(parent, 0, 0, SCREEN_W, SCREEN_H, 0x000000);
     lv_obj_set_style_opa(s_typing_preview, LV_OPA_TRANSP, 0);
-    lv_obj_add_event_cb(s_typing_preview, draw_typing_preview_arm, LV_EVENT_DRAW_MAIN, nullptr);
+    lv_obj_add_event_cb(s_typing_preview, draw_typing_preview_arm_back, LV_EVENT_DRAW_MAIN, nullptr);
     // Keep this overlay in lockstep with simulator/typing_scene.cpp defaults.
     preview_rect(s_typing_preview, 140, 87, 112, 112, CYAN, 28);
     preview_rect(s_typing_preview, 313, 87, 112, 112, CYAN, 28);
@@ -219,6 +241,12 @@ static void create_typing_preview(lv_obj_t *parent) {
     }
     preview_rect(s_typing_preview, x + inset, y + inset + key_h + gap,
                  (interior_w - 9 * key_gap) / 10, key_h * 2 + gap, WHITE, 6);
+
+    // This transparent child is above the keyboard. It is used only for the
+    // short downstroke, so the hand is visibly pressing the selected key zone.
+    s_typing_arm_front = preview_rect(s_typing_preview, 0, 0, SCREEN_W, SCREEN_H, 0x000000);
+    lv_obj_set_style_bg_opa(s_typing_arm_front, LV_OPA_TRANSP, 0);
+    lv_obj_add_event_cb(s_typing_arm_front, draw_typing_preview_arm_front, LV_EVENT_DRAW_MAIN, nullptr);
 
 }
 
@@ -493,7 +521,13 @@ static void animate(lv_timer_t *) {
     if (s_typing_preview) {
         lv_obj_set_style_opa(s_typing_preview,
                              show_typing_preview ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-        if (show_typing_preview) return;
+        if (show_typing_preview) {
+            // The arm is direct-drawn, so invalidate it while its 140 ms
+            // downstroke is active and when it returns to the raised pose.
+            lv_obj_invalidate(s_typing_preview);
+            if (s_typing_arm_front) lv_obj_invalidate(s_typing_arm_front);
+            return;
+        }
     }
 
     const int assistant_state = s_assistant_state.load();
@@ -945,9 +979,14 @@ void robot_eyes_set_custom_face(const int *values, size_t count, bool enabled) {
     s_custom_face_active.store(true, std::memory_order_release);
 }
 
-void robot_eyes_preview_typing_layout(int duration_ms) {
+void robot_eyes_preview_typing_layout(int duration_ms, int region) {
     duration_ms = std::max(1000, std::min(60000, duration_ms));
-    s_typing_preview_until_us.store(esp_timer_get_time() +
+    const int64_t now = esp_timer_get_time();
+    if (region >= 0) {
+        s_typing_region.store(std::max(0, std::min(2, region)), std::memory_order_release);
+        s_typing_strike_until_us.store(now + 140000, std::memory_order_release);
+    }
+    s_typing_preview_until_us.store(now +
                                     static_cast<int64_t>(duration_ms) * 1000,
                                     std::memory_order_release);
 }
