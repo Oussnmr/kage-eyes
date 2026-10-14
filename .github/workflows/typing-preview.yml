@@ -43,6 +43,38 @@ jobs:
         with:
           name: kage-typing-lvgl-4frame-preview
           path: simulator/tests/previews/frame-*.png
+      - name: Assemble standalone deployable package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p package/backend/typing_simulator_dist package/tools package/simulator
+          cp backend/typing_simulator.html backend/typing_simulator_routes.py package/backend/
+          cp backend/typing_simulator_dist/kage_lvgl.js backend/typing_simulator_dist/kage_lvgl.wasm package/backend/typing_simulator_dist/
+          cp tools/deploy_typing_simulator.ps1 package/tools/
+          cp simulator/README.md package/simulator/
+          cat > package/HOW_TO_INSTALL.txt <<'NOTE'
+          KAGE LVGL TYPING SIMULATOR — ISOLATED PREVIEW
+          1. Extract this ZIP on the M920q, e.g. C:\\Kage\\typing-preview.
+          2. Open PowerShell (your usual Windows user).
+          3. Check first (does not modify anything):
+             & "C:\\Kage\\typing-preview\\tools\\deploy_typing_simulator.ps1" -Repo "C:\\Kage\\typing-preview"
+          4. Then install the isolated UI files:
+             & "C:\\Kage\\typing-preview\\tools\\deploy_typing_simulator.ps1" -Repo "C:\\Kage\\typing-preview" -Install
+          5. Restart your existing Kage backend, then visit:
+             http://192.168.129.157:8000/control/simulator
+
+          Your C:\\Kage\\app.py is backed up and receives ONLY 2 route lines.
+          Your existing control.html is backed up and gets ONLY the simulator link.
+          The script NEVER flashes the Waveshare or edits the robot firmware.
+          To undo, restore app.py and control.html from the timestamped backup
+          directory under C:\\Kage and restart Kage.
+          NOTE
+      - name: Upload installable preview (UI + engine + safe deployment)
+        uses: actions/upload-artifact@v4
+        with:
+          name: kage-typing-installable-preview
+          path: package/
+          if-no-files-found: error
       - name: Commit previews to the isolated feature branch
         shell: bash
         run: |
