@@ -122,30 +122,41 @@ void Scene::create_keyboard() {
     const int key_h = (interior_h - (rows - 1) * gap) / rows;
     for (int row = 0; row < rows; ++row) {
         const int yy = y + inset + row * (key_h + gap);
-        // Perspective légère : chaque rangée descend un peu vers la droite,
-        // comme un vrai clavier vu en biais, sans ajouter de traits parasites.
-        const int row_shift = row * std::max(3, w / 70);
-        const int cells = row == 3 ? 9 : 10;
-        const int available = interior_w - row_shift - (cells - 1) * key_gap;
-        int x0 = x + inset + row_shift;
-        for (int i = 0; i < cells; ++i) {
-            const int end = x + inset + row_shift + (available * (i + 1)) / cells + i * key_gap;
-            const int kw = end - x0;
-            plain(keyboard_, x0, yy, kw, key_h, WHITE, std::min(6, key_h / 3));
-            x0 = end + key_gap;
+        // Conserver le dessin compact historique ; le mapping des touches
+        // reste indépendant et continue d'utiliser les cinq zones actuelles.
+        const int row_shift = row == 1 ? std::max(3, key_h / 5) : 0;
+        const int cells = row == 0 ? 8 : (row == 3 ? 9 : 10);
+        if (row == 0) {
+            const int proportions[] = {1, 1, 5, 1, 1};
+            constexpr int total = 9;
+            int x0 = x + inset;
+            const int available = interior_w - key_gap * 4;
+            for (int i = 0; i < 5; ++i) {
+                int kw = available * proportions[i] / total;
+                if (i == 4) kw = x + inset + interior_w - x0;
+                plain(keyboard_, x0, yy, kw, key_h, WHITE, std::min(6, key_h / 3));
+                x0 += kw + key_gap;
+            }
+        } else {
+            int x0 = x + inset + row_shift;
+            const int available = interior_w - row_shift - (cells - 1) * key_gap;
+            for (int i = 0; i < cells; ++i) {
+                const int end = x + inset + row_shift + (available * (i + 1)) / cells + i * key_gap;
+                const int kw = end - x0;
+                plain(keyboard_, x0, yy, kw, key_h, WHITE, std::min(6, key_h / 3));
+                x0 = end + key_gap;
+            }
         }
     }
-    // Entrée : vraie touche en L à gauche, comme sur la référence utilisateur.
-    // On masque d'abord les touches sous son ouverture afin de ne laisser
-    // apparaître aucun ancien contour à droite.
+    // Restaurer le dessin historique de la touche Entrée. Le déclencheur
+    // reste la zone 4 actuelle ; seul le rendu visuel est restauré.
     const int unit = std::max(8, (interior_w - 9 * key_gap) / 10);
-    const int enter_x = x + inset + 2;
-    const int enter_y = y + inset + key_h + gap - 2;
-    plain(keyboard_, enter_x + unit + key_gap, enter_y + 4,
-          unit + key_gap, key_h + gap - 6, BLACK, 2);
-    plain(keyboard_, enter_x, enter_y, unit, key_h * 2 + gap, WHITE, 5);
-    plain(keyboard_, enter_x, enter_y + key_h + gap, unit * 2 + key_gap,
-          key_h, WHITE, 5);
+    const int enter_x = x + inset + interior_w - unit * 2 - key_gap;
+    const int enter_y = y + inset + key_h + gap;
+    plain(keyboard_, enter_x, enter_y, unit * 2 + key_gap, key_h, WHITE, 5);
+    plain(keyboard_, enter_x + unit + key_gap, enter_y + key_h, unit, key_h, WHITE, 5);
+    plain(keyboard_, enter_x + 5, enter_y + 5, unit * 2 + key_gap - 10, key_h - 10, BLACK, 3);
+    plain(keyboard_, enter_x + unit + key_gap + 5, enter_y + key_h + 5, unit - 10, key_h - 10, BLACK, 3);
 }
 
 void Scene::draw_arm_event(lv_event_t *event) {
