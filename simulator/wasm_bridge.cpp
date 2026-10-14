@@ -51,6 +51,7 @@ EMSCRIPTEN_KEEPALIVE void kage_set_config(const int *in, int count) {
     if (initialized) scene.set_config(in, count);
 }
 EMSCRIPTEN_KEEPALIVE void kage_press(int region) { if (initialized) scene.keypress(region); }
+EMSCRIPTEN_KEEPALIVE void kage_frame(int frame) { if (initialized) scene.set_frame(frame); }
 EMSCRIPTEN_KEEPALIVE void kage_mode(int typing) { if (initialized) scene.set_mode(typing != 0); }
 EMSCRIPTEN_KEEPALIVE void kage_reset() { if (initialized) scene.reset(); }
 EMSCRIPTEN_KEEPALIVE unsigned kage_strokes() { return scene.timeline().strokes(); }
