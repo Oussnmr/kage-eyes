@@ -200,8 +200,17 @@ void Scene::refresh_arms() {
 
 void Scene::update_geometry() {
     if (!eye_left_) return;
+    // Idle coordinates are the existing robot_eyes.cpp constants; typing
+    // uses an offset, smaller face to leave room for the three-finger arm.
+    const int left_x = typing_ ? settings_[EYE_LEFT_X] : 112;
+    const int right_x = typing_ ? settings_[EYE_RIGHT_X] : 336;
+    const int eye_y = typing_ ? settings_[EYE_Y] : 184;
+    const int eye_width = typing_ ? settings_[EYE_W] : 132;
+    const int eye_height = typing_ ? settings_[EYE_H] : 132;
+    const int radius = typing_ ? settings_[EYE_RADIUS] : 32;
+    const int hover_amplitude = typing_ ? settings_[HOVER_PX] : 11;
     const float bob = (std::sin(seconds_ * 2.20f) + std::sin(seconds_ * .65f) * (2.0f / 11.0f)) *
-                      settings_[HOVER_PX];
+                      hover_amplitude;
     const int offset = static_cast<int>(std::round(bob));
     const bool squint = std::fmod(expression_timer_, 5.5f) > 3.7f &&
                         std::fmod(expression_timer_, 5.5f) < 4.8f;
@@ -209,20 +218,23 @@ void Scene::update_geometry() {
     squint_current_ += (target - squint_current_) * 0.19f;
     const float eye_factor = 1.0f -
         squint_current_ * (1.0f - settings_[SQUINT_PCT] / 100.0f);
-    const int blink_h = static_cast<int>(settings_[EYE_H] * (1.0f - blink_ * .94f));
+    const int blink_h = static_cast<int>(eye_height * (1.0f - blink_ * .94f));
     const int height = std::max(4, static_cast<int>(blink_h * eye_factor));
-    const int width = settings_[EYE_W];
-    const int y = settings_[EYE_Y] + offset - height / 2;
+    const int width = eye_width;
+    const int y = eye_y + offset - height / 2;
     const int xoffset = static_cast<int>(std::sin(seconds_ * .92f) * 3.0f);
-    for (auto entry : {std::pair<lv_obj_t *, int>{eye_left_, settings_[EYE_LEFT_X]},
-                       {eye_right_, settings_[EYE_RIGHT_X]}}) {
+    for (auto entry : {std::pair<lv_obj_t *, int>{eye_left_, left_x},
+                       {eye_right_, right_x}}) {
         lv_obj_set_pos(entry.first, entry.second + xoffset - width / 2, y);
         lv_obj_set_size(entry.first, width, height);
-        lv_obj_set_style_radius(entry.first, std::min(settings_[EYE_RADIUS], height / 2), 0);
+        lv_obj_set_style_radius(entry.first, std::min(radius, height / 2), 0);
     }
-    lv_obj_set_pos(mouth_, settings_[MOUTH_X] - settings_[MOUTH_W] / 2,
-                   settings_[MOUTH_Y] + offset);
-    lv_obj_set_size(mouth_, settings_[MOUTH_W], settings_[MOUTH_H]);
+    const int mouth_w = typing_ ? settings_[MOUTH_W] : 46;
+    const int mouth_h = typing_ ? settings_[MOUTH_H] : 7;
+    const int mouth_x = typing_ ? settings_[MOUTH_X] : 224;
+    const int mouth_y = typing_ ? settings_[MOUTH_Y] : 258;
+    lv_obj_set_pos(mouth_, mouth_x - mouth_w / 2, mouth_y + offset);
+    lv_obj_set_size(mouth_, mouth_w, mouth_h);
 }
 
 void Scene::keypress(int region) {
