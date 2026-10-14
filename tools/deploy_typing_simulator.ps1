@@ -55,5 +55,21 @@ foreach($filename in @('kage_lvgl.js','kage_lvgl.wasm')) {
     Copy-Item (Join-Path $assetDir $filename) $dest -Force
 }
 if($needsRoute){Add-Content -Path $appPath -Value $register -Encoding UTF8}
+# Insert just one navigation link; preserve the current control page and its changes.
+$controlPath = Join-Path $Destination 'control.html'
+if(Test-Path $controlPath) {
+    $page = Get-Content $controlPath -Raw -Encoding UTF8
+    if($page -notmatch 'href="/control/simulator"') {
+        $anchor = '<a href="/control/micro"'
+        if(-not $page.Contains($anchor)) {
+            Write-Warning 'Control navigation anchor not found. Page remains unchanged; open /control/simulator directly.'
+        } else {
+            Copy-Item $controlPath (Join-Path $backupDir 'control.html')
+            $link = '<a href="/control/simulator" style="color:#4fe3ff;font-weight:750">Simulateur LVGL →</a><p class="hint">Aperçu réel LVGL et éditeur de profils.</p>'
+            $updated = $page.Replace($anchor, $link + $anchor)
+            [System.IO.File]::WriteAllText($controlPath, $updated, (New-Object System.Text.UTF8Encoding($false)))
+        }
+    }
+}
 Write-Host "Installed; app.py backup: $backupDir"
 Write-Host 'Restart the backend only after verifying the Python syntax.'
