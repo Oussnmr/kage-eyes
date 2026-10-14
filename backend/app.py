@@ -1820,6 +1820,7 @@ async def audio(request: Request):
 from studio_profiles import register as register_studio
 studio = register_studio(app, require_kage_key, set_command, current_state)
 
-# Independent LVGL/WebAssembly preview. No command bridge or ESP32 changes.
+# LVGL/WebAssembly preview; its optional temporary Kage display reuses the
+# existing firmware typing_preview command and does not alter firmware state.
 from typing_simulator_routes import make_typing_router
-app.include_router(make_typing_router(require_kage_key))
+app.include_router(make_typing_router(require_kage_key, set_command))

@@ -53,7 +53,7 @@ kbd{background:#263748;border:1px solid #405667;padding:1px 5px;border-radius:5p
 <div class="frames"><button id="frame-0">1 · Levé</button><button id="frame-1">2 · Gauche</button><button id="frame-2">3 · Centre</button><button id="frame-3">4 · Droite</button></div>
 <p style="margin-top:12px">Tape sur ton clavier lorsque cette page est ouverte, ou utilise les boutons. Le simulateur ne lit jamais le texte saisi et n'envoie pas de touches au serveur.</p>
 <div class="actions"><button id="press-left">Lettres · gauche</button><button id="press-mid">Lettres · centre</button><button id="press-right">Lettres · droite</button><button id="press-space">Espace · grande touche</button><button id="press-enter">Entrée · touche fusionnée</button><label class="inline">Auto (ms)<input id="auto-speed" type="number" min="90" max="800" step="10" value="230" style="width:85px"></label></div>
-<div class="actions"><button id="show-layout" disabled title="Nécessite une intégration firmware et une autorisation de flash">Afficher sur Kagé · indisponible</button><label class="inline">Durée (s)<input id="layout-seconds" type="number" min="1" max="15" step="1" value="5" disabled style="width:70px"></label></div>
+<div class="actions"><button id="show-layout" disabled>Afficher temporairement sur Kagé</button><label class="inline">Durée (s)<input id="layout-seconds" type="number" min="1" max="15" step="1" value="5" disabled style="width:70px"></label></div>
 </section>
 <section class="card"><h2>Profil et historique</h2>
 <div class="actions"><select id="profile-select" aria-label="Profils"><option value="default">Valeurs initiales du code</option></select><button id="save-profile" class="primary">Enregistrer sous…</button><button id="delete-profile">Supprimer</button></div>
@@ -265,6 +265,15 @@ function startAuto(){
 }
 $('auto').onclick=()=>autoTimer?stopAuto():startAuto();
 $('auto-speed').onchange=()=>{if(autoTimer)startAuto()};
+$('show-layout').onclick=async()=>{
+ const seconds=Math.max(1,Math.min(15,Number($('layout-seconds').value)||5));
+ $('show-layout').disabled=true;
+ try{
+   const result=await api('/control/simulator/show',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({duration:seconds*1000})});
+   notify('Aperçu envoyé sur Kagé pour '+seconds+' s. Le visage normal reviendra automatiquement.');
+ }catch(e){notify('Envoi vers Kagé impossible : '+e.message,true)}
+ finally{$('show-layout').disabled=false}
+};
 $('copy').onclick=async()=>{try{await navigator.clipboard.writeText($('code').value);notify('Code copié.')}catch(e){notify('Copie non autorisée : '+e.message,true)}};
 function download(name,text,type){
  const object=URL.createObjectURL(new Blob([text],{type}));
@@ -315,6 +324,7 @@ async function loadLvgl(){
      finally{wasm._free(ptr)}
      profiles={};active='default';rebuildDropdown();selectProfile('default',defaults);
      notify('LVGL 9.6 initialisé. Prêt à simuler les frappes.');
+     $('show-layout').disabled=false;$('layout-seconds').disabled=false;
      $('build-id').textContent='Moteur : WebAssembly LVGL 9.6.0 · même source C++ que la cible ESP32';
      await fetchProfiles();
      renderTime=performance.now();firstTime=renderTime;requestAnimationFrame(animation);

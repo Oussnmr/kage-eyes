@@ -1,7 +1,8 @@
 """Isolated, authenticated Kage LVGL browser-simulator endpoints.
 
-This module never sends a command to the ESP32 and never mutates face profiles.
-Profiles only store validated geometry (32 integers); they do not execute code.
+Profiles only store validated geometry (32 integers). The optional preview button
+uses the existing firmware `typing_preview:<duration_ms>` command; it does not
+replace the normal face or animation state.
 """
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
@@ -77,7 +78,7 @@ def _persist(profiles):
             os.unlink(name)
 
 
-def make_typing_router(require_kage_key):
+def make_typing_router(require_kage_key, set_command):
     router = APIRouter()
 
     @router.get("/control/simulator", response_class=HTMLResponse)
@@ -112,6 +113,17 @@ def make_typing_router(require_kage_key):
         require_kage_key(request)
         with _guard:
             return {"profiles": _load()}
+
+    @router.post("/control/simulator/show")
+    async def show_on_kage(request: Request):
+        require_kage_key(request)
+        body = await request.json()
+        duration = body.get("duration") if isinstance(body, dict) else None
+        if not isinstance(duration, int) or not 1000 <= duration <= 15000:
+            raise HTTPException(422, "La durée doit être comprise entre 1 et 15 secondes")
+        sequence = set_command(f"typing_preview:{duration}")
+        return {"ok": True, "command": f"typing_preview:{duration}",
+                "sequence": sequence, "duration_ms": duration}
 
     @router.put("/control/simulator/profiles/{name}")
     def save_profile(name: str, values: list[int], request: Request):
