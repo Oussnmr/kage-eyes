@@ -1838,3 +1838,9 @@ studio = register_studio(app, require_kage_key, set_command, current_state)
 # existing firmware typing_preview command and does not alter firmware state.
 from typing_simulator_routes import make_typing_router
 app.include_router(make_typing_router(require_kage_key, set_command))
+
+# Physical PC typing is only a visual cue: every letter refreshes the
+# temporary screen for ten seconds, while the text continues to its normal
+# destination and motor/SIKAI controls remain untouched.
+from typing_activity import start as start_typing_activity
+start_typing_activity(lambda: set_command("typing_preview:10000"))
