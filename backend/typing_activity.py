@@ -10,26 +10,31 @@ from __future__ import annotations
 import ctypes as C
 from ctypes import wintypes as W
 import logging
+import os
 import threading
 
 
 _log = logging.getLogger("kage.typing")
 _started = False
 _guard = threading.Lock()
+_excluded_hid = tuple(part.strip().casefold() for part in os.getenv(
+    "KAGE_TYPING_EXCLUDED_HID", "vid_514c&pid_4155"
+).split(",") if part.strip())
+_TRIGGER_KEYS = set(range(0x41, 0x5B)) | {0x08, 0x0D, 0x20}
 
 
-def start(on_letter) -> None:
+def start(on_key) -> None:
     """Start one daemon listener; failures leave normal Kage operation intact."""
     global _started
     with _guard:
         if _started:
             return
         _started = True
-    threading.Thread(target=_listen, args=(on_letter,), name="kage-typing-input",
+    threading.Thread(target=_listen, args=(on_key,), name="kage-typing-input",
                      daemon=True).start()
 
 
-def _listen(on_letter) -> None:
+def _listen(on_key) -> None:
     try:
         user32 = C.WinDLL("user32", use_last_error=True)
         kernel32 = C.WinDLL("kernel32", use_last_error=True)
@@ -67,8 +72,26 @@ def _listen(on_letter) -> None:
         user32.GetRawInputData.argtypes = [W.HANDLE, W.UINT, C.c_void_p,
                                            C.POINTER(W.UINT), W.UINT]
         user32.GetRawInputData.restype = W.UINT
+        user32.GetRawInputDeviceInfoW.argtypes = [W.HANDLE, W.UINT, C.c_void_p,
+                                                   C.POINTER(W.UINT)]
+        user32.GetRawInputDeviceInfoW.restype = W.UINT
         kernel32.GetModuleHandleW.argtypes = [W.LPCWSTR]
         kernel32.GetModuleHandleW.restype = W.HMODULE
+
+        device_names = {}
+
+        def device_name(handle):
+            if handle not in device_names:
+                length = W.UINT()
+                if user32.GetRawInputDeviceInfoW(handle, 0x20000007, None,
+                                                 C.byref(length)) == 0xFFFFFFFF:
+                    return ""
+                value = C.create_unicode_buffer(length.value + 1)
+                if user32.GetRawInputDeviceInfoW(handle, 0x20000007, value,
+                                                 C.byref(length)) == 0xFFFFFFFF:
+                    return ""
+                device_names[handle] = value.value.casefold()
+            return device_names[handle]
 
         @wndproc
         def procedure(hwnd, message, wparam, lparam):
@@ -83,11 +106,14 @@ def _listen(on_letter) -> None:
                     if copied != 0xFFFFFFFF:
                         header = RawInputHeader.from_buffer(data)
                         key = RawKeyboard.from_buffer(data, header_size)
-                        # Keyboard key-down, restricted to A through Z.  The
-                        # letter is deliberately discarded immediately.
-                        if header.type == 1 and not (key.flags & 0x0001) and 0x41 <= key.virtual_key <= 0x5A:
+                        # Key-down from the PC keyboard only. The key itself is
+                        # discarded after mapping a visual zone; no text is stored.
+                        source = device_name(header.device)
+                        excluded = any(marker in source for marker in _excluded_hid)
+                        if (header.type == 1 and not excluded and
+                                not (key.flags & 0x0001) and key.virtual_key in _TRIGGER_KEYS):
                             try:
-                                on_letter(key.virtual_key)
+                                on_key(key.virtual_key)
                             except Exception:
                                 _log.exception("typing activity callback failed")
             return user32.DefWindowProcW(hwnd, message, wparam, lparam)

@@ -43,3 +43,4 @@ void robot_eyes_set_custom_face(const int *values, size_t count, bool enabled);
 /* Shows the local LVGL typing layout, animates an optional key zone, then
  * restores the unchanged face. Region: 0 left, 1 centre, 2 right, -1 raised. */
 void robot_eyes_preview_typing_layout(int duration_ms, int region = -1);
+void robot_eyes_cancel_typing_preview();

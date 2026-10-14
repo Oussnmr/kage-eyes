@@ -182,6 +182,7 @@ if not KAGE_API_KEY:
     print("ATTENTION: KAGE_API_KEY absent. Les endpoints protégés refuseront les requêtes.")
 
 state_lock = threading.Lock()
+typing_block_until = 0.0
 state = {
     "command": "idle",
     "sequence": 0,
@@ -650,10 +651,31 @@ def normalize_kage_name(text: str) -> str:
     return re.sub(aliases, "Kage", text, flags=re.IGNORECASE)
 
 
+def _motion_priority_seconds(command: str) -> float:
+    if command.startswith(("drive:", "servo", "pan_", "tilt_", "move_")):
+        return 1.0
+    if command.startswith("studioseq:"):
+        return 30.0
+    if command in {"dance", "explore"}:
+        return 20.0
+    if command == "360":
+        return 6.0
+    if command == "motion_stop":
+        return 0.4
+    return 0.0
+
+
 def set_command(command: str) -> int:
     # Keep the web/voice path direct and identical to the original keyboard path.
     # Studio sequences are launched explicitly from /control/studio/motion/.../run.
+    global typing_block_until
+    now = time.monotonic()
     with state_lock:
+        if command.startswith("typing_preview:") and now < typing_block_until:
+            return state["sequence"]
+        priority = _motion_priority_seconds(command)
+        if priority:
+            typing_block_until = now + priority
         state["command"] = command
         state["sequence"] += 1
         sequence = state["sequence"]
@@ -1847,11 +1869,15 @@ from typing_activity import start as start_typing_activity
 
 def _typing_region(virtual_key: int) -> int:
     """Map the physical AZERTY/QWERTY keyboard columns to Kage's three zones."""
+    if virtual_key == 0x20:
+        return 3
+    if virtual_key in {0x08, 0x0D}:
+        return 4
     left = {ord(letter) for letter in "QWEASDZXC"}
     middle = {ord(letter) for letter in "RTYFGHVBN"}
     return 0 if virtual_key in left else 1 if virtual_key in middle else 2
 
 
 start_typing_activity(
-    lambda virtual_key: set_command(f"typing_preview:10000:{_typing_region(virtual_key)}")
+    lambda virtual_key: set_command(f"typing_preview:5000:{_typing_region(virtual_key)}")
 )

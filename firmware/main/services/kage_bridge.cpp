@@ -160,6 +160,8 @@ static void update_info(bool reachable, int status, uint32_t sequence,
 static void dispatch_command(const char *command) {
     if (!command) return;
     robot_eyes_note_activity();
+    if (std::strncmp(command, "typing_preview:", 15) != 0)
+        robot_eyes_cancel_typing_preview();
     if (std::strcmp(command, "dizzy") != 0) robot_eyes_cancel_dizzy();
     if (std::strcmp(command, "dance") != 0) robot_motion_stop_dance();
     if (std::strncmp(command, "studioseq:", 10) == 0) {

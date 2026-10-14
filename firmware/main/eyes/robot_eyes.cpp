@@ -58,6 +58,9 @@ static lv_obj_t *s_charge_bolt;
 static lv_obj_t *s_voice_indicator;
 static lv_obj_t *s_typing_preview;
 static lv_obj_t *s_typing_arm_front;
+static lv_obj_t *s_typing_left_eye;
+static lv_obj_t *s_typing_right_eye;
+static lv_obj_t *s_typing_mouth;
 static lv_timer_t *s_timer;
 static bool s_active;
 static bool s_angry;
@@ -171,9 +174,11 @@ static void draw_typing_preview_arm(lv_event_t *event, bool front) {
     constexpr int sx = 92, sy = 251, tx = 69, ty = 186, thick = 29;
     int target_x = tx, target_y = ty;
     if (striking) {
-        constexpr int targets[] = {139, 211, 309};
-        target_x = targets[std::max(0, std::min(2, s_typing_region.load(std::memory_order_relaxed)))];
-        target_y = 314;
+        constexpr int targets_x[] = {139, 211, 309, 224, 43};
+        constexpr int targets_y[] = {314, 314, 314, 254, 282};
+        const int region = std::max(0, std::min(4, s_typing_region.load(std::memory_order_relaxed)));
+        target_x = targets_x[region];
+        target_y = targets_y[region];
     }
     const int wrist_x = striking ? target_x - thick / 3 : target_x + thick / 5;
     const int wrist_y = striking ? target_y - thick / 3 : target_y + thick / 2;
@@ -207,9 +212,9 @@ static void create_typing_preview(lv_obj_t *parent) {
     lv_obj_set_style_opa(s_typing_preview, LV_OPA_TRANSP, 0);
     lv_obj_add_event_cb(s_typing_preview, draw_typing_preview_arm_back, LV_EVENT_DRAW_MAIN, nullptr);
     // Keep this overlay in lockstep with simulator/typing_scene.cpp defaults.
-    preview_rect(s_typing_preview, 140, 87, 112, 112, CYAN, 28);
-    preview_rect(s_typing_preview, 313, 87, 112, 112, CYAN, 28);
-    preview_rect(s_typing_preview, 262, 212, 39, 6, CYAN, 3);
+    s_typing_left_eye = preview_rect(s_typing_preview, 140, 87, 112, 112, CYAN, 28);
+    s_typing_right_eye = preview_rect(s_typing_preview, 313, 87, 112, 112, CYAN, 28);
+    s_typing_mouth = preview_rect(s_typing_preview, 262, 212, 39, 6, CYAN, 3);
 
     constexpr int x = 10, y = 245, w = 428, h = 110;
     constexpr int pad = 7, inset = 12, rows = 4, gap = 3, key_gap = 4;
@@ -522,6 +527,11 @@ static void animate(lv_timer_t *) {
         lv_obj_set_style_opa(s_typing_preview,
                              show_typing_preview ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
         if (show_typing_preview) {
+            const int hover = static_cast<int>(std::round(
+                sinf(s_time * 2.2f) * 4.0f + sinf(s_time * 0.65f)));
+            if (s_typing_left_eye) lv_obj_set_pos(s_typing_left_eye, 140, 87 + hover);
+            if (s_typing_right_eye) lv_obj_set_pos(s_typing_right_eye, 313, 87 + hover);
+            if (s_typing_mouth) lv_obj_set_pos(s_typing_mouth, 262, 212 + hover);
             // The arm is direct-drawn, so invalidate it while its 140 ms
             // downstroke is active and when it returns to the raised pose.
             lv_obj_invalidate(s_typing_preview);
@@ -983,12 +993,17 @@ void robot_eyes_preview_typing_layout(int duration_ms, int region) {
     duration_ms = std::max(1000, std::min(60000, duration_ms));
     const int64_t now = esp_timer_get_time();
     if (region >= 0) {
-        s_typing_region.store(std::max(0, std::min(2, region)), std::memory_order_release);
+        s_typing_region.store(std::max(0, std::min(4, region)), std::memory_order_release);
         s_typing_strike_until_us.store(now + 140000, std::memory_order_release);
     }
     s_typing_preview_until_us.store(now +
                                     static_cast<int64_t>(duration_ms) * 1000,
                                     std::memory_order_release);
+}
+
+void robot_eyes_cancel_typing_preview() {
+    s_typing_preview_until_us.store(0, std::memory_order_release);
+    s_typing_strike_until_us.store(0, std::memory_order_release);
 }
 
 void robot_eyes_begin(lv_obj_t *parent) {
