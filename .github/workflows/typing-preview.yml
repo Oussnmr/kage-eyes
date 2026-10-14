@@ -1,0 +1,55 @@
+name: Kage typing LVGL visual smoke test
+
+on:
+  push:
+    branches: [feature/typing-lvgl-simulator]
+    paths:
+      - .github/workflows/typing-preview.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render four LVGL frames in headless Chrome
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s backend/typing_simulator_dist/kage_lvgl.js
+          test -s backend/typing_simulator_dist/kage_lvgl.wasm
+          command -v google-chrome
+          mkdir -p simulator/tests/previews
+          python3 -m http.server 8765 --bind 127.0.0.1 >/tmp/kage-http.log 2>&1 &
+          SERVER=$!
+          trap 'kill $SERVER || true' EXIT
+          sleep 2
+          for frame in 0 1 2 3; do
+            URL="http://127.0.0.1:8765/simulator/tests/browser_preview.html?frame=$frame"
+            timeout 30s google-chrome --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --hide-scrollbars --window-size=916,800 --virtual-time-budget=6000 --dump-dom "$URL" >"/tmp/frame-$frame-dom.html" 2>"/tmp/frame-$frame-stderr.txt" || true
+            if ! grep -q 'data-render-ready="yes"' "/tmp/frame-$frame-dom.html"; then
+              cat "/tmp/frame-$frame-dom.html" | tail -25
+              cat "/tmp/frame-$frame-stderr.txt" | tail -30
+              exit 1
+            fi
+            timeout 30s google-chrome --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --hide-scrollbars --window-size=916,800 --virtual-time-budget=6000 --screenshot="simulator/tests/previews/frame-$frame.png" "$URL" >/tmp/frame-screenshot.log 2>&1
+            test -s "simulator/tests/previews/frame-$frame.png"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kage-typing-lvgl-4frame-preview
+          path: simulator/tests/previews/frame-*.png
+      - name: Commit previews to the isolated feature branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add simulator/tests/previews/frame-*.png
+          git commit -m 'Capture LVGL framebuffer browser smoke frames'
+          git pull --rebase origin feature/typing-lvgl-simulator
+          git push origin HEAD:feature/typing-lvgl-simulator
