@@ -64,5 +64,6 @@ jobs:
           git add -f backend/typing_simulator_dist/kage_lvgl.js backend/typing_simulator_dist/kage_lvgl.wasm
           if ! git diff --cached --quiet; then
             git commit -m 'Build Kage LVGL 9.6 WebAssembly preview assets'
+            git pull --rebase origin feature/typing-lvgl-simulator
             git push origin HEAD:feature/typing-lvgl-simulator
           fi
