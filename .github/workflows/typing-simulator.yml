@@ -43,7 +43,7 @@ jobs:
           set -euo pipefail
           git clone --depth 1 --branch v9.6.0 https://github.com/lvgl/lvgl.git /tmp/lvgl-9.6.0
           emcmake cmake -S simulator -B /tmp/kage-typing-build -DLVGL_SOURCE=/tmp/lvgl-9.6.0 -DCMAKE_BUILD_TYPE=Release
-          cmake --build /tmp/kage-typing-build --parallel 4
+          cmake --build /tmp/kage-typing-build --target kage_lvgl --parallel 4
           test -s backend/typing_simulator_dist/kage_lvgl.js
           test -s backend/typing_simulator_dist/kage_lvgl.wasm
           node --check backend/typing_simulator_dist/kage_lvgl.js
