@@ -82,6 +82,11 @@ def make_typing_router(require_kage_key):
 
     @router.get("/control/simulator", response_class=HTMLResponse)
     def simulator_page():
+        return HTMLResponse(LIVE_PAGE.read_text(encoding="utf-8"),
+                            headers={"Cache-Control": "no-store, max-age=0"})
+
+    @router.get("/control/simulator-wasm", response_class=HTMLResponse)
+    def simulator_wasm_page():
         return HTMLResponse(SIM_PAGE.read_text(encoding="utf-8"),
                             headers={"Cache-Control": "no-store, max-age=0"})
 
