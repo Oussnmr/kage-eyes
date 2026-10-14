@@ -52,7 +52,8 @@ kbd{background:#263748;border:1px solid #405667;padding:1px 5px;border-radius:5p
 <p>Chaque nouvelle frappe replace d'abord le bras en position levée, puis le fait redescendre. Les frappes successives restent dans une file, même en cas de double appui.</p>
 <div class="frames"><button id="frame-0">1 · Levé</button><button id="frame-1">2 · Gauche</button><button id="frame-2">3 · Centre</button><button id="frame-3">4 · Droite</button></div>
 <p style="margin-top:12px">Tape sur ton clavier lorsque cette page est ouverte, ou utilise les boutons. Le simulateur ne lit jamais le texte saisi et n'envoie pas de touches au serveur.</p>
-<div class="actions"><button id="press-left">Touche gauche</button><button id="press-mid">Touche centre</button><button id="press-right">Touche droite</button><label class="inline">Auto (ms)<input id="auto-speed" type="number" min="90" max="800" step="10" value="230" style="width:85px"></label></div>
+<div class="actions"><button id="press-left">Zone rouge · gauche</button><button id="press-mid">Zone verte · centre</button><button id="press-right">Zone bleue · droite</button><button id="press-space">Espace · grande touche</button><button id="press-enter">Entrée · touche fusionnée</button><label class="inline">Auto (ms)<input id="auto-speed" type="number" min="90" max="800" step="10" value="230" style="width:85px"></label></div>
+<div class="actions"><button id="show-layout" disabled title="Nécessite une intégration firmware et une autorisation de flash">Afficher sur Kagé · indisponible</button><label class="inline">Durée (s)<input id="layout-seconds" type="number" min="1" max="15" step="1" value="5" disabled style="width:70px"></label></div>
 </section>
 <section class="card"><h2>Profil et historique</h2>
 <div class="actions"><select id="profile-select" aria-label="Profils"><option value="default">Valeurs initiales du code</option></select><button id="save-profile" class="primary">Enregistrer sous…</button><button id="delete-profile">Supprimer</button></div>
@@ -99,7 +100,11 @@ const SCHEMA=[
 ['Bras / main','arm_left_x','Frappe gauche · X',0,430],
 ['Bras / main','arm_center_x','Frappe centre · X',0,430],
 ['Bras / main','arm_right_x','Frappe droite · X',0,445],
+['Bras / main','arm_space_x','Espace · X',0,445],
+['Bras / main','arm_enter_x','Entrée · X',0,445],
 ['Bras / main','arm_touch_y','Doigts sur les touches · Y',160,350],
+['Bras / main','arm_space_y','Espace · Y',160,350],
+['Bras / main','arm_enter_y','Entrée · Y',160,350],
 ['Bras / main','arm_thickness','Épaisseur du bras',12,52],
 ['Animation','hover_px','Amplitude flottement · px',0,18],
 ['Animation','squint_pct','Hauteur yeux plissés · %',45,100],
@@ -219,6 +224,8 @@ document.addEventListener('keydown',e=>{
  if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName))return;
  if(e.key.length!==1&&e.key!=='Backspace'&&e.key!=='Enter'&&e.key!==' ')return;
  const key=e.key.toLowerCase();
+ if(key===' '){press(3);return}
+ if(key==='enter'){press(4);return}
  const region='qwertasdfgzxcvb'.includes(key)?0:'yuiophjkl;nm'.includes(key)?1:2;
  press(region);
 });
@@ -228,6 +235,7 @@ function press(region){
  $('typing').classList.add('active');$('idle').classList.remove('active');
 }
 $('press-left').onclick=()=>press(0);$('press-mid').onclick=()=>press(1);$('press-right').onclick=()=>press(2);
+ $('press-space').onclick=()=>press(3);$('press-enter').onclick=()=>press(4);
 $('double').onclick=()=>{press(0);setTimeout(()=>press(1),25)};
 $('typing').onclick=()=>{if(wasm)wasm._kage_mode(1);$('typing').classList.add('active');$('idle').classList.remove('active')};
 $('idle').onclick=()=>{stopAuto();if(wasm)wasm._kage_mode(0);$('idle').classList.add('active');$('typing').classList.remove('active')};
@@ -241,7 +249,7 @@ function stopAuto(){
 function startAuto(){
  stopAuto();
  const ms=Math.max(90,Math.min(800,Number($('auto-speed').value)||230));
- autoTimer=setInterval(()=>press((autoIndex++)%3),ms);
+ autoTimer=setInterval(()=>press((autoIndex++)%5),ms);
  $('auto').textContent='Auto : activé';$('auto').classList.add('active')
 }
 $('auto').onclick=()=>autoTimer?stopAuto():startAuto();

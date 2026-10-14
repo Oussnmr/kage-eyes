@@ -11,12 +11,12 @@ public:
     void press(int region) {
         // Every press triggers a raised hand, including presses during a strike.
         if (count_ < 64) {
-            regions_[tail_] = static_cast<uint8_t>(std::clamp(region, 0, 2));
+            regions_[tail_] = static_cast<uint8_t>(std::clamp(region, 0, 4));
             tail_ = (tail_ + 1) % 64;
             ++count_;
         } else {
             // Under extreme input, prefer recent keys without growing memory.
-            regions_[(tail_ + 63) % 64] = static_cast<uint8_t>(std::clamp(region, 0, 2));
+            regions_[(tail_ + 63) % 64] = static_cast<uint8_t>(std::clamp(region, 0, 4));
         }
         phase_ = Raised;
         elapsed_ = 0;

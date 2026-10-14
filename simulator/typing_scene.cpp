@@ -12,7 +12,7 @@ constexpr int DEFAULTS[FIELD_COUNT] = {
     282, 215, 39, 6,                // mouth, just above keyboard
     10, 245, 428, 110,              // keyboard, white with black key gaps
     92, 251, 69, 186,               // arm root and raised fingertips
-    139, 211, 309, 314, 29,       // left/middle/right targets, touch Y, arm width
+    139, 211, 309, 365, 43, 314, 218, 282, 29, // five targets: L/C/R/space/enter
     8, 72, 55, 85, 7000           // hover, squint %, up/down and blink time
 };
 int limit(int value, int low, int high) { return std::max(low, std::min(high, value)); }
@@ -147,6 +147,15 @@ void Scene::create_keyboard() {
             }
         }
     }
+    // Fused Enter key at the far left of the two middle rows.
+    lv_obj_t *enter = lv_obj_create(keyboard_);
+    lv_obj_remove_style_all(enter);
+    lv_obj_set_pos(enter, x + inset, y + inset + key_h + gap);
+    lv_obj_set_size(enter, std::max(8, (interior_w - 9 * key_gap) / 10), key_h * 2 + gap);
+    lv_obj_set_style_bg_opa(enter, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(enter, 3, 0);
+    lv_obj_set_style_border_color(enter, lv_color_hex(0xFF4057), 0);
+    lv_obj_set_style_radius(enter, 5, 0);
 }
 
 void Scene::draw_arm_event(lv_event_t *event) {
@@ -165,8 +174,13 @@ void Scene::draw_arm(lv_layer_t *layer, bool raised) {
     int tx = settings_[ARM_LIFT_X], ty = settings_[ARM_LIFT_Y];
     if (!raised) {
         const int region = forced_ ? forced_frame_ - 1 : timeline_.region();
-        tx = settings_[region == 0 ? ARM_LEFT_X : region == 1 ? ARM_CENTER_X : ARM_RIGHT_X];
-        ty = settings_[ARM_TOUCH_Y];
+        switch (region) {
+            case 0: tx = settings_[ARM_LEFT_X]; ty = settings_[ARM_TOUCH_Y]; break;
+            case 1: tx = settings_[ARM_CENTER_X]; ty = settings_[ARM_TOUCH_Y]; break;
+            case 2: tx = settings_[ARM_RIGHT_X]; ty = settings_[ARM_TOUCH_Y]; break;
+            case 3: tx = settings_[ARM_SPACE_X]; ty = settings_[ARM_SPACE_Y]; break;
+            default: tx = settings_[ARM_ENTER_X]; ty = settings_[ARM_ENTER_Y]; break;
+        }
     }
     const int wrist_x = raised ? tx + thick / 5 : tx - thick / 3;
     const int wrist_y = raised ? ty + thick / 2 : ty - thick / 3;

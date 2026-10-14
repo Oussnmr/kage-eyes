@@ -16,9 +16,9 @@ int main() {
     assert(t.strokes() == 2);
     t.reset();
     // Repeated keystrokes are queued, not silently coalesced.
-    for(int i = 0; i < 8; ++i) t.press(i%3);
+    for(int i = 0; i < 10; ++i) t.press(i%5);
     for(int i = 0; i < 100; ++i) t.tick(40,55,85);
-    assert(t.strokes() == 8);
+    assert(t.strokes() == 10);
     assert(t.pending() == 0);
     assert(t.phase() == TypingTimeline::Raised);
     std::puts("typing timeline OK");

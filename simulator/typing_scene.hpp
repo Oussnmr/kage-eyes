@@ -10,7 +10,8 @@ enum Field {
     MOUTH_X, MOUTH_Y, MOUTH_W, MOUTH_H,
     KEY_X, KEY_Y, KEY_W, KEY_H,
     ARM_START_X, ARM_START_Y, ARM_LIFT_X, ARM_LIFT_Y,
-    ARM_LEFT_X, ARM_CENTER_X, ARM_RIGHT_X, ARM_TOUCH_Y, ARM_THICKNESS,
+    ARM_LEFT_X, ARM_CENTER_X, ARM_RIGHT_X, ARM_SPACE_X, ARM_ENTER_X,
+    ARM_TOUCH_Y, ARM_SPACE_Y, ARM_ENTER_Y, ARM_THICKNESS,
     HOVER_PX, SQUINT_PCT, UP_MS, DOWN_MS, BLINK_INTERVAL_MS,
     FIELD_COUNT
 };
@@ -20,7 +21,7 @@ public:
     void create(lv_obj_t * parent);
     void set_config(const int *config, int count);
     void defaults(int *output, int count) const;
-    void keypress(int region);
+    void keypress(int region); // 0 left, 1 centre, 2 right, 3 space, 4 enter
     void set_frame(int frame); // 0 raised, 1 left, 2 centre, 3 right
     void reset();
     void tick(int elapsed_ms);
