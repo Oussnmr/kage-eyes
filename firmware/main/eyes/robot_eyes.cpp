@@ -155,6 +155,10 @@ static void preview_line(lv_layer_t *layer, int x1, int y1, int x2, int y2,
 }
 
 static void draw_typing_preview_arm(lv_event_t *event) {
+    // Direct layer drawing is not affected by the transparent preview
+    // container, so it must follow the same timeout as the rest of the
+    // temporary typing screen.
+    if (esp_timer_get_time() >= s_typing_preview_until_us.load(std::memory_order_acquire)) return;
     lv_layer_t *layer = lv_event_get_layer(event);
     if (!layer) return;
 
