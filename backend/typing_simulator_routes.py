@@ -14,6 +14,7 @@ import threading
 
 SIM_DIR = Path(__file__).with_name("typing_simulator_dist")
 SIM_PAGE = Path(__file__).with_name("typing_simulator.html")
+LIVE_PAGE = Path(__file__).with_name("typing_simulator_live.html")
 PROFILES_PATH = Path(os.getenv(
     "KAGE_TYPING_PROFILES_PATH",
     str(Path(__file__).with_name("typing_profiles.json")),
@@ -82,6 +83,11 @@ def make_typing_router(require_kage_key):
     @router.get("/control/simulator", response_class=HTMLResponse)
     def simulator_page():
         return HTMLResponse(SIM_PAGE.read_text(encoding="utf-8"),
+                            headers={"Cache-Control": "no-store, max-age=0"})
+
+    @router.get("/control/simulator-live", response_class=HTMLResponse)
+    def simulator_live_page():
+        return HTMLResponse(LIVE_PAGE.read_text(encoding="utf-8"),
                             headers={"Cache-Control": "no-store, max-age=0"})
 
     @router.get("/control/simulator/assets/{filename}")

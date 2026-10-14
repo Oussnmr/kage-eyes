@@ -9,7 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $source = Join-Path $Repo 'backend'
 $assetDir = Join-Path $source 'typing_simulator_dist'
-$required = @('typing_simulator.html','typing_simulator_routes.py')
+$required = @('typing_simulator.html','typing_simulator_live.html','typing_simulator_routes.py')
 foreach($filename in $required) {
     if(-not (Test-Path (Join-Path $source $filename))) { throw "Missing: $filename" }
 }
