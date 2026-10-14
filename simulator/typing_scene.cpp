@@ -25,7 +25,8 @@ lv_obj_t *plain(lv_obj_t *parent, int x, int y, int w, int h, uint32_t color, in
     lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(o, lv_color_hex(color), 0);
     lv_obj_set_style_radius(o, radius, 0);
-    lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(o, LV_OBJ_FLAG_CLICKABLE);
     return o;
 }
 
@@ -77,8 +78,8 @@ void Scene::set_mode(bool typing) {
     typing_ = typing;
     if (!typing) timeline_.reset();
     if (keyboard_) {
-        if (typing) lv_obj_remove_flag(keyboard_, LV_OBJ_FLAG_HIDDEN);
-        else lv_obj_add_flag(keyboard_, LV_OBJ_FLAG_HIDDEN);
+        if (typing) lv_obj_set_hidden(keyboard_, false);
+        else lv_obj_set_hidden(keyboard_, true);
     }
     refresh_arms();
 }
@@ -189,10 +190,10 @@ void Scene::refresh_arms() {
     if (!arm_back_ || !arm_front_) return;
     const bool raised = forced_ ? forced_frame_ == 0 :
                          timeline_.phase() == TypingTimeline::Raised;
-    if (typing_ && raised) lv_obj_remove_flag(arm_back_, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(arm_back_, LV_OBJ_FLAG_HIDDEN);
-    if (typing_ && !raised) lv_obj_remove_flag(arm_front_, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(arm_front_, LV_OBJ_FLAG_HIDDEN);
+    if (typing_ && raised) lv_obj_set_hidden(arm_back_, false);
+    else lv_obj_set_hidden(arm_back_, true);
+    if (typing_ && !raised) lv_obj_set_hidden(arm_front_, false);
+    else lv_obj_set_hidden(arm_front_, true);
     lv_obj_invalidate(arm_back_);
     lv_obj_invalidate(arm_front_);
 }
