@@ -47,8 +47,11 @@ class KokoroService:
 
     @property
     def available(self) -> bool:
-        return (self.engine is not None or
-                (Kokoro is not None and os.path.isfile(MODEL_PATH) and os.path.isfile(VOICES_PATH)))
+        # `available` gates the HTTP /speech endpoint.  It must initialise the
+        # lazy engine first; otherwise the first speech request is rejected as
+        # a 503 before `stream_pcm()` ever gets a chance to load Kokoro.
+        self._ensure_engine()
+        return self.engine is not None
 
     async def stream_pcm(self, text: str, voice: str = DEFAULT_VOICE) -> AsyncIterator[bytes]:
         self._ensure_engine()
