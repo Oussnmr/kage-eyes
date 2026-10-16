@@ -63,6 +63,21 @@ def resolve_mic_device():
 
 
 MIC_DEVICE = resolve_mic_device()
+
+
+def mic_uses_wdm_ks(device):
+    """PocketSphinx's blocking wake listener cannot run on WDM-KS."""
+    if device is None:
+        return False
+    try:
+        info = sd.query_devices(device)
+        host_api = sd.query_hostapis(info["hostapi"])
+        return "wdm-ks" in str(host_api.get("name", "")).lower()
+    except Exception:
+        return False
+
+
+MIC_USES_WDM_KS = mic_uses_wdm_ks(MIC_DEVICE)
 WAV_FILE = r"C:\Kage\voice_temp.wav"
 KAGE_API_KEY = os.getenv("KAGE_API_KEY", "").strip()
 KAGE_TTS_VOICE = os.getenv("KAGE_TTS_VOICE", "ff_siwis").strip() or "ff_siwis"
@@ -459,6 +474,38 @@ def choose_waiting_reply(text):
 def wait_for_wake_word(stop_event=None, announce=True, keyphrase=None):
     """Block locally until the selected local wake phrase is heard."""
     keyphrase = keyphrase or WAKE_KEYPHRASE
+    if MIC_USES_WDM_KS:
+        # PocketSphinx opens a blocking RawInputStream, an API unsupported by
+        # Windows WDM-KS.  Keep the reliable wake sources alive instead of
+        # reopening that failing stream every 350 ms.
+        if announce:
+            print("\n🟣 Réveil vocal indisponible avec ce pilote — double-tape Kage ou utilise le micro de la page.")
+        while stop_event is None or not stop_event.is_set():
+            _start_text_window_if_requested()
+            web_input = consume_web_input()
+            if web_input:
+                return ("web_input", web_input)
+            if msvcrt.kbhit():
+                key = msvcrt.getwch().lower()
+                if key == TEXT_MODE_HOTKEY:
+                    try:
+                        open(VOICE_TEXT_MODE_FLAG, "w", encoding="ascii").close()
+                    except OSError:
+                        pass
+                    _start_text_window_if_requested()
+                    print("⌨️ Fenêtre texte ouverte — Entrée envoie, Retour au micro la ferme.")
+            try:
+                return ("text_input", TEXT_INPUT_QUEUE.get_nowait())
+            except queue.Empty:
+                pass
+            if hold_is_active():
+                print("🟣 Kage woke for push-to-talk")
+                return "hold"
+            if consume_control_flag(VOICE_WAKE_FLAG):
+                print("🟣 Kage woke from touch")
+                return "touch"
+            time.sleep(0.08)
+        return False
     if announce:
         print(f"\n🟣 Wake word active — say ‘{keyphrase}’.")
     listener = None
