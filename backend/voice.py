@@ -52,6 +52,13 @@ def resolve_mic_device():
             (index, info) for index, info in enumerate(sd.query_devices())
             if info.get("max_input_channels", 0) > 0
         ]
+        # PortAudio can report no numeric default (-1) while Windows still
+        # has a working default microphone.  The Sound Mapper follows that
+        # Windows selection and is safer than pinning a stale WDM-KS endpoint.
+        for index, info in candidates:
+            name = str(info.get("name", "")).lower()
+            if "microsoft sound mapper" in name and "input" in name:
+                return index
         # Prefer a real microphone over loopback/stereo-mix inputs.
         for index, info in candidates:
             name = str(info.get("name", "")).lower()
