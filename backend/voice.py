@@ -1192,17 +1192,44 @@ def record_until_silence(wait_for_speech_seconds=MAX_RECORD_SECONDS):
     # Petite mesure du bruit ambiant
     noise_values = []
 
+    # Windows WDM-KS inputs reject PortAudio's blocking ``stream.read()`` API
+    # (error -9999).  A callback-driven stream is supported by that driver.
+    captured_blocks = queue.Queue(maxsize=32)
+
+    def on_audio(indata, frames, time_info, status):
+        block = indata.copy()
+        try:
+            captured_blocks.put_nowait(block)
+        except queue.Full:
+            # Keep the newest audio; a short delayed callback must not freeze
+            # listening or make the next utterance stale.
+            try:
+                captured_blocks.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                captured_blocks.put_nowait(block)
+            except queue.Full:
+                pass
+
+    def next_block():
+        try:
+            return captured_blocks.get(timeout=2.0)
+        except queue.Empty as exc:
+            raise RuntimeError("Le microphone n'envoie aucun audio") from exc
+
     with sd.InputStream(
         samplerate=SAMPLE_RATE,
         channels=1,
         dtype="float32",
         device=MIC_DEVICE,
         blocksize=block_size,
-    ) as stream:
+        callback=on_audio,
+    ):
 
         calibration_blocks = []
         for _ in range(10):
-            block, _ = stream.read(block_size)
+            block = next_block()
             noise_values.append(rms(block))
             calibration_blocks.append(block.copy())
 
@@ -1223,7 +1250,7 @@ def record_until_silence(wait_for_speech_seconds=MAX_RECORD_SECONDS):
             if consume_control_flag(VOICE_SLEEP_FLAG):
                 print("⚪ Kage sleeping from touch")
                 return "touch_sleep"
-            block, overflowed = stream.read(block_size)
+            block = next_block()
 
             level = rms(block)
             if hold_is_active():
