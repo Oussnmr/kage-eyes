@@ -1366,7 +1366,7 @@ def record_until_silence(wait_for_speech_seconds=MAX_RECORD_SECONDS):
     if hold_mode and len(frames) < 3:
         return False
 
-    audio = np.concatenate(frames, axis=0)
+    audio = np.concatenate(frames, axis=0).reshape(-1)
     if MIC_SAMPLE_RATE != SAMPLE_RATE:
         # Realtek WDM-KS offers 44.1 kHz capture only; Whisper receives the
         # expected 16 kHz WAV without forcing an unsupported input format.
