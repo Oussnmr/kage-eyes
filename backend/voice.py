@@ -78,6 +78,20 @@ def mic_uses_wdm_ks(device):
 
 
 MIC_USES_WDM_KS = mic_uses_wdm_ks(MIC_DEVICE)
+
+
+def resolve_mic_sample_rate(device):
+    """Use the capture device's native rate, then resample for Whisper."""
+    if device is None:
+        return SAMPLE_RATE
+    try:
+        rate = int(round(float(sd.query_devices(device)["default_samplerate"])))
+        return rate if 8000 <= rate <= 192000 else SAMPLE_RATE
+    except Exception:
+        return SAMPLE_RATE
+
+
+MIC_SAMPLE_RATE = resolve_mic_sample_rate(MIC_DEVICE)
 WAV_FILE = r"C:\Kage\voice_temp.wav"
 KAGE_API_KEY = os.getenv("KAGE_API_KEY", "").strip()
 KAGE_TTS_VOICE = os.getenv("KAGE_TTS_VOICE", "ff_siwis").strip() or "ff_siwis"
@@ -1230,7 +1244,7 @@ _last_record_metrics = {}
 def record_until_silence(wait_for_speech_seconds=MAX_RECORD_SECONDS):
     global _last_record_metrics
     capture_started = time.perf_counter()
-    block_size = int(SAMPLE_RATE * BLOCK_MS / 1000)
+    block_size = int(MIC_SAMPLE_RATE * BLOCK_MS / 1000)
     pre_roll_blocks = max(1, int(PRE_ROLL_SECONDS * 1000 / BLOCK_MS))
     pre_roll = collections.deque(maxlen=pre_roll_blocks)
 
@@ -1266,7 +1280,7 @@ def record_until_silence(wait_for_speech_seconds=MAX_RECORD_SECONDS):
             raise RuntimeError("Le microphone n'envoie aucun audio") from exc
 
     with sd.InputStream(
-        samplerate=SAMPLE_RATE,
+        samplerate=MIC_SAMPLE_RATE,
         channels=1,
         dtype="float32",
         device=MIC_DEVICE,
@@ -1346,6 +1360,12 @@ def record_until_silence(wait_for_speech_seconds=MAX_RECORD_SECONDS):
         return False
 
     audio = np.concatenate(frames, axis=0)
+    if MIC_SAMPLE_RATE != SAMPLE_RATE:
+        # Realtek WDM-KS offers 44.1 kHz capture only; Whisper receives the
+        # expected 16 kHz WAV without forcing an unsupported input format.
+        target_count = max(1, round(len(audio) * SAMPLE_RATE / MIC_SAMPLE_RATE))
+        positions = np.linspace(0, len(audio) - 1, target_count)
+        audio = np.interp(positions, np.arange(len(audio)), audio).astype(np.float32)
 
     audio_int16 = np.clip(
         audio * 32767,
